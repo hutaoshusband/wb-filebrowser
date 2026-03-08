@@ -1,5 +1,7 @@
 storage/*
 !storage/.gitignore
+vendor/
+assets/
 node_modules/
 frontend/node_modules/
 npm-debug.log*

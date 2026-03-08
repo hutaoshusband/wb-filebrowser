@@ -57,14 +57,19 @@ final class Installer
                 'message' => extension_loaded('fileinfo') ? 'Enabled' : 'Missing',
             ],
             [
+                'label' => 'mbstring extension',
+                'ok' => extension_loaded('mbstring'),
+                'message' => extension_loaded('mbstring') ? 'Enabled' : 'Missing',
+            ],
+            [
                 'label' => 'Project directory writable',
                 'ok' => $storageParentWritable,
-                'message' => $storageParentWritable ? 'Writable' : 'Not writable',
+                'message' => $storageParentWritable ? 'Writable' : 'Not writable! Run: chmod -R 775 storage/',
             ],
             [
                 'label' => 'Session directory writable',
                 'ok' => is_writable(wb_storage_path('sessions')),
-                'message' => is_writable(wb_storage_path('sessions')) ? 'Writable' : 'Not writable',
+                'message' => is_writable(wb_storage_path('sessions')) ? 'Writable' : 'Not writable! Run: chmod -R 775 storage/sessions/',
             ],
         ];
     }
