@@ -12,6 +12,27 @@ use WbFileBrowser\Tests\Support\DatabaseTestCase;
 
 final class UploadPolicyTest extends DatabaseTestCase
 {
+    public function testUploadInitAllowsFilesAboveOneGigabyteWhenTheAppLimitIsDisabled(): void
+    {
+        Settings::saveAdminSettings([
+            'uploads' => [
+                'max_file_size_mb' => 0,
+            ],
+        ]);
+
+        $upload = FileManager::uploadInit(
+            $this->superAdmin(),
+            Database::rootFolderId(),
+            'archive.tar',
+            1025 * 1024 * 1024,
+            'application/x-tar',
+            513
+        );
+
+        $this->assertArrayHasKey('upload_token', $upload);
+        FileManager::uploadCancel($this->superAdmin(), (string) $upload['upload_token']);
+    }
+
     public function testUploadInitRejectsFilesThatExceedTheConfiguredLimit(): void
     {
         Settings::saveAdminSettings([

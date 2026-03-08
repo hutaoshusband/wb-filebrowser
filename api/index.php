@@ -6,6 +6,7 @@ use WbFileBrowser\Auth;
 use WbFileBrowser\AutomationRunner;
 use WbFileBrowser\Database;
 use WbFileBrowser\FileManager;
+use WbFileBrowser\FileShares;
 use WbFileBrowser\Installer;
 use WbFileBrowser\Permissions;
 use WbFileBrowser\Security;
@@ -197,6 +198,27 @@ try {
             FileManager::deleteFile($user, (int) ($requestData['file_id'] ?? 0));
             wb_json_response(['ok' => true]);
 
+        case 'files.share.get':
+            $user = Auth::requireAdmin();
+            wb_json_response([
+                'ok' => true,
+                'share' => FileShares::get($user, (int) ($_GET['file_id'] ?? 0)),
+            ]);
+
+        case 'files.share.create':
+            $requireCsrf();
+            $user = Auth::requireAdmin();
+            wb_json_response([
+                'ok' => true,
+                'share' => FileShares::create($user, (int) ($requestData['file_id'] ?? 0)),
+            ], 201);
+
+        case 'files.share.revoke':
+            $requireCsrf();
+            $user = Auth::requireAdmin();
+            FileShares::revoke($user, (int) ($requestData['file_id'] ?? 0));
+            wb_json_response(['ok' => true]);
+
         case 'upload.init':
             $requireCsrf();
             $user = Auth::requireUser();
@@ -238,6 +260,19 @@ try {
             $user = Auth::requireUser();
             FileManager::uploadCancel($user, (string) ($requestData['upload_token'] ?? ''));
             wb_json_response(['ok' => true]);
+
+        case 'share.stream':
+            if (!$installed) {
+                http_response_code(404);
+                exit;
+            }
+
+            try {
+                FileShares::stream((string) ($_GET['token'] ?? ''), (string) ($_GET['disposition'] ?? 'inline'));
+            } catch (\RuntimeException $exception) {
+                http_response_code(404);
+                exit;
+            }
 
         case 'files.stream':
             $user = $installed ? Auth::currentUser() : null;

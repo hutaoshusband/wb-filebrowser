@@ -64,7 +64,7 @@ final class Settings
                 'public_access' => wb_parse_bool(Database::setting('public_access', '0')),
             ],
             'uploads' => [
-                'max_file_size_mb' => self::parseInteger(Database::setting('uploads_max_file_size_mb', '1024'), 'Upload max file size', 1, 102400),
+                'max_file_size_mb' => self::parseUploadLimitMb(Database::setting('uploads_max_file_size_mb', '0')),
                 'allowed_extensions' => implode(', ', self::allowedExtensions($pdo)),
                 'stale_upload_ttl_hours' => self::parseInteger(Database::setting('uploads_stale_upload_ttl_hours', '24'), 'Upload retention window', 1, 720),
             ],
@@ -129,13 +129,16 @@ final class Settings
     public static function uploadPolicy(?PDO $pdo = null): array
     {
         $pdo ??= Database::connection();
-        $maxFileSizeMb = self::parseInteger(Database::setting('uploads_max_file_size_mb', '1024'), 'Upload max file size', 1, 102400);
+        $maxFileSizeMb = self::parseUploadLimitMb(Database::setting('uploads_max_file_size_mb', '0'));
+        $maxFileSizeBytes = $maxFileSizeMb === 0 ? null : $maxFileSizeMb * 1024 * 1024;
         $allowedExtensions = self::allowedExtensions($pdo);
         $staleUploadTtlHours = self::parseInteger(Database::setting('uploads_stale_upload_ttl_hours', '24'), 'Upload retention window', 1, 720);
 
         return [
             'max_file_size_mb' => $maxFileSizeMb,
-            'max_file_size_bytes' => $maxFileSizeMb * 1024 * 1024,
+            'max_file_size_bytes' => $maxFileSizeBytes,
+            'max_file_size_label' => $maxFileSizeBytes === null ? 'No app limit' : wb_format_bytes($maxFileSizeBytes),
+            'has_app_limit' => $maxFileSizeBytes !== null,
             'allowed_extensions' => $allowedExtensions,
             'allowed_extensions_label' => $allowedExtensions === []
                 ? 'Any file type'
@@ -148,10 +151,10 @@ final class Settings
     {
         $policy = self::uploadPolicy($pdo);
 
-        if ($size > $policy['max_file_size_bytes']) {
+        if ($policy['max_file_size_bytes'] !== null && $size > $policy['max_file_size_bytes']) {
             throw new RuntimeException(sprintf(
                 'Uploads are limited to %s per file.',
-                wb_format_bytes((int) $policy['max_file_size_bytes'])
+                $policy['max_file_size_label']
             ));
         }
 
@@ -211,11 +214,8 @@ final class Settings
                 'public_access' => wb_parse_bool($accessInput['public_access'] ?? $base['access']['public_access']),
             ],
             'uploads' => [
-                'max_file_size_mb' => self::parseInteger(
+                'max_file_size_mb' => self::parseUploadLimitMb(
                     $uploadInput['max_file_size_mb'] ?? $base['uploads']['max_file_size_mb'],
-                    'Upload max file size',
-                    1,
-                    102400
                 ),
                 'allowed_extensions' => self::normalizeExtensions($uploadInput['allowed_extensions'] ?? $base['uploads']['allowed_extensions']),
                 'stale_upload_ttl_hours' => self::parseInteger(
@@ -256,7 +256,7 @@ final class Settings
                 'public_access' => false,
             ],
             'uploads' => [
-                'max_file_size_mb' => 1024,
+                'max_file_size_mb' => 0,
                 'allowed_extensions' => '',
                 'stale_upload_ttl_hours' => 24,
             ],
@@ -281,7 +281,7 @@ final class Settings
             'root_folder_id' => '1',
             'board_name' => 'wb-filebrowser',
             'help_mode' => 'local',
-            'uploads_max_file_size_mb' => '1024',
+            'uploads_max_file_size_mb' => '0',
             'uploads_allowed_extensions' => '',
             'uploads_stale_upload_ttl_hours' => '24',
             'automation_runner_enabled' => '1',
@@ -368,5 +368,20 @@ final class Settings
         }
 
         return (int) $intValue;
+    }
+
+    private static function parseUploadLimitMb(mixed $value): int
+    {
+        return self::parseInteger($value, 'Upload max file size', 0, self::maxUploadLimitMb());
+    }
+
+    private static function maxUploadLimitMb(): int
+    {
+        $bytesPerMegabyte = 1024 * 1024;
+        $phpMax = intdiv(PHP_INT_MAX, $bytesPerMegabyte);
+        $jsMaxSafeInteger = 9007199254740991;
+        $jsMax = intdiv($jsMaxSafeInteger, $bytesPerMegabyte);
+
+        return min($phpMax, $jsMax);
     }
 }

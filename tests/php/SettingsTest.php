@@ -40,4 +40,20 @@ final class SettingsTest extends DatabaseTestCase
         $this->assertCount(3, $payload['automation']['jobs']);
         $this->assertSame(15, AutomationRunner::jobs()[0]['interval_minutes']);
     }
+
+    public function testUploadPolicyReportsWhenTheAppLevelLimitIsDisabled(): void
+    {
+        Settings::saveAdminSettings([
+            'uploads' => [
+                'max_file_size_mb' => 0,
+            ],
+        ]);
+
+        $policy = Settings::uploadPolicy();
+
+        $this->assertSame(0, $policy['max_file_size_mb']);
+        $this->assertNull($policy['max_file_size_bytes']);
+        $this->assertSame('No app limit', $policy['max_file_size_label']);
+        $this->assertFalse($policy['has_app_limit']);
+    }
 }

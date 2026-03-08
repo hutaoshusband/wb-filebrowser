@@ -4,7 +4,8 @@ export function validateUploadCandidate(file, policy) {
   }
 
   if (Number.isFinite(policy.max_file_size_bytes) && file.size > policy.max_file_size_bytes) {
-    return `"${file.name}" is too large. The current upload limit is ${policy.max_file_size_mb} MB per file.`;
+    const label = policy.max_file_size_label || `${policy.max_file_size_mb} MB`;
+    return `"${file.name}" is too large. The current upload limit is ${label} per file.`;
   }
 
   const allowedExtensions = Array.isArray(policy.allowed_extensions) ? policy.allowed_extensions : [];

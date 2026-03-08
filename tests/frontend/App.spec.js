@@ -17,6 +17,8 @@ function uploadPolicy() {
   return {
     max_file_size_mb: 256,
     max_file_size_bytes: 268435456,
+    max_file_size_label: '256 MB',
+    has_app_limit: true,
     allowed_extensions: [],
     allowed_extensions_label: 'Any file type',
     stale_upload_ttl_hours: 24,
@@ -169,6 +171,51 @@ async function mountAdminApp({ hash = '#/dashboard', handlers = {} } = {}) {
   return { wrapper, ...fetchState };
 }
 
+async function mountBrowserApp({ hash = '', handlers = {} } = {}) {
+  window.location.hash = hash;
+  document.body.dataset.shell = 'app';
+  window.WB_BOOTSTRAP = {
+    surface: 'app',
+    base_path: '',
+    csrf_token: 'csrf-token',
+    user: adminUser(),
+    app_version: '1.0.0-alpha',
+  };
+  const fetchState = installFetchStub({
+    'tree.list': () => jsonResponse({
+      data: {
+        folder: { id: 1, type: 'folder', name: 'Home', parent_id: null, updated_relative: 'just now' },
+        breadcrumbs: [{ id: 1, name: 'Home' }],
+        folders: [],
+        files: [
+          {
+            id: 7,
+            type: 'file',
+            name: 'brochure.pdf',
+            folder_id: 1,
+            size: 1024,
+            size_label: '1 KB',
+            mime_type: 'application/pdf',
+            updated_at: '2026-03-09T00:00:00Z',
+            updated_relative: 'just now',
+            checksum: 'abc123',
+            extension: 'pdf',
+            preview_url: 'http://localhost/api/index.php?action=files.stream&id=7&disposition=inline',
+            download_url: 'http://localhost/api/index.php?action=files.stream&id=7&disposition=attachment',
+          },
+        ],
+        can_upload: true,
+        can_manage: true,
+      },
+    }),
+    ...handlers,
+  });
+  const wrapper = mount(App);
+  await flushPromises();
+  await flushPromises();
+  return { wrapper, ...fetchState };
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   localStorage.clear();
@@ -237,5 +284,42 @@ describe('Admin app shell', () => {
     expect(body.uploads.max_file_size_mb).toBe(64);
     expect(body.uploads.allowed_extensions).toBe('png, pdf');
     expect(body.uploads.stale_upload_ttl_hours).toBe(8);
+  });
+
+  it('creates a share link from the file preview in the browser shell', async () => {
+    const clipboardWrite = vi.fn().mockResolvedValue();
+    Object.defineProperty(window.navigator, 'clipboard', {
+      value: { writeText: clipboardWrite },
+      configurable: true,
+    });
+
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'files.share.create': () => jsonResponse({
+          share: {
+            file_id: 7,
+            token: 'feedfacefeedfacefeedfacefeedface',
+            url: 'http://localhost/share/?token=feedfacefeedfacefeedfacefeedface',
+            download_url: 'http://localhost/api/index.php?action=share.stream&token=feedfacefeedfacefeedfacefeedface&disposition=attachment',
+            created_at: '2026-03-09T00:00:00Z',
+            updated_at: '2026-03-09T00:00:00Z',
+            revoked_at: null,
+          },
+        }),
+        'files.share.get': () => jsonResponse({ share: null }),
+      },
+    });
+
+    await wrapper.find('tbody tr').trigger('click');
+    await flushPromises();
+
+    const shareButton = wrapper.findAll('button').find((button) => button.text() === 'Share link');
+    await shareButton.trigger('click');
+
+    const shareCall = calls.find((call) => call.action === 'files.share.create');
+    const body = JSON.parse(shareCall.init.body);
+
+    expect(body.file_id).toBe(7);
+    expect(clipboardWrite).toHaveBeenCalledWith('http://localhost/share/?token=feedfacefeedfacefeedfacefeedface');
   });
 });

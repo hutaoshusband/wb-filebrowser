@@ -304,6 +304,15 @@ XML;
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )',
+            'CREATE TABLE IF NOT EXISTS file_shares (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+                token TEXT NOT NULL UNIQUE,
+                created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                revoked_at TEXT NULL
+            )',
             'CREATE TABLE IF NOT EXISTS folder_permissions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 folder_id INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
@@ -336,6 +345,7 @@ XML;
             )',
             'CREATE INDEX IF NOT EXISTS idx_folders_parent_id ON folders(parent_id)',
             'CREATE INDEX IF NOT EXISTS idx_files_folder_id ON files(folder_id)',
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_file_shares_active_file ON file_shares(file_id) WHERE revoked_at IS NULL',
             'CREATE INDEX IF NOT EXISTS idx_permissions_principal ON folder_permissions(principal_type, principal_id)',
             'CREATE INDEX IF NOT EXISTS idx_login_attempts_lookup ON login_attempts(username, ip_address, attempted_at)',
             'CREATE INDEX IF NOT EXISTS idx_automation_jobs_next_run ON automation_jobs(next_run_at)',

@@ -76,6 +76,51 @@ abstract class DatabaseTestCase extends TestCase
         );
     }
 
+    protected function createFile(
+        string $name = 'sample.txt',
+        string $contents = 'hello world',
+        string $mimeType = 'text/plain',
+        ?int $folderId = null,
+        ?array $actor = null
+    ): array {
+        $folderId ??= Database::rootFolderId();
+        $actor ??= $this->superAdmin();
+        $diskName = wb_random_token(16);
+        $diskExtension = 'blob';
+        $directory = wb_storage_path('uploads/' . substr($diskName, 0, 2) . '/' . substr($diskName, 2, 2));
+
+        if (!is_dir($directory)) {
+            mkdir($directory, 0775, true);
+        }
+
+        $path = $directory . DIRECTORY_SEPARATOR . $diskName . '.' . $diskExtension;
+        file_put_contents($path, $contents);
+
+        $now = wb_now();
+        $statement = Database::connection()->prepare(
+            'INSERT INTO files (folder_id, original_name, disk_name, disk_extension, mime_type, size, checksum, created_by, created_at, updated_at)
+             VALUES (:folder_id, :original_name, :disk_name, :disk_extension, :mime_type, :size, :checksum, :created_by, :created_at, :updated_at)'
+        );
+        $statement->execute([
+            ':folder_id' => $folderId,
+            ':original_name' => $name,
+            ':disk_name' => $diskName,
+            ':disk_extension' => $diskExtension,
+            ':mime_type' => $mimeType,
+            ':size' => filesize($path) ?: 0,
+            ':checksum' => hash('sha256', $contents),
+            ':created_by' => (int) $actor['id'],
+            ':created_at' => $now,
+            ':updated_at' => $now,
+        ]);
+
+        $id = (int) Database::connection()->lastInsertId();
+        $fetch = Database::connection()->prepare('SELECT * FROM files WHERE id = :id LIMIT 1');
+        $fetch->execute([':id' => $id]);
+
+        return $fetch->fetch() ?: [];
+    }
+
     protected function setJobNextRun(string $jobKey, string $nextRunAt): void
     {
         $statement = Database::connection()->prepare(

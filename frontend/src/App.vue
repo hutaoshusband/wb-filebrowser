@@ -8,8 +8,10 @@ const SETTING_TABS = ['access', 'uploads', 'automation', 'security'];
 
 function createDefaultUploadPolicy() {
   return {
-    max_file_size_mb: 1024,
-    max_file_size_bytes: 1024 * 1024 * 1024,
+    max_file_size_mb: 0,
+    max_file_size_bytes: null,
+    max_file_size_label: 'No app limit',
+    has_app_limit: false,
     allowed_extensions: [],
     allowed_extensions_label: 'Any file type',
     stale_upload_ttl_hours: 24,
@@ -22,7 +24,7 @@ function createDefaultSettings() {
       public_access: false,
     },
     uploads: {
-      max_file_size_mb: 1024,
+      max_file_size_mb: 0,
       allowed_extensions: '',
       stale_upload_ttl_hours: 24,
     },
@@ -90,6 +92,12 @@ const adminState = reactive({
   automationBusy: false,
 });
 
+const shareState = reactive({
+  fileId: 0,
+  loading: false,
+  link: null,
+});
+
 const authForm = reactive({ username: '', password: '' });
 const newUserForm = reactive({ username: '', password: '', role: 'user', force_password_reset: false });
 
@@ -124,6 +132,7 @@ const searchActive = computed(() => shell !== 'admin' && searchQuery.value.trim(
 const currentEntries = computed(() => (searchActive.value ? [...searchState.folders, ...searchState.files] : [...folderState.folders, ...folderState.files]));
 const selectedItem = computed(() => currentEntries.value.find((item) => rowKey(item) === selectedKey.value) ?? null);
 const canUploadHere = computed(() => shell === 'app' && session.user !== null && folderState.can_upload);
+const canManageShares = computed(() => shell === 'app' && folderState.can_manage);
 const breadcrumbItems = computed(() => searchActive.value
   ? [{ id: session.rootFolderId, name: 'Home' }, { id: -1, name: 'Search results' }]
   : folderState.breadcrumbs);
@@ -142,6 +151,21 @@ const dueAutomationCount = computed(() => automationJobs.value.filter((job) => j
 const uploadAccept = computed(() => session.uploadPolicy.allowed_extensions.length === 0
   ? null
   : session.uploadPolicy.allowed_extensions.map((extension) => `.${extension}`).join(','));
+const shareContextItem = computed(() => {
+  if (!canManageShares.value) {
+    return null;
+  }
+
+  if (infoItem.value?.type === 'file') {
+    return infoItem.value;
+  }
+
+  if (previewItem.value?.type === 'file') {
+    return previewItem.value;
+  }
+
+  return null;
+});
 
 function apiUrl(action, params = {}) {
   const url = new URL(`${window.location.origin}${basePath}/api/index.php`);
@@ -489,6 +513,7 @@ async function logout() {
   previewItem.value = null;
   infoItem.value = null;
   selectedKey.value = '';
+  resetShareState();
   stopAutomationPulse();
 
   if (isAdminShell.value) {
@@ -684,7 +709,140 @@ async function deleteSelected(item = selectedItem.value) {
   previewItem.value = null;
   infoItem.value = null;
   selectedKey.value = '';
+  if (shareState.fileId === item.id) {
+    resetShareState();
+  }
   await refreshCurrentView();
+}
+
+function resetShareState() {
+  shareState.fileId = 0;
+  shareState.loading = false;
+  shareState.link = null;
+}
+
+async function loadShareState(item = shareContextItem.value) {
+  if (!canManageShares.value || item?.type !== 'file') {
+    resetShareState();
+    return;
+  }
+
+  shareState.fileId = item.id;
+  shareState.loading = true;
+
+  try {
+    const payload = await api('files.share.get', {
+      params: { file_id: item.id },
+    });
+
+    if (shareState.fileId === item.id) {
+      shareState.link = payload.share ?? null;
+    }
+  } finally {
+    if (shareState.fileId === item.id) {
+      shareState.loading = false;
+    }
+  }
+}
+
+async function writeShareLink(url) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(url);
+    return true;
+  }
+
+  window.prompt('Copy this share link', url);
+  return false;
+}
+
+async function createShareLink(item = shareContextItem.value, { open = false } = {}) {
+  if (!item || item.type !== 'file') {
+    showMessage('Choose a file first.');
+    return;
+  }
+
+  try {
+    const payload = await api('files.share.create', {
+      method: 'POST',
+      body: { file_id: item.id },
+    });
+    shareState.fileId = item.id;
+    shareState.loading = false;
+    shareState.link = payload.share;
+
+    let copied = false;
+
+    try {
+      copied = await writeShareLink(payload.share.url);
+    } catch (error) {
+      window.prompt('Copy this share link', payload.share.url);
+    }
+
+    if (open) {
+      window.open(payload.share.url, '_blank', 'noopener');
+    }
+
+    showMessage(copied ? 'Share link copied.' : 'Share link ready.');
+  } catch (error) {
+    showMessage(error instanceof Error ? error.message : 'Unable to create a share link.');
+  }
+}
+
+async function openShareLink(item = shareContextItem.value) {
+  if (!item || item.type !== 'file') {
+    showMessage('Choose a file first.');
+    return;
+  }
+
+  if (shareState.fileId === item.id && shareState.link?.url) {
+    window.open(shareState.link.url, '_blank', 'noopener');
+    return;
+  }
+
+  const popup = window.open('', '_blank', 'noopener');
+
+  try {
+    const payload = await api('files.share.create', {
+      method: 'POST',
+      body: { file_id: item.id },
+    });
+    shareState.fileId = item.id;
+    shareState.loading = false;
+    shareState.link = payload.share;
+    popup?.location.replace(payload.share.url);
+  } catch (error) {
+    popup?.close();
+    showMessage(error instanceof Error ? error.message : 'Unable to open the shared view.');
+  }
+}
+
+async function revokeShareLink(item = shareContextItem.value) {
+  if (!item || item.type !== 'file') {
+    showMessage('Choose a file first.');
+    return;
+  }
+
+  if (shareState.fileId !== item.id || !shareState.link) {
+    showMessage('This file does not have an active share link.');
+    return;
+  }
+
+  if (!window.confirm(`Disable the public share link for "${item.name}"?`)) {
+    return;
+  }
+
+  try {
+    await api('files.share.revoke', {
+      method: 'POST',
+      body: { file_id: item.id },
+    });
+    shareState.fileId = item.id;
+    shareState.loading = false;
+    shareState.link = null;
+    showMessage('Share link disabled.');
+  } catch (error) {
+    showMessage(error instanceof Error ? error.message : 'Unable to disable the share link.');
+  }
 }
 
 function downloadSelected() {
@@ -965,6 +1123,14 @@ function formatDateLabel(value) {
   return date.toLocaleString();
 }
 
+function uploadLimitLabel(policy = session.uploadPolicy) {
+  if (!policy || policy.has_app_limit === false || !Number.isFinite(policy.max_file_size_bytes)) {
+    return 'No app limit';
+  }
+
+  return policy.max_file_size_label || `${policy.max_file_size_mb} MB`;
+}
+
 function startAutomationPulse() {
   stopAutomationPulse();
   if (!isAdminShell.value || !isAdmin.value) {
@@ -1022,6 +1188,20 @@ watch(() => [adminState.permissionPrincipalType, adminState.permissionPrincipalI
     } catch (error) {
       showMessage(error instanceof Error ? error.message : 'Unable to load permissions.');
     }
+  }
+});
+
+watch(() => shareContextItem.value?.id ?? 0, async (fileId) => {
+  if (!fileId) {
+    resetShareState();
+    return;
+  }
+
+  try {
+    await loadShareState(shareContextItem.value);
+  } catch (error) {
+    resetShareState();
+    showMessage(error instanceof Error ? error.message : 'Unable to load the share link.');
   }
 });
 
@@ -1197,7 +1377,7 @@ onBeforeUnmount(() => {
             <p class="panel-kicker">Storage</p>
             <h2>{{ adminState.dashboard.stats.used_label }}</h2>
             <p>of {{ adminState.dashboard.stats.total_label }} used.</p>
-            <p class="panel-meta">Upload limit: {{ session.uploadPolicy.max_file_size_mb }} MB</p>
+            <p class="panel-meta">Upload limit: {{ uploadLimitLabel(session.uploadPolicy) }}</p>
           </article>
 
           <article class="panel">
@@ -1437,8 +1617,9 @@ onBeforeUnmount(() => {
               <p class="panel-kicker">Uploads</p>
               <h2>Upload rules</h2>
               <label>
-                <span>Max file size (MB)</span>
-                <input v-model.number="adminState.settings.uploads.max_file_size_mb" type="number" min="1" :disabled="!adminState.canManageSettings">
+                <span>App upload limit (MB)</span>
+                <input v-model.number="adminState.settings.uploads.max_file_size_mb" type="number" min="0" :disabled="!adminState.canManageSettings">
+                <small class="panel-meta">Use 0 for no app-level cap. Uploads still stream in 2 MiB chunks.</small>
               </label>
               <label>
                 <span>Allowed extensions</span>
@@ -1503,7 +1684,7 @@ onBeforeUnmount(() => {
                 </div>
                 <div class="health-card">
                   <strong>Upload policy preview</strong>
-                  <p>Limit: {{ session.uploadPolicy.max_file_size_mb }} MB · Allowed: {{ session.uploadPolicy.allowed_extensions_label }}</p>
+                  <p>Limit: {{ uploadLimitLabel(session.uploadPolicy) }} | Allowed: {{ session.uploadPolicy.allowed_extensions_label }}</p>
                   <small>Abandoned uploads are cleared after {{ session.uploadPolicy.stale_upload_ttl_hours }} hours.</small>
                 </div>
               </div>
@@ -1578,6 +1759,8 @@ onBeforeUnmount(() => {
             <p>{{ previewItem.mime_type }}</p>
           </div>
           <div class="header-actions">
+            <button v-if="canManageShares && previewItem.type === 'file'" class="header-button" type="button" @click="createShareLink(previewItem)">Share link</button>
+            <button v-if="canManageShares && previewItem.type === 'file'" class="header-button" type="button" @click="openShareLink(previewItem)">Open share</button>
             <button class="header-button" type="button" @click="downloadSelected">Download</button>
             <button class="header-button" type="button" @click="closePreview">Close</button>
           </div>
@@ -1627,7 +1810,16 @@ onBeforeUnmount(() => {
         <div><dt>Size</dt><dd>{{ infoItem.type === 'folder' ? '-' : infoItem.size_label }}</dd></div>
         <div><dt>Last modified</dt><dd>{{ infoItem.updated_relative }}</dd></div>
       </dl>
+      <div v-if="canManageShares && infoItem.type === 'file'" class="share-panel">
+        <strong>Public share</strong>
+        <p v-if="shareState.loading && shareState.fileId === infoItem.id">Checking share link...</p>
+        <p v-else-if="shareState.fileId === infoItem.id && shareState.link" class="share-panel__url">{{ shareState.link.url }}</p>
+        <p v-else>No public share link is active for this file yet.</p>
+      </div>
       <div v-if="shell === 'app' && folderState.can_manage" class="drawer-actions">
+        <button v-if="infoItem.type === 'file'" type="button" @click="createShareLink(infoItem)">Share link</button>
+        <button v-if="infoItem.type === 'file'" type="button" @click="openShareLink(infoItem)">Open share</button>
+        <button v-if="infoItem.type === 'file' && shareState.fileId === infoItem.id && shareState.link" type="button" @click="revokeShareLink(infoItem)">Disable share</button>
         <button type="button" @click="renameSelected(infoItem)">Rename</button>
         <button type="button" @click="moveSelected(infoItem)">Move</button>
         <button type="button" class="danger" @click="deleteSelected(infoItem)">Delete</button>
@@ -1635,6 +1827,7 @@ onBeforeUnmount(() => {
     </aside>
 
     <div v-if="contextMenu" class="context-menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }">
+      <button v-if="contextMenu.item.type === 'file'" type="button" @click="createShareLink(contextMenu.item)">Share link</button>
       <button type="button" @click="renameSelected(contextMenu.item)">Rename</button>
       <button type="button" @click="moveSelected(contextMenu.item)">Move</button>
       <button type="button" class="danger" @click="deleteSelected(contextMenu.item)">Delete</button>

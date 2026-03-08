@@ -208,6 +208,22 @@ button{cursor:pointer}
 .info-drawer{position:fixed;top:18px;right:18px;bottom:18px;width:min(360px,calc(100vw - 36px));z-index:20;overflow:auto}
 .drawer-actions{margin-top:22px;display:flex;gap:10px;flex-wrap:wrap}
 .danger{background:rgba(239,68,68,.12)!important;border-color:rgba(239,68,68,.28)!important}
+.share-panel{margin-top:18px;padding:16px;border-radius:16px;border:1px solid rgba(255,255,255,.06);background:rgba(255,255,255,.03);display:grid;gap:8px}
+.share-panel strong,.share-panel p{margin:0}
+.share-panel p{color:var(--text-soft);line-height:1.5}
+.share-panel__url{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--accent)!important;word-break:break-all}
+
+.share-shell{margin:0;min-height:100vh;background:radial-gradient(circle at top,#16263f 0,#08111d 45%,#050a14 100%);color:var(--text)}
+.share-layout{min-height:100vh;display:grid;place-items:center;padding:28px}
+.share-card{width:min(1180px,100%);padding:28px;border-radius:var(--radius);background:linear-gradient(180deg,rgba(17,27,46,.95),rgba(10,17,28,.96));border:1px solid rgba(255,255,255,.06);box-shadow:var(--shadow);display:grid;gap:24px}
+.share-card h1,.share-card p{margin:0}
+.share-header{display:flex;justify-content:space-between;gap:18px;align-items:flex-start}
+.share-actions,.share-sidebar__actions{display:flex;gap:10px;flex-wrap:wrap}
+.share-view{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:18px}
+.share-view__frame{min-height:560px}
+.share-sidebar{display:grid;gap:18px}
+.share-text-preview{width:100%;height:100%;display:grid;grid-template-rows:minmax(0,1fr) auto}
+.share-note{margin:0;padding:14px 18px;border-top:1px solid rgba(255,255,255,.06);color:var(--text-soft);background:rgba(255,255,255,.03)}
 
 .context-menu{position:fixed;z-index:40;padding:8px;display:grid;gap:6px;min-width:180px}
 .context-menu button{text-align:left;background:transparent}
@@ -215,21 +231,58 @@ button{cursor:pointer}
 .drop-overlay{position:fixed;inset:0;display:grid;place-items:center;background:rgba(10,18,32,.72);backdrop-filter:blur(8px);z-index:35}
 .drop-overlay__card{padding:28px 36px;border-radius:24px;border:1px dashed rgba(250,204,21,.55);background:rgba(12,18,28,.92);display:grid;gap:8px;text-align:center}
 
-.install-shell{margin:0;min-height:100vh;background:radial-gradient(circle at top,#172741 0,#08101d 50%,#040912 100%);color:var(--text)}
+.install-shell{margin:0;min-height:100vh;background:radial-gradient(circle at top,#172741 0,#08101d 42%,#040912 100%);color:var(--text)}
 .install-layout{min-height:100vh;display:grid;place-items:center;padding:28px}
-.install-card{width:min(760px,100%);padding:30px;display:grid;gap:24px}
-.install-header h1,.install-header p{margin:0}
-.install-header{display:grid;gap:8px}
+.install-layout--split{grid-template-columns:minmax(0,1.02fr) minmax(320px,760px);align-items:stretch;gap:28px;width:min(1240px,100%)}
+.install-hero{display:grid;gap:18px}
+.install-hero__panel{padding:30px;border-radius:var(--radius);background:linear-gradient(145deg,rgba(26,39,63,.92),rgba(8,16,29,.88));border:1px solid rgba(255,255,255,.06);box-shadow:var(--shadow)}
+.install-header h1,.install-header h2,.install-header p,.install-hero__panel h1,.install-hero__panel p{margin:0}
+.install-header,.install-hero__panel{display:grid;gap:10px}
 .install-kicker{color:var(--accent);text-transform:uppercase;letter-spacing:.08em;font-size:.76rem}
+.install-lead{max-width:56ch;line-height:1.6;color:var(--text-soft)}
+.install-pill-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px}
+.install-pill{padding:8px 12px;border-radius:999px;background:rgba(250,204,21,.08);border:1px solid rgba(250,204,21,.18);color:var(--text);font-size:.88rem}
+.install-card{width:min(760px,100%);padding:30px;display:grid;gap:24px}
 .install-checklist{display:grid;gap:10px}
-.install-check{padding:12px 14px;border-radius:14px;border:1px solid rgba(255,255,255,.06);display:flex;justify-content:space-between;gap:18px;flex-wrap:wrap}
+.install-check{padding:14px 16px;border-radius:16px;border:1px solid rgba(255,255,255,.06);display:flex;justify-content:space-between;gap:18px;align-items:flex-start;flex-wrap:wrap}
+.install-check div{display:grid;gap:4px}
+.install-check span,.install-check small{color:var(--text-soft)}
 .install-check.is-ok{background:rgba(34,197,94,.11);border-color:rgba(34,197,94,.26)}
 .install-check.is-bad{background:rgba(239,68,68,.11);border-color:rgba(239,68,68,.26)}
-.install-form{display:grid;gap:14px}
-.install-advanced{padding:14px 16px;border-radius:14px;border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.03)}
+.install-story-grid{display:grid;gap:12px}
+.install-story{display:grid;grid-template-columns:auto 1fr;gap:14px;padding:18px;border-radius:18px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06)}
+.install-story strong{display:block;margin-bottom:4px}
+.install-story p{margin:0;color:var(--text-soft);line-height:1.5}
+.install-story__step,.install-section__number{display:grid;place-items:center;width:34px;height:34px;border-radius:50%;background:rgba(250,204,21,.14);border:1px solid rgba(250,204,21,.22);color:var(--accent);font-weight:700;flex:none}
+.install-form{display:grid;gap:18px}
+.install-section{display:grid;gap:16px;padding:18px;border-radius:18px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06)}
+.install-section__header{display:grid;grid-template-columns:auto 1fr;gap:14px;align-items:flex-start}
+.install-section__header h3{margin:0}
+.install-section__header p{margin:6px 0 0;color:var(--text-soft);line-height:1.5}
+.install-field-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.install-field-grid label:first-child{grid-column:1/-1}
+.install-choice-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.install-choice{display:grid;gap:8px;padding:16px;border-radius:16px;background:rgba(12,18,28,.72);border:1px solid rgba(255,255,255,.05)}
+.install-choice.checkbox-row{align-items:flex-start}
+.install-choice.checkbox-row span{display:grid;gap:4px}
+.install-choice strong{display:block;margin-bottom:4px}
+.install-choice small{color:var(--text-soft);line-height:1.5}
+.install-choice--wide{grid-column:1/-1}
+.install-password-row{display:flex;flex-wrap:wrap;gap:10px}
+.install-hint{padding:8px 10px;border-radius:999px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.05);color:var(--text-soft);font-size:.88rem}
+.install-hint.is-good{background:rgba(34,197,94,.14);border-color:rgba(34,197,94,.22);color:#dcfce7}
+.install-advanced{padding:16px 18px;border-radius:18px;border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.03)}
 .install-advanced summary{cursor:pointer;color:var(--accent);font-weight:600}
+.install-advanced__intro{margin:14px 0 0;color:var(--text-soft);line-height:1.5}
 .install-advanced__grid{display:grid;gap:14px;margin-top:16px}
+.install-summary{padding:18px;border-radius:18px;background:rgba(250,204,21,.08);border:1px solid rgba(250,204,21,.16);display:grid;gap:12px}
+.install-summary__row{display:grid;gap:6px}
+.install-summary__row span{color:var(--text-soft);font-size:.8rem;letter-spacing:.06em;text-transform:uppercase}
+.install-summary__row strong{line-height:1.45}
+.install-card .primary-button{width:100%;padding:13px 16px}
 .install-feedback{margin:0;color:var(--text-soft);min-height:1.4rem}
+.install-feedback.is-error{color:#fecaca}
+.install-feedback.is-success{color:#dcfce7}
 
 @media (max-width:980px){
   .wb-shell{grid-template-columns:1fr}
@@ -240,6 +293,9 @@ button{cursor:pointer}
   .preview-frame{min-height:320px}
   .info-drawer{position:fixed;left:18px;right:18px;width:auto}
   .brand-mark--large{width:72px;height:72px}
+  .install-layout--split{grid-template-columns:1fr;width:min(760px,100%)}
+  .share-view{grid-template-columns:1fr}
+  .share-view__frame{min-height:360px}
 }
 
 @media (max-width:720px){
@@ -249,4 +305,10 @@ button{cursor:pointer}
   .table-wrap,.panel-table{overflow:auto}
   .grid-board{grid-template-columns:repeat(auto-fill,minmax(140px,1fr))}
   .job-card,.panel-header{flex-direction:column}
+  .install-layout{padding:18px}
+  .install-card,.install-hero__panel{padding:22px}
+  .install-field-grid,.install-choice-grid{grid-template-columns:1fr}
+  .share-layout{padding:18px}
+  .share-card{padding:22px}
+  .share-header{flex-direction:column}
 }
