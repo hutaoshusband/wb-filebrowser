@@ -528,12 +528,18 @@ try {
             $requireCsrf();
             Auth::requireAdmin();
             $exposed = wb_parse_bool($requestData['exposed'] ?? false);
+            
+            if ($exposed) {
+                // Auto-resolve attempt
+                Installer::writeStorageShield();
+            }
+            
             Database::updateSetting('diagnostic_exposed', $exposed ? '1' : '0');
             Database::updateSetting('diagnostic_checked_at', wb_now());
             Database::updateSetting(
                 'diagnostic_message',
                 $exposed
-                    ? 'Your server served a file directly from /storage/. Add equivalent deny rules for your web server before uploading sensitive files.'
+                    ? 'Your server served a file directly from /storage/. We automatically regenerated .htaccess and web.config to shield it. Refresh to test, or manually configure your web server.'
                     : 'The latest probe could not be fetched directly. Storage appears shielded from public access.'
             );
             wb_json_response(['ok' => true]);

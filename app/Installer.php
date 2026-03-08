@@ -226,6 +226,28 @@ Options -Indexes
 HTACCESS;
 
         file_put_contents(wb_storage_path('.htaccess'), $contents);
+        
+        $webConfig = <<<XML
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <system.webServer>
+        <handlers>
+            <clear />
+        </handlers>
+        <security>
+            <requestFiltering>
+                <hiddenSegments>
+                    <add segment="." />
+                </hiddenSegments>
+                <denyUrlSequences>
+                    <add sequence="/" />
+                </denyUrlSequences>
+            </requestFiltering>
+        </security>
+    </system.webServer>
+</configuration>
+XML;
+        file_put_contents(wb_storage_path('web.config'), $webConfig);
     }
 
     private static function schemaStatements(): array

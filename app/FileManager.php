@@ -494,7 +494,17 @@ final class FileManager
     {
         $pdo = Database::connection();
         $used = (int) $pdo->query('SELECT COALESCE(SUM(size), 0) FROM files')->fetchColumn();
-        $total = disk_total_space(wb_storage_path());
+        $total = @disk_total_space(wb_storage_path());
+        
+        if ($total === false) {
+            $total = @disk_total_space(WB_ROOT);
+        }
+        if ($total === false) {
+            $total = @disk_total_space('/');
+        }
+        if ($total === false && strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
+            $total = @disk_total_space('C:');
+        }
 
         return [
             'used_bytes' => $used,
