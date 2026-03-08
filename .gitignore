@@ -1,0 +1,11 @@
+storage/*
+!storage/.gitignore
+node_modules/
+frontend/node_modules/
+npm-debug.log*
+yarn.lock
+pnpm-lock.yaml
+.env
+.env.*
+.DS_Store
+Thumbs.db

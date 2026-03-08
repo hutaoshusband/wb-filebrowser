@@ -1,0 +1,16 @@
+{
+  "name": "wb-filebrowser",
+  "version": "1.0.0-alpha",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build"
+  },
+  "dependencies": {
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.3",
+    "vite": "^6.3.6"
+  }
+}
