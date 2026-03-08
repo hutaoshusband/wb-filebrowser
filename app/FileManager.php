@@ -271,6 +271,7 @@ final class FileManager
         }
 
         $originalName = wb_validate_entry_name($originalName, 'file');
+        Settings::assertUploadAllowed($originalName, $size);
 
         if ($size < 0) {
             throw new InvalidArgumentException('File size must be zero or greater.');
@@ -512,6 +513,49 @@ final class FileManager
             'total_bytes' => $total === false ? null : (int) $total,
             'total_label' => $total === false ? 'Unknown' : wb_format_bytes((int) $total),
         ];
+    }
+
+    public static function cleanupStaleUploads(int $ttlHours): int
+    {
+        $chunkRoot = wb_storage_path('chunks');
+
+        if (!is_dir($chunkRoot)) {
+            return 0;
+        }
+
+        $removed = 0;
+        $cutoff = time() - (max(1, $ttlHours) * 3600);
+        $items = scandir($chunkRoot) ?: [];
+
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') {
+                continue;
+            }
+
+            $directory = $chunkRoot . DIRECTORY_SEPARATOR . $item;
+
+            if (!is_dir($directory)) {
+                continue;
+            }
+
+            $timestamp = filemtime($directory) ?: 0;
+            $metaPath = $directory . DIRECTORY_SEPARATOR . 'meta.json';
+
+            if (is_file($metaPath)) {
+                $metadata = json_decode((string) file_get_contents($metaPath), true);
+                $createdAt = is_array($metadata) ? strtotime((string) ($metadata['created_at'] ?? '')) : false;
+                $timestamp = $createdAt === false ? $timestamp : $createdAt;
+            }
+
+            if ($timestamp === 0 || $timestamp > $cutoff) {
+                continue;
+            }
+
+            self::deleteDirectory($directory);
+            $removed += 1;
+        }
+
+        return $removed;
     }
 
     public static function folderTree(?array $user = null): array

@@ -69,7 +69,7 @@ final class Installer
         ];
     }
 
-    public static function install(string $username, string $password): array
+    public static function install(string $username, string $password, array $settings = []): array
     {
         if (self::isInstalled()) {
             throw new RuntimeException('wb-filebrowser is already installed.');
@@ -143,29 +143,12 @@ final class Installer
             $probeRelativePath = 'probe/' . $probeName;
             file_put_contents(wb_storage_path($probeRelativePath), "wb-filebrowser diagnostic probe\n");
 
-            $settings = [
-                'app_version' => self::VERSION,
-                'public_access' => '0',
-                'diagnostic_exposed' => '0',
-                'diagnostic_checked_at' => '',
-                'diagnostic_message' => '',
-                'probe_relative_path' => $probeRelativePath,
-                'root_folder_id' => (string) $rootFolderId,
-                'board_name' => 'wb-filebrowser',
-                'help_mode' => 'local',
-            ];
-
-            $settingStatement = $pdo->prepare(
-                'INSERT INTO settings (key, value, updated_at) VALUES (:key, :value, :updated_at)'
+            Settings::seedDefaults(
+                $pdo,
+                Settings::installOverrides($rootFolderId, $probeRelativePath, $settings),
+                true
             );
-
-            foreach ($settings as $key => $value) {
-                $settingStatement->execute([
-                    ':key' => $key,
-                    ':value' => $value,
-                    ':updated_at' => $now,
-                ]);
-            }
+            AutomationRunner::seedJobs($pdo);
 
             $pdo->commit();
 
@@ -250,6 +233,35 @@ XML;
         file_put_contents(wb_storage_path('web.config'), $webConfig);
     }
 
+    public static function migrate(): void
+    {
+        if (!self::isInstalled()) {
+            return;
+        }
+
+        $pdo = new PDO('sqlite:' . self::databasePath());
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+        $pdo->exec('PRAGMA foreign_keys = ON');
+
+        foreach (self::schemaStatements() as $statement) {
+            $pdo->exec($statement);
+        }
+
+        Settings::seedDefaults($pdo);
+        $statement = $pdo->prepare(
+            'INSERT INTO settings (key, value, updated_at)
+             VALUES (:key, :value, :updated_at)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
+        );
+        $statement->execute([
+            ':key' => 'app_version',
+            ':value' => self::VERSION,
+            ':updated_at' => wb_now(),
+        ]);
+        AutomationRunner::seedJobs($pdo);
+    }
+
     private static function schemaStatements(): array
     {
         return [
@@ -310,10 +322,23 @@ XML;
                 success INTEGER NOT NULL DEFAULT 0,
                 attempted_at TEXT NOT NULL
             )',
+            'CREATE TABLE IF NOT EXISTS automation_jobs (
+                job_key TEXT PRIMARY KEY,
+                label TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT \'idle\',
+                last_result TEXT NOT NULL DEFAULT \'idle\',
+                last_message TEXT NOT NULL DEFAULT \'\',
+                last_run_at TEXT NULL,
+                next_run_at TEXT NULL,
+                last_duration_ms INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )',
             'CREATE INDEX IF NOT EXISTS idx_folders_parent_id ON folders(parent_id)',
             'CREATE INDEX IF NOT EXISTS idx_files_folder_id ON files(folder_id)',
             'CREATE INDEX IF NOT EXISTS idx_permissions_principal ON folder_permissions(principal_type, principal_id)',
             'CREATE INDEX IF NOT EXISTS idx_login_attempts_lookup ON login_attempts(username, ip_address, attempted_at)',
+            'CREATE INDEX IF NOT EXISTS idx_automation_jobs_next_run ON automation_jobs(next_run_at)',
         ];
     }
 }

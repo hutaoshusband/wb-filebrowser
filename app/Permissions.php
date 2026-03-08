@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace WbFileBrowser;
 
 use PDO;
+use RuntimeException;
 
 final class Permissions
 {
@@ -132,6 +133,90 @@ final class Permissions
         return $user !== null && in_array($user['role'], ['super_admin', 'admin'], true);
     }
 
+    /**
+     * @return array{folders: array<int, array<string, mixed>>, permissions: array<int, array<string, mixed>>}
+     */
+    public static function matrix(array $actor, string $principalType, int $principalId, ?PDO $pdo = null): array
+    {
+        $pdo ??= Database::connection();
+        self::assertPrincipalAccess($actor, $principalType, $principalId, $pdo);
+        $statement = $pdo->prepare(
+            'SELECT folder_id, can_view, can_upload
+             FROM folder_permissions
+             WHERE principal_type = :principal_type AND principal_id = :principal_id'
+        );
+        $statement->execute([
+            ':principal_type' => $principalType,
+            ':principal_id' => $principalType === 'guest' ? 0 : $principalId,
+        ]);
+
+        return [
+            'folders' => FileManager::folderTree($actor),
+            'permissions' => $statement->fetchAll(),
+        ];
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $entries
+     */
+    public static function saveMatrix(array $actor, string $principalType, int $principalId, array $entries, ?PDO $pdo = null): void
+    {
+        $pdo ??= Database::connection();
+
+        if (!is_array($entries)) {
+            throw new RuntimeException('Permission entries must be an array.');
+        }
+
+        self::assertPrincipalAccess($actor, $principalType, $principalId, $pdo);
+        $pdo->beginTransaction();
+
+        try {
+            $deleteStatement = $pdo->prepare(
+                'DELETE FROM folder_permissions WHERE principal_type = :principal_type AND principal_id = :principal_id'
+            );
+            $deleteStatement->execute([
+                ':principal_type' => $principalType,
+                ':principal_id' => $principalType === 'guest' ? 0 : $principalId,
+            ]);
+
+            $insertStatement = $pdo->prepare(
+                'INSERT INTO folder_permissions (folder_id, principal_type, principal_id, can_view, can_upload, created_at, updated_at)
+                 VALUES (:folder_id, :principal_type, :principal_id, :can_view, :can_upload, :created_at, :updated_at)'
+            );
+
+            foreach ($entries as $entry) {
+                if (!is_array($entry)) {
+                    continue;
+                }
+
+                $canView = wb_parse_bool($entry['can_view'] ?? false);
+                $canUpload = wb_parse_bool($entry['can_upload'] ?? false);
+
+                if (!$canView && !$canUpload) {
+                    continue;
+                }
+
+                $insertStatement->execute([
+                    ':folder_id' => (int) ($entry['folder_id'] ?? 0),
+                    ':principal_type' => $principalType,
+                    ':principal_id' => $principalType === 'guest' ? 0 : $principalId,
+                    ':can_view' => $canView ? 1 : 0,
+                    ':can_upload' => $canUpload ? 1 : 0,
+                    ':created_at' => wb_now(),
+                    ':updated_at' => wb_now(),
+                ]);
+            }
+
+            $pdo->commit();
+        } catch (\Throwable $exception) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+
+            throw $exception;
+        }
+    }
+
     private static function expandDescendants(array $seedIds, array $childrenMap): array
     {
         $stack = array_values(array_unique(array_map('intval', $seedIds)));
@@ -169,5 +254,28 @@ final class Permissions
         }
 
         return array_map('intval', array_keys($seen));
+    }
+
+    private static function assertPrincipalAccess(array $actor, string $principalType, int $principalId, PDO $pdo): void
+    {
+        if (!in_array($principalType, ['guest', 'user'], true)) {
+            throw new RuntimeException('Unknown permission principal.');
+        }
+
+        if ($principalType === 'guest') {
+            return;
+        }
+
+        $principalStatement = $pdo->prepare('SELECT role FROM users WHERE id = :id LIMIT 1');
+        $principalStatement->execute([':id' => $principalId]);
+        $principalRole = $principalStatement->fetchColumn();
+
+        if ($principalRole === false) {
+            throw new RuntimeException('User not found.');
+        }
+
+        if ($actor['role'] !== 'super_admin' && $principalRole !== 'user') {
+            throw new RuntimeException('Admins can only manage standard user permissions.');
+        }
     }
 }

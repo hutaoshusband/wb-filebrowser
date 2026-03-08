@@ -1,0 +1,23 @@
+{
+  "name": "wb-filebrowser/app",
+  "type": "project",
+  "require-dev": {
+    "phpunit/phpunit": "^11.5"
+  },
+  "autoload": {
+    "psr-4": {
+      "WbFileBrowser\\": "app/"
+    },
+    "files": [
+      "app/helpers.php"
+    ]
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "WbFileBrowser\\Tests\\": "tests/php/"
+    }
+  },
+  "scripts": {
+    "test:php": "phpunit --configuration phpunit.xml"
+  }
+}

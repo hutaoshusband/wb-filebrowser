@@ -58,6 +58,30 @@ function wb_url(string $path = ''): string
     return ($basePath === '' ? '' : $basePath) . $normalized;
 }
 
+function wb_request_origin(): ?string
+{
+    $host = trim((string) ($_SERVER['HTTP_HOST'] ?? ''));
+
+    if ($host === '') {
+        return null;
+    }
+
+    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+
+    return $scheme . '://' . $host;
+}
+
+function wb_absolute_url(string $path = '', ?string $origin = null): ?string
+{
+    $origin ??= wb_request_origin();
+
+    if ($origin === null || $origin === '') {
+        return null;
+    }
+
+    return rtrim($origin, '/') . wb_url($path);
+}
+
 function wb_cookie_path(): string
 {
     $base = wb_url('/');

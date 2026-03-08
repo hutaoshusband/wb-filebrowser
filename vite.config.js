@@ -4,6 +4,10 @@ import { resolve } from 'node:path';
 
 export default defineConfig({
   plugins: [vue()],
+  test: {
+    environment: 'jsdom',
+    globals: true
+  },
   build: {
     outDir: resolve(__dirname, 'assets'),
     emptyOutDir: true,

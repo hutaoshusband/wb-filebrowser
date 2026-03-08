@@ -58,4 +58,9 @@ final class Database
     {
         return (int) (self::setting('root_folder_id', '1') ?? '1');
     }
+
+    public static function disconnect(): void
+    {
+        self::$connection = null;
+    }
 }

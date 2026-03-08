@@ -3,11 +3,13 @@
 declare(strict_types=1);
 
 use WbFileBrowser\Auth;
+use WbFileBrowser\AutomationRunner;
 use WbFileBrowser\Database;
 use WbFileBrowser\FileManager;
 use WbFileBrowser\Installer;
 use WbFileBrowser\Permissions;
 use WbFileBrowser\Security;
+use WbFileBrowser\Settings;
 
 require __DIR__ . '/../app/bootstrap.php';
 
@@ -41,7 +43,7 @@ try {
             $requireCsrf();
             $username = (string) ($requestData['username'] ?? '');
             $password = (string) ($requestData['password'] ?? '');
-            $result = Installer::install($username, $password);
+            $result = Installer::install($username, $password, $requestData);
             Security::regenerateSession();
             $_SESSION['user_id'] = $result['super_admin_id'];
             wb_json_response([
@@ -69,16 +71,11 @@ try {
                 'root_folder_id' => Database::rootFolderId(),
                 'app_version' => Database::setting('app_version', Installer::VERSION),
                 'storage' => FileManager::storageStats(),
-                'diagnostic' => [
-                    'exposed' => wb_parse_bool(Database::setting('diagnostic_exposed', '0')),
-                    'checked_at' => Database::setting('diagnostic_checked_at', ''),
-                    'message' => Database::setting('diagnostic_message', ''),
-                    'probe_path' => Database::setting('probe_relative_path', ''),
-                    'probe_url' => wb_url('/storage/' . Database::setting('probe_relative_path', '')),
-                ],
+                'diagnostic' => Settings::diagnosticState(),
+                'upload_policy' => Settings::uploadPolicy(),
                 'help' => [
                     'title' => 'Help',
-                    'body' => 'Keep the storage directory inaccessible from the web server. If the admin warning says your storage path is exposed, add an equivalent deny rule in Nginx or IIS before uploading real files.',
+                    'body' => 'Keep the storage directory inaccessible from the web server. Uploads are checked against the active upload policy before chunks are accepted.',
                 ],
             ]);
 
@@ -260,6 +257,7 @@ try {
         case 'admin.dashboard':
             Auth::requireAdmin();
             $pdo = Database::connection();
+            AutomationRunner::syncJobs($pdo);
             $counts = [
                 'users' => (int) $pdo->query('SELECT COUNT(*) FROM users')->fetchColumn(),
                 'files' => (int) $pdo->query('SELECT COUNT(*) FROM files')->fetchColumn(),
@@ -271,12 +269,11 @@ try {
                     ...FileManager::storageStats(),
                     ...$counts,
                 ],
-                'diagnostic' => [
-                    'exposed' => wb_parse_bool(Database::setting('diagnostic_exposed', '0')),
-                    'checked_at' => Database::setting('diagnostic_checked_at', ''),
-                    'message' => Database::setting('diagnostic_message', ''),
-                    'probe_url' => wb_url('/storage/' . Database::setting('probe_relative_path', '')),
+                'diagnostic' => Settings::diagnosticState(),
+                'automation' => [
+                    'jobs' => AutomationRunner::jobs($pdo),
                 ],
+                'upload_policy' => Settings::uploadPolicy($pdo),
                 'public_access' => Permissions::publicAccessEnabled($pdo),
             ]);
 
@@ -410,36 +407,11 @@ try {
             $actor = Auth::requireAdmin();
             $principalType = (string) ($_GET['principal_type'] ?? 'user');
             $principalId = $principalType === 'guest' ? 0 : (int) ($_GET['principal_id'] ?? 0);
-            $pdo = Database::connection();
-
-            if ($principalType === 'user') {
-                $principalStatement = $pdo->prepare('SELECT role FROM users WHERE id = :id LIMIT 1');
-                $principalStatement->execute([':id' => $principalId]);
-                $principalRole = $principalStatement->fetchColumn();
-
-                if ($principalRole === false) {
-                    wb_error_response('User not found.', 404);
-                }
-
-                if ($actor['role'] !== 'super_admin' && $principalRole !== 'user') {
-                    wb_error_response('Admins can only manage standard user permissions.', 403);
-                }
-            }
-
-            $tree = FileManager::folderTree(Auth::currentUser());
-            $statement = $pdo->prepare(
-                'SELECT folder_id, can_view, can_upload
-                 FROM folder_permissions
-                 WHERE principal_type = :principal_type AND principal_id = :principal_id'
-            );
-            $statement->execute([
-                ':principal_type' => $principalType,
-                ':principal_id' => $principalId,
-            ]);
+            $matrix = Permissions::matrix($actor, $principalType, $principalId);
             wb_json_response([
                 'ok' => true,
-                'folders' => $tree,
-                'permissions' => $statement->fetchAll(),
+                'folders' => $matrix['folders'],
+                'permissions' => $matrix['permissions'],
             ]);
 
         case 'admin.permissions.save':
@@ -448,101 +420,55 @@ try {
             $principalType = (string) ($requestData['principal_type'] ?? 'user');
             $principalId = $principalType === 'guest' ? 0 : (int) ($requestData['principal_id'] ?? 0);
             $entries = $requestData['entries'] ?? [];
-
-            if (!is_array($entries)) {
-                wb_error_response('Permission entries must be an array.', 422);
-            }
-
-            $pdo = Database::connection();
-
-            if ($principalType === 'user') {
-                $principalStatement = $pdo->prepare('SELECT role FROM users WHERE id = :id LIMIT 1');
-                $principalStatement->execute([':id' => $principalId]);
-                $principalRole = $principalStatement->fetchColumn();
-
-                if ($principalRole === false) {
-                    wb_error_response('User not found.', 404);
-                }
-
-                if ($actor['role'] !== 'super_admin' && $principalRole !== 'user') {
-                    wb_error_response('Admins can only manage standard user permissions.', 403);
-                }
-            }
-
-            $pdo->beginTransaction();
-            $deleteStatement = $pdo->prepare('DELETE FROM folder_permissions WHERE principal_type = :principal_type AND principal_id = :principal_id');
-            $deleteStatement->execute([
-                ':principal_type' => $principalType,
-                ':principal_id' => $principalId,
-            ]);
-
-            $insertStatement = $pdo->prepare(
-                'INSERT INTO folder_permissions (folder_id, principal_type, principal_id, can_view, can_upload, created_at, updated_at)
-                 VALUES (:folder_id, :principal_type, :principal_id, :can_view, :can_upload, :created_at, :updated_at)'
-            );
-
-            foreach ($entries as $entry) {
-                if (!is_array($entry)) {
-                    continue;
-                }
-
-                $canView = wb_parse_bool($entry['can_view'] ?? false);
-                $canUpload = wb_parse_bool($entry['can_upload'] ?? false);
-
-                if (!$canView && !$canUpload) {
-                    continue;
-                }
-
-                $insertStatement->execute([
-                    ':folder_id' => (int) ($entry['folder_id'] ?? 0),
-                    ':principal_type' => $principalType,
-                    ':principal_id' => $principalId,
-                    ':can_view' => $canView ? 1 : 0,
-                    ':can_upload' => $canUpload ? 1 : 0,
-                    ':created_at' => wb_now(),
-                    ':updated_at' => wb_now(),
-                ]);
-            }
-
-            $pdo->commit();
+            Permissions::saveMatrix($actor, $principalType, $principalId, is_array($entries) ? $entries : []);
             wb_json_response(['ok' => true]);
 
         case 'admin.settings.get':
             $user = Auth::requireAdmin();
             wb_json_response([
                 'ok' => true,
-                'settings' => [
-                    'public_access' => Permissions::publicAccessEnabled(),
-                    'app_version' => Database::setting('app_version', Installer::VERSION),
-                ],
+                ...Settings::adminPayload(),
                 'can_manage_settings' => $user['role'] === 'super_admin',
             ]);
 
         case 'admin.settings.save':
             $requireCsrf();
             Auth::requireSuperAdmin();
-            Database::updateSetting('public_access', wb_parse_bool($requestData['public_access'] ?? false) ? '1' : '0');
-            wb_json_response(['ok' => true]);
+            $settings = Settings::saveAdminSettings($requestData);
+            wb_json_response([
+                'ok' => true,
+                'settings' => $settings,
+                'automation' => [
+                    'jobs' => AutomationRunner::jobs(),
+                ],
+                'diagnostics' => Settings::diagnosticState(),
+            ]);
+
+        case 'admin.automation.tick':
+            $requireCsrf();
+            Auth::requireAdmin();
+            wb_json_response([
+                'ok' => true,
+                ...AutomationRunner::tick(wb_request_origin()),
+            ]);
+
+        case 'admin.automation.run':
+            $requireCsrf();
+            Auth::requireAdmin();
+            wb_json_response([
+                'ok' => true,
+                ...AutomationRunner::run((string) ($requestData['job_key'] ?? ''), wb_request_origin()),
+            ]);
 
         case 'admin.diagnostic.update':
             $requireCsrf();
             Auth::requireAdmin();
-            $exposed = wb_parse_bool($requestData['exposed'] ?? false);
-            
-            if ($exposed) {
-                // Auto-resolve attempt
-                Installer::writeStorageShield();
-            }
-            
-            Database::updateSetting('diagnostic_exposed', $exposed ? '1' : '0');
-            Database::updateSetting('diagnostic_checked_at', wb_now());
-            Database::updateSetting(
-                'diagnostic_message',
-                $exposed
-                    ? 'Your server served a file directly from /storage/. We automatically regenerated .htaccess and web.config to shield it. Refresh to test, or manually configure your web server.'
-                    : 'The latest probe could not be fetched directly. Storage appears shielded from public access.'
-            );
-            wb_json_response(['ok' => true]);
+            $result = AutomationRunner::evaluateStorageShield(wb_request_origin());
+            wb_json_response([
+                'ok' => true,
+                'result' => $result,
+                'diagnostic' => Settings::diagnosticState(),
+            ]);
 
         default:
             wb_error_response('Unknown API action.', 404);

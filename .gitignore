@@ -9,3 +9,5 @@ pnpm-lock.yaml
 .env.*
 .DS_Store
 Thumbs.db
+.composer-home/
+.phpunit.cache/

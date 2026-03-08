@@ -15,18 +15,25 @@ if (!defined('WB_STORAGE')) {
 }
 
 require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/Settings.php';
 require_once __DIR__ . '/Installer.php';
 require_once __DIR__ . '/Database.php';
 require_once __DIR__ . '/Security.php';
 require_once __DIR__ . '/Auth.php';
 require_once __DIR__ . '/Permissions.php';
 require_once __DIR__ . '/FileManager.php';
+require_once __DIR__ . '/AutomationRunner.php';
 
 if (!defined('WB_BASE_PATH')) {
     define('WB_BASE_PATH', wb_detect_base_path());
 }
 
 Installer::ensureRuntimeDirectories();
+
+if (Installer::isInstalled()) {
+    Installer::migrate();
+}
+
 Security::startSession();
 
 function wb_bootstrap_page(string $surface): array
