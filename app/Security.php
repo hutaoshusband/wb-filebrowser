@@ -75,15 +75,11 @@ final class Security
 
     public static function clientIp(): string
     {
-        foreach (['HTTP_CF_CONNECTING_IP', 'HTTP_X_FORWARDED_FOR', 'REMOTE_ADDR'] as $key) {
-            $value = trim((string) ($_SERVER[$key] ?? ''));
-
-            if ($value !== '') {
-                return trim(explode(',', $value)[0]);
-            }
-        }
-
-        return 'unknown';
+        // Relying on HTTP_CF_CONNECTING_IP or HTTP_X_FORWARDED_FOR unconditionally allows IP spoofing.
+        // An attacker can easily spoof these headers to bypass rate limits (e.g., brute-forcing logins).
+        // It is highly recommended to configure the web server (e.g., Nginx real_ip_module or Apache mod_remoteip) 
+        // to set the true client IP in REMOTE_ADDR natively.
+        return (string) ($_SERVER['REMOTE_ADDR'] ?? 'unknown');
     }
 
     public static function sendFile(string $path, string $mimeType, string $downloadName, string $disposition = 'inline'): never
@@ -129,6 +125,11 @@ final class Security
         header('Accept-Ranges: bytes');
         header('Cache-Control: private, max-age=0, must-revalidate');
         header('Content-Length: ' . $length);
+        
+        // ADDED TO PREVENT STORED XSS:
+        // A rigid CSP strictly prohibits HTML/JS and plugins from executing when viewed inline in the browser.
+        header("Content-Security-Policy: default-src 'none'; media-src 'self'; style-src 'unsafe-inline'; sandbox");
+        header('X-Content-Type-Options: nosniff');
 
         if ($status === 206) {
             header(sprintf('Content-Range: bytes %d-%d/%d', $start, $end, $size));

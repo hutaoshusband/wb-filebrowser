@@ -674,6 +674,10 @@ final class FileManager
 
     private static function readUploadMetadata(string $token): array
     {
+        if (!ctype_xdigit($token)) {
+            throw new RuntimeException('Upload session token is invalid.');
+        }
+
         $path = wb_storage_path('chunks/' . $token . '/meta.json');
 
         if (!is_file($path)) {
