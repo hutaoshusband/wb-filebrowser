@@ -511,15 +511,20 @@ function handleContextMenu(event, item) {
 }
 
 function previewMode(item) {
-  const mime = item?.mime_type ?? '';
-  const extension = item?.extension ?? '';
+  return item?.preview_mode ?? 'download';
+}
 
-  if (mime.startsWith('image/')) return 'image';
-  if (mime === 'application/pdf') return 'pdf';
-  if (mime.startsWith('video/')) return 'video';
-  if (mime.startsWith('audio/')) return 'audio';
-  if (mime.startsWith('text/') || ['json', 'md', 'markdown', 'xml', 'yml', 'yaml', 'js', 'ts', 'php', 'css', 'html', 'sql'].includes(extension)) return 'text';
-  return 'download';
+function fallbackBadge(item) {
+  const extension = String(item?.extension ?? '').replace(/^\./, '').trim().toUpperCase();
+  return extension === '' ? 'FILE' : extension.slice(0, 10);
+}
+
+function fallbackIconUrl(item) {
+  return item?.fallback_icon_url ?? `${basePath}/media/file-fallbacks/binary.svg`;
+}
+
+function fallbackLabel(item) {
+  return item?.fallback_label ?? 'Download-only file';
 }
 
 async function openPreview(item) {
@@ -623,6 +628,10 @@ async function uploadFiles(files) {
     return;
   }
 
+  const uploadedFileCount = files.length;
+  const uploadedFileName = files[0]?.name ?? 'file';
+  const uploadedBy = session.user?.username ?? 'unknown user';
+
   for (const file of files) {
     const uploadError = validateUploadCandidate(file, session.uploadPolicy);
 
@@ -663,7 +672,11 @@ async function uploadFiles(files) {
   uploadProgress.value = null;
   await refreshSession();
   await loadFolder(route.folderId);
-  showMessage('Upload complete.');
+  showMessage(
+    uploadedFileCount === 1
+      ? `Uploaded file by ${uploadedBy}: ${uploadedFileName}.`
+      : `Uploaded ${uploadedFileCount} files by ${uploadedBy}.`,
+  );
 }
 
 async function createFolder() {
@@ -2095,10 +2108,12 @@ onBeforeUnmount(() => {
             <video v-else-if="previewMode(previewItem) === 'video'" :src="previewItem.preview_url" controls></video>
             <audio v-else-if="previewMode(previewItem) === 'audio'" :src="previewItem.preview_url" controls></audio>
             <pre v-else-if="previewMode(previewItem) === 'text'">{{ previewText }}</pre>
-            <div v-else class="empty-state compact">
-              <h3>Preview not available</h3>
-              <p>Office files and other non-browser-native formats fall back to secure download.</p>
-              <button type="button" @click="downloadSelected">Download file</button>
+            <div v-else class="file-fallback">
+              <img class="file-fallback__icon" :src="fallbackIconUrl(previewItem)" alt="">
+              <span class="file-fallback__badge">{{ fallbackBadge(previewItem) }}</span>
+              <strong>{{ fallbackLabel(previewItem) }}</strong>
+              <p>Browser preview is unavailable for this format. Use the secure download action to open it locally.</p>
+              <button class="header-button primary-button" type="button" @click="downloadSelected">Download file</button>
             </div>
           </div>
           <aside class="preview-sidebar">
@@ -2114,11 +2129,11 @@ onBeforeUnmount(() => {
               <p v-else>No public share link is active for this file yet.</p>
               <label>
                 <span>Expires at</span>
-                <input v-model="shareForm.expiresAtLocal" type="datetime-local">
+                <input v-model="shareForm.expiresAtLocal" class="share-panel__input" type="datetime-local">
               </label>
               <label>
                 <span>Max page opens</span>
-                <input v-model="shareForm.maxViews" type="number" min="1" step="1" placeholder="Unlimited">
+                <input v-model="shareForm.maxViews" class="share-panel__input" type="number" min="1" step="1" placeholder="Unlimited">
               </label>
               <small class="panel-meta">
                 <template v-if="shareState.fileId === previewItem.id && shareState.link">
@@ -2158,11 +2173,11 @@ onBeforeUnmount(() => {
         <p v-else>No public share link is active for this file yet.</p>
         <label>
           <span>Expires at</span>
-          <input v-model="shareForm.expiresAtLocal" type="datetime-local">
+          <input v-model="shareForm.expiresAtLocal" class="share-panel__input" type="datetime-local">
         </label>
         <label>
           <span>Max page opens</span>
-          <input v-model="shareForm.maxViews" type="number" min="1" step="1" placeholder="Unlimited">
+          <input v-model="shareForm.maxViews" class="share-panel__input" type="number" min="1" step="1" placeholder="Unlimited">
         </label>
         <small class="panel-meta">
           <template v-if="shareState.fileId === infoItem.id && shareState.link">

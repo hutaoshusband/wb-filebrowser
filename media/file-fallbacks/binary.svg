@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" role="img" aria-labelledby="title desc">
+  <title id="title">Binary file</title>
+  <desc id="desc">Stylized generic binary file icon.</desc>
+  <rect x="8" y="8" width="144" height="144" rx="34" fill="#09111d"/>
+  <rect x="42" y="34" width="76" height="92" rx="20" fill="#11213a" stroke="#93c5fd" stroke-opacity=".22"/>
+  <path d="M58 56h44m-44 18h44m-44 18h44" stroke="#93c5fd" stroke-linecap="round" stroke-opacity=".34" stroke-width="5"/>
+  <rect x="50" y="96" width="60" height="22" rx="11" fill="#facc15" fill-opacity=".14" stroke="#facc15" stroke-opacity=".3"/>
+  <text x="80" y="111" fill="#fde68a" font-family="Trebuchet MS, Segoe UI, sans-serif" font-size="18" font-weight="700" text-anchor="middle">BIN</text>
+</svg>

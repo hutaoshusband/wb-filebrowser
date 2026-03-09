@@ -49,6 +49,46 @@ function jsonResponse(payload) {
   };
 }
 
+function browserFile(overrides = {}) {
+  return {
+    id: 7,
+    type: 'file',
+    name: 'brochure.pdf',
+    folder_id: 1,
+    size: 1024,
+    size_label: '1 KB',
+    mime_type: 'application/pdf',
+    updated_at: '2026-03-09T00:00:00Z',
+    updated_relative: 'just now',
+    checksum: 'abc123',
+    extension: 'pdf',
+    can_edit: true,
+    can_delete: true,
+    preview_mode: 'pdf',
+    fallback_variant: null,
+    fallback_icon_url: null,
+    fallback_label: null,
+    preview_url: 'http://localhost/api/index.php?action=files.stream&id=7&disposition=inline',
+    download_url: 'http://localhost/api/index.php?action=files.stream&id=7&disposition=attachment',
+    ...overrides,
+  };
+}
+
+function browserTreePayload(fileOverrides = {}) {
+  return {
+    data: {
+      folder: { id: 1, type: 'folder', name: 'Home', parent_id: null, updated_relative: 'just now' },
+      breadcrumbs: [{ id: 1, name: 'Home' }],
+      folders: [],
+      files: [browserFile(fileOverrides)],
+      can_upload: true,
+      can_create_folders: true,
+      can_edit: true,
+      can_delete: true,
+    },
+  };
+}
+
 function installFetchStub(overrides = {}) {
   const calls = [];
   const handlers = {
@@ -211,36 +251,7 @@ async function mountBrowserApp({ hash = '', handlers = {} } = {}) {
     app_version: '1.0.0-alpha',
   };
   const fetchState = installFetchStub({
-    'tree.list': () => jsonResponse({
-      data: {
-        folder: { id: 1, type: 'folder', name: 'Home', parent_id: null, updated_relative: 'just now' },
-        breadcrumbs: [{ id: 1, name: 'Home' }],
-        folders: [],
-        files: [
-          {
-            id: 7,
-            type: 'file',
-            name: 'brochure.pdf',
-            folder_id: 1,
-            size: 1024,
-            size_label: '1 KB',
-            mime_type: 'application/pdf',
-            updated_at: '2026-03-09T00:00:00Z',
-            updated_relative: 'just now',
-            checksum: 'abc123',
-            extension: 'pdf',
-            can_edit: true,
-            can_delete: true,
-            preview_url: 'http://localhost/api/index.php?action=files.stream&id=7&disposition=inline',
-            download_url: 'http://localhost/api/index.php?action=files.stream&id=7&disposition=attachment',
-          },
-        ],
-        can_upload: true,
-        can_create_folders: true,
-        can_edit: true,
-        can_delete: true,
-      },
-    }),
+    'tree.list': () => jsonResponse(browserTreePayload()),
     ...handlers,
   });
   const wrapper = mount(App);
@@ -389,6 +400,29 @@ describe('Admin app shell', () => {
     expect(clipboardWrite).toHaveBeenCalledWith('http://localhost/share/?token=feedfacefeedfacefeedfacefeedface');
   });
 
+  it('renders a branded fallback card for jar files', async () => {
+    const { wrapper } = await mountBrowserApp({
+      handlers: {
+        'tree.list': () => jsonResponse(browserTreePayload({
+          name: 'client.jar',
+          mime_type: 'application/zip',
+          extension: 'jar',
+          preview_mode: 'download',
+          fallback_variant: 'jar',
+          fallback_icon_url: '/media/file-fallbacks/jar.svg',
+          fallback_label: 'Java archive',
+        })),
+      },
+    });
+
+    await wrapper.find('tbody tr').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Java archive');
+    expect(wrapper.find('.file-fallback__badge').text()).toBe('JAR');
+    expect(wrapper.find('.file-fallback__icon').attributes('src')).toBe('/media/file-fallbacks/jar.svg');
+  });
+
   it('upserts share settings with expiry and max views', async () => {
     const { wrapper, calls } = await mountBrowserApp({
       handlers: {
@@ -414,7 +448,8 @@ describe('Admin app shell', () => {
     await wrapper.find('tbody tr').trigger('click');
     await flushPromises();
 
-    const shareInputs = wrapper.findAll('.share-panel input, .preview-sidebar input');
+    const shareInputs = wrapper.findAll('.share-panel__input');
+    expect(shareInputs).toHaveLength(2);
     await shareInputs[0].setValue('2026-03-10T10:30');
     await shareInputs[1].setValue('5');
 
@@ -426,5 +461,64 @@ describe('Admin app shell', () => {
 
     expect(body.max_views).toBe(5);
     expect(body.expires_at).toContain('2026-03-10T');
+  });
+
+  it('shows a username-aware upload toast for a single file', async () => {
+    const { wrapper } = await mountBrowserApp({
+      handlers: {
+        'upload.init': () => jsonResponse({
+          data: {
+            upload_token: 'upload-token',
+            chunk_size: 2097152,
+          },
+        }),
+        'upload.chunk': () => jsonResponse({}),
+        'upload.complete': () => jsonResponse({}),
+      },
+    });
+
+    const input = wrapper.find('input[type="file"]');
+    const file = new File(['hello'], 'setup.jar', { type: 'application/java-archive' });
+    Object.defineProperty(input.element, 'files', {
+      value: [file],
+      configurable: true,
+    });
+
+    await input.trigger('change');
+    await flushPromises();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Uploaded file by admin: setup.jar.');
+  });
+
+  it('shows a username-aware upload toast for multiple files', async () => {
+    const { wrapper } = await mountBrowserApp({
+      handlers: {
+        'upload.init': () => jsonResponse({
+          data: {
+            upload_token: 'upload-token',
+            chunk_size: 2097152,
+          },
+        }),
+        'upload.chunk': () => jsonResponse({}),
+        'upload.complete': () => jsonResponse({}),
+      },
+    });
+
+    const input = wrapper.find('input[type="file"]');
+    const files = [
+      new File(['one'], 'first.jar', { type: 'application/java-archive' }),
+      new File(['two'], 'second.exe', { type: 'application/vnd.microsoft.portable-executable' }),
+    ];
+    Object.defineProperty(input.element, 'files', {
+      value: files,
+      configurable: true,
+    });
+
+    await input.trigger('change');
+    await flushPromises();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Uploaded 2 files by admin.');
   });
 });

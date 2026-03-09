@@ -673,8 +673,9 @@ final class FileManager
     {
         $extension = strtolower(pathinfo((string) $file['original_name'], PATHINFO_EXTENSION));
         $folderId = (int) $file['folder_id'];
+        $preview = wb_file_preview_metadata((string) $file['mime_type'], $extension);
 
-        return [
+        return array_merge([
             'id' => (int) $file['id'],
             'type' => 'file',
             'name' => $file['original_name'],
@@ -690,7 +691,7 @@ final class FileManager
             'can_delete' => Permissions::canDeleteFolder($folderId, $user, $pdo, $scope),
             'preview_url' => wb_url('/api/index.php?action=files.stream&id=' . (int) $file['id'] . '&disposition=inline'),
             'download_url' => wb_url('/api/index.php?action=files.stream&id=' . (int) $file['id'] . '&disposition=attachment'),
-        ];
+        ], $preview);
     }
 
     private static function sortEntries(array &$entries, string $sort, string $direction, bool $folders): void

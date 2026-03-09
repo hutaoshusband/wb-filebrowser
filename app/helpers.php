@@ -280,3 +280,153 @@ function wb_relative_time(?string $isoDate): string
 
     return $future ? 'in a moment' : 'just now';
 }
+
+/**
+ * @return array<int, string>
+ */
+function wb_text_preview_extensions(): array
+{
+    static $extensions = ['json', 'md', 'markdown', 'xml', 'yml', 'yaml', 'js', 'ts', 'php', 'css', 'html', 'sql'];
+
+    return $extensions;
+}
+
+function wb_file_extension_badge(string $extension): string
+{
+    $badge = strtoupper(ltrim(trim($extension), '.'));
+
+    if ($badge === '') {
+        return 'FILE';
+    }
+
+    return substr($badge, 0, 10);
+}
+
+/**
+ * @return array{variant: string, icon: string, label: string}
+ */
+function wb_file_fallback_metadata(string $extension, string $mimeType = ''): array
+{
+    $extension = strtolower(ltrim(trim($extension), '.'));
+    $mimeType = strtolower(trim($mimeType));
+
+    if ($extension === 'jar' || $mimeType === 'application/java-archive') {
+        return [
+            'variant' => 'jar',
+            'icon' => 'jar',
+            'label' => 'Java archive',
+        ];
+    }
+
+    if ($extension === 'exe' || in_array($mimeType, ['application/vnd.microsoft.portable-executable', 'application/x-msdownload'], true)) {
+        return [
+            'variant' => 'exe',
+            'icon' => 'exe',
+            'label' => 'Windows executable',
+        ];
+    }
+
+    if (in_array($extension, ['msi', 'bat', 'cmd', 'com', 'scr', 'ps1'], true)) {
+        return [
+            'variant' => 'executable',
+            'icon' => 'executable',
+            'label' => 'Executable file',
+        ];
+    }
+
+    if (
+        in_array($extension, ['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'tgz'], true)
+        || in_array($mimeType, ['application/zip', 'application/x-7z-compressed', 'application/x-rar-compressed', 'application/gzip', 'application/x-tar'], true)
+    ) {
+        return [
+            'variant' => 'archive',
+            'icon' => 'archive',
+            'label' => 'Archive file',
+        ];
+    }
+
+    if (
+        in_array($extension, ['apk', 'dmg', 'pkg', 'iso', 'deb', 'rpm', 'appimage'], true)
+        || in_array($mimeType, ['application/vnd.android.package-archive', 'application/x-iso9660-image'], true)
+    ) {
+        return [
+            'variant' => 'package',
+            'icon' => 'package',
+            'label' => 'Installable package',
+        ];
+    }
+
+    return [
+        'variant' => 'binary',
+        'icon' => 'binary',
+        'label' => 'Binary file',
+    ];
+}
+
+/**
+ * @return array{
+ *   preview_mode: string,
+ *   fallback_variant: ?string,
+ *   fallback_icon_url: ?string,
+ *   fallback_label: ?string
+ * }
+ */
+function wb_file_preview_metadata(string $mimeType, string $extension): array
+{
+    $mimeType = strtolower(trim($mimeType));
+    $extension = strtolower(ltrim(trim($extension), '.'));
+
+    if (str_starts_with($mimeType, 'image/')) {
+        return [
+            'preview_mode' => 'image',
+            'fallback_variant' => null,
+            'fallback_icon_url' => null,
+            'fallback_label' => null,
+        ];
+    }
+
+    if ($mimeType === 'application/pdf') {
+        return [
+            'preview_mode' => 'pdf',
+            'fallback_variant' => null,
+            'fallback_icon_url' => null,
+            'fallback_label' => null,
+        ];
+    }
+
+    if (str_starts_with($mimeType, 'video/')) {
+        return [
+            'preview_mode' => 'video',
+            'fallback_variant' => null,
+            'fallback_icon_url' => null,
+            'fallback_label' => null,
+        ];
+    }
+
+    if (str_starts_with($mimeType, 'audio/')) {
+        return [
+            'preview_mode' => 'audio',
+            'fallback_variant' => null,
+            'fallback_icon_url' => null,
+            'fallback_label' => null,
+        ];
+    }
+
+    if (str_starts_with($mimeType, 'text/') || in_array($extension, wb_text_preview_extensions(), true)) {
+        return [
+            'preview_mode' => 'text',
+            'fallback_variant' => null,
+            'fallback_icon_url' => null,
+            'fallback_label' => null,
+        ];
+    }
+
+    $fallback = wb_file_fallback_metadata($extension, $mimeType);
+
+    return [
+        'preview_mode' => 'download',
+        'fallback_variant' => $fallback['variant'],
+        'fallback_icon_url' => wb_url('/media/file-fallbacks/' . $fallback['icon'] . '.svg'),
+        'fallback_label' => $fallback['label'],
+    ];
+}

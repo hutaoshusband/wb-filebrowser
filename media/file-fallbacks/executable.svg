@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" role="img" aria-labelledby="title desc">
+  <title id="title">Executable file</title>
+  <desc id="desc">Stylized executable family icon.</desc>
+  <rect x="8" y="8" width="144" height="144" rx="34" fill="#0c1525"/>
+  <rect x="28" y="38" width="104" height="84" rx="20" fill="#152742" stroke="#facc15" stroke-opacity=".22"/>
+  <path d="M44 58h72" stroke="#93c5fd" stroke-linecap="round" stroke-opacity=".45" stroke-width="6"/>
+  <path d="M44 78h34" stroke="#facc15" stroke-linecap="round" stroke-opacity=".65" stroke-width="6"/>
+  <path d="M44 98h54" stroke="#93c5fd" stroke-linecap="round" stroke-opacity=".3" stroke-width="6"/>
+  <circle cx="112" cy="94" r="12" fill="#facc15" fill-opacity=".18" stroke="#facc15" stroke-opacity=".38"/>
+  <path d="M112 86v16m-8-8h16" stroke="#fde68a" stroke-linecap="round" stroke-width="4"/>
+  <text x="80" y="136" fill="#e5e7eb" font-family="Trebuchet MS, Segoe UI, sans-serif" font-size="18" font-weight="700" text-anchor="middle">RUN</text>
+</svg>

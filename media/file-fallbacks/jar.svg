@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" role="img" aria-labelledby="title desc">
+  <title id="title">Java archive</title>
+  <desc id="desc">Stylized jar file icon.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0%" stop-color="#162946"/>
+      <stop offset="100%" stop-color="#091220"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0%" stop-color="#2b4b73"/>
+      <stop offset="100%" stop-color="#11223b"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="144" height="144" rx="34" fill="url(#bg)" stroke="#ffffff" stroke-opacity=".18"/>
+  <rect x="42" y="50" width="76" height="68" rx="18" fill="url(#glass)" stroke="#facc15" stroke-opacity=".38"/>
+  <rect x="52" y="40" width="56" height="16" rx="8" fill="#facc15" fill-opacity=".2" stroke="#facc15" stroke-opacity=".45"/>
+  <path d="M66 83c10-8 20-8 30 0-4 10-26 10-30 0Z" fill="#facc15" fill-opacity=".85"/>
+  <path d="M77 37c6-6 3-11 1-15m14 17c6-6 3-11 1-15" fill="none" stroke="#facc15" stroke-linecap="round" stroke-width="4"/>
+  <rect x="49" y="122" width="62" height="18" rx="9" fill="#050a14" fill-opacity=".58" stroke="#facc15" stroke-opacity=".2"/>
+  <text x="80" y="135" fill="#fef3c7" font-family="Trebuchet MS, Segoe UI, sans-serif" font-size="22" font-weight="700" text-anchor="middle">JAR</text>
+</svg>

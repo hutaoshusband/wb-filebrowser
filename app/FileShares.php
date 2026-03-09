@@ -155,7 +155,7 @@ final class FileShares
             $share = self::resolveActiveShare($token, $pdo);
             $share = self::incrementViewCount($share, $pdo);
             $file = self::serializeSharedFile($share);
-            $previewMode = self::previewMode($file['mime_type'], $file['extension']);
+            $previewMode = (string) $file['preview_mode'];
             $textPreview = null;
             $textPreviewTruncated = false;
 
@@ -422,8 +422,9 @@ final class FileShares
     {
         $extension = strtolower(pathinfo((string) $share['original_name'], PATHINFO_EXTENSION));
         $urls = self::shareStreamUrls((string) $share['token']);
+        $preview = wb_file_preview_metadata((string) $share['mime_type'], $extension);
 
-        return [
+        return array_merge([
             'id' => (int) $share['file_id'],
             'type' => 'file',
             'name' => (string) $share['original_name'],
@@ -437,7 +438,7 @@ final class FileShares
             'extension' => $extension,
             'preview_url' => $urls['inline'],
             'download_url' => $urls['attachment'],
-        ];
+        ], $preview);
     }
 
     private static function shareUrls(string $token): array
@@ -500,31 +501,6 @@ final class FileShares
             'expires_at' => $normalizedExpiresAt,
             'max_views' => $normalizedMaxViews,
         ];
-    }
-
-    private static function previewMode(string $mimeType, string $extension): string
-    {
-        if (str_starts_with($mimeType, 'image/')) {
-            return 'image';
-        }
-
-        if ($mimeType === 'application/pdf') {
-            return 'pdf';
-        }
-
-        if (str_starts_with($mimeType, 'video/')) {
-            return 'video';
-        }
-
-        if (str_starts_with($mimeType, 'audio/')) {
-            return 'audio';
-        }
-
-        if (str_starts_with($mimeType, 'text/') || in_array($extension, ['json', 'md', 'markdown', 'xml', 'yml', 'yaml', 'js', 'ts', 'php', 'css', 'html', 'sql'], true)) {
-            return 'text';
-        }
-
-        return 'download';
     }
 
     /**

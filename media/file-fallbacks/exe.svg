@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" role="img" aria-labelledby="title desc">
+  <title id="title">Windows executable</title>
+  <desc id="desc">Stylized executable file icon.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0%" stop-color="#182847"/>
+      <stop offset="100%" stop-color="#09111d"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="144" height="144" rx="34" fill="url(#bg)"/>
+  <path d="M48 34h42l26 26v66H48Z" fill="#10213a" stroke="#7dd3fc" stroke-opacity=".28"/>
+  <path d="M90 34v26h26" fill="#1d3658"/>
+  <rect x="56" y="78" width="48" height="18" rx="9" fill="#facc15" fill-opacity=".18" stroke="#facc15" stroke-opacity=".38"/>
+  <text x="80" y="91" fill="#fde68a" font-family="Trebuchet MS, Segoe UI, sans-serif" font-size="18" font-weight="700" text-anchor="middle">.EXE</text>
+  <path d="M55 112h54" stroke="#93c5fd" stroke-linecap="round" stroke-opacity=".5"/>
+  <path d="M55 122h36" stroke="#93c5fd" stroke-linecap="round" stroke-opacity=".32"/>
+</svg>

@@ -56,7 +56,10 @@ try {
                 <?php
                 $file = $payload['file'];
                 $share = $payload['share'];
-                $previewMode = $payload['preview_mode'];
+                $previewMode = (string) ($file['preview_mode'] ?? $payload['preview_mode']);
+                $fallbackBadge = wb_file_extension_badge((string) ($file['extension'] ?? ''));
+                $fallbackLabel = (string) ($file['fallback_label'] ?? 'Download-only file');
+                $fallbackIconUrl = (string) ($file['fallback_icon_url'] ?? wb_url('/media/file-fallbacks/binary.svg'));
                 ?>
                 <header class="share-header">
                     <div>
@@ -65,7 +68,7 @@ try {
                         <p><?= wb_h($file['mime_type']) ?></p>
                     </div>
                     <div class="share-actions">
-                        <a class="header-button" href="<?= wb_h($share['download_url']) ?>">Download</a>
+                        <a class="header-button" href="<?= wb_h($file['download_url']) ?>">Download</a>
                     </div>
                 </header>
 
@@ -87,9 +90,12 @@ try {
                                 <?php endif; ?>
                             </div>
                         <?php else: ?>
-                            <div class="empty-state compact">
-                                <h2>Preview not available</h2>
-                                <p>Use the download button in the top right to save this file.</p>
+                            <div class="file-fallback file-fallback--share">
+                                <img class="file-fallback__icon" src="<?= wb_h($fallbackIconUrl) ?>" alt="">
+                                <span class="file-fallback__badge"><?= wb_h($fallbackBadge) ?></span>
+                                <strong><?= wb_h($fallbackLabel) ?></strong>
+                                <p>Browser preview is unavailable for this format. Use the secure download action to open it locally.</p>
+                                <a class="header-button primary-button" href="<?= wb_h($file['download_url']) ?>">Download file</a>
                             </div>
                         <?php endif; ?>
                     </div>

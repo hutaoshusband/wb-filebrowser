@@ -97,4 +97,17 @@ final class FileShareTest extends DatabaseTestCase
 
         FileShares::viewPayload($share['token']);
     }
+
+    public function testSharePayloadIncludesFallbackMetadataForDownloadOnlyFiles(): void
+    {
+        $file = $this->createFile('client.jar', 'binary data', 'application/zip');
+        $share = FileShares::create($this->superAdmin(), (int) $file['id']);
+        $payload = FileShares::viewPayload($share['token']);
+
+        $this->assertSame('download', $payload['preview_mode']);
+        $this->assertSame('download', $payload['file']['preview_mode']);
+        $this->assertSame('jar', $payload['file']['fallback_variant']);
+        $this->assertSame('Java archive', $payload['file']['fallback_label']);
+        $this->assertStringContainsString('/media/file-fallbacks/jar.svg', $payload['file']['fallback_icon_url']);
+    }
 }

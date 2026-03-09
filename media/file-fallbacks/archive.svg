@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" role="img" aria-labelledby="title desc">
+  <title id="title">Archive file</title>
+  <desc id="desc">Stylized compressed archive icon.</desc>
+  <rect x="8" y="8" width="144" height="144" rx="34" fill="#0b1322"/>
+  <rect x="34" y="34" width="92" height="92" rx="20" fill="#13253e" stroke="#facc15" stroke-opacity=".25"/>
+  <rect x="72" y="42" width="16" height="76" rx="8" fill="#facc15" fill-opacity=".2" stroke="#facc15" stroke-opacity=".42"/>
+  <rect x="74" y="50" width="12" height="10" rx="3" fill="#fde68a"/>
+  <rect x="74" y="66" width="12" height="10" rx="3" fill="#fde68a" fill-opacity=".85"/>
+  <rect x="74" y="82" width="12" height="10" rx="3" fill="#fde68a" fill-opacity=".7"/>
+  <rect x="74" y="98" width="12" height="10" rx="3" fill="#fde68a" fill-opacity=".55"/>
+  <path d="M48 56h16m-16 22h16m32-22h16m-16 22h16" stroke="#93c5fd" stroke-linecap="round" stroke-opacity=".45" stroke-width="5"/>
+  <text x="80" y="138" fill="#e5e7eb" font-family="Trebuchet MS, Segoe UI, sans-serif" font-size="18" font-weight="700" text-anchor="middle">ZIP</text>
+</svg>

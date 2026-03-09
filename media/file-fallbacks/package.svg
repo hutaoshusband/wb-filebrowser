@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" role="img" aria-labelledby="title desc">
+  <title id="title">Installable package</title>
+  <desc id="desc">Stylized package icon.</desc>
+  <rect x="8" y="8" width="144" height="144" rx="34" fill="#0a1220"/>
+  <path d="M80 36 118 54 80 72 42 54Z" fill="#1f3658" stroke="#facc15" stroke-opacity=".28"/>
+  <path d="M42 54v42l38 22 38-22V54L80 72Z" fill="#142540" stroke="#93c5fd" stroke-opacity=".18"/>
+  <path d="M80 72v46" stroke="#fde68a" stroke-opacity=".7" stroke-width="4"/>
+  <path d="M63 64 101 46" stroke="#facc15" stroke-opacity=".48" stroke-width="4"/>
+  <rect x="50" y="122" width="60" height="16" rx="8" fill="#09111d" stroke="#facc15" stroke-opacity=".22"/>
+  <text x="80" y="134" fill="#e5e7eb" font-family="Trebuchet MS, Segoe UI, sans-serif" font-size="16" font-weight="700" text-anchor="middle">PKG</text>
+</svg>

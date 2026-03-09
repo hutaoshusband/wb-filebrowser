@@ -207,9 +207,16 @@ button{cursor:pointer}
 .preview-modal__header .header-actions{justify-content:flex-end}
 .preview-modal__body{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:18px;align-items:start}
 .preview-frame{min-height:520px;max-height:calc(100vh - 230px);border-radius:18px;background:#08111d;border:1px solid rgba(255,255,255,.05);display:grid;place-items:center;overflow:hidden}
-.preview-frame img,.preview-frame iframe,.preview-frame video{width:100%;height:100%;border:0}
+.preview-frame > img,.preview-frame iframe,.preview-frame video{width:100%;height:100%;border:0}
 .preview-frame pre{margin:0;width:100%;height:100%;padding:20px;overflow:auto;color:#dbeafe}
 .preview-frame audio{width:calc(100% - 32px)}
+.file-fallback{width:min(460px,calc(100% - 48px));padding:28px 24px;border-radius:26px;border:1px solid rgba(255,255,255,.08);background:linear-gradient(180deg,rgba(20,30,49,.96),rgba(8,14,24,.98));box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 24px 48px rgba(0,0,0,.28);display:grid;justify-items:center;gap:14px;text-align:center}
+.file-fallback--share{width:min(420px,calc(100% - 48px))}
+.file-fallback__icon{width:min(156px,52vw);height:auto;filter:drop-shadow(0 18px 28px rgba(0,0,0,.24))}
+.file-fallback__badge{padding:7px 12px;border-radius:999px;border:1px solid rgba(250,204,21,.22);background:rgba(250,204,21,.09);color:var(--accent);font-size:.8rem;font-weight:700;letter-spacing:.18em}
+.file-fallback strong{font-size:1.38rem;line-height:1.15}
+.file-fallback p{margin:0;max-width:32ch;color:var(--text-soft);line-height:1.55}
+.file-fallback .header-button{min-width:168px}
 .preview-sidebar,.info-drawer{padding:20px;background:linear-gradient(180deg,rgba(15,23,38,.96),rgba(8,14,24,.98));border:1px solid rgba(255,255,255,.06);border-radius:18px;backdrop-filter:blur(20px)}
 .preview-sidebar{align-self:stretch;box-shadow:inset 0 1px 0 rgba(255,255,255,.04)}
 .preview-sidebar dl,.info-drawer dl{margin:0;display:grid;gap:14px}
@@ -222,8 +229,15 @@ button{cursor:pointer}
 .share-panel{margin-top:18px;padding:16px;border-radius:16px;border:1px solid rgba(255,255,255,.06);background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.02));display:grid;gap:8px}
 .share-panel strong,.share-panel p{margin:0}
 .share-panel label{display:grid;gap:6px}
+.share-panel label span{color:var(--text-soft)}
 .share-panel p{color:var(--text-soft);line-height:1.5}
 .share-panel__url{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--accent)!important;word-break:break-all}
+.share-panel__input{width:100%;padding:12px 14px;border-radius:14px;border:1px solid rgba(255,255,255,.08);background:linear-gradient(180deg,rgba(17,27,46,.96),rgba(8,14,24,.98));color:var(--text);outline:0;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 10px 22px rgba(0,0,0,.16);color-scheme:dark;appearance:none}
+.share-panel__input::placeholder{color:var(--text-soft);opacity:.82}
+.share-panel__input:focus{border-color:rgba(250,204,21,.35);box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 0 0 1px rgba(250,204,21,.14),0 12px 28px rgba(0,0,0,.22)}
+.share-panel__input::-webkit-calendar-picker-indicator{opacity:.86;filter:invert(86%) sepia(13%) saturate(257%) hue-rotate(179deg) brightness(108%) contrast(96%);cursor:pointer}
+.share-panel__input::-webkit-date-and-time-value,.share-panel__input::-webkit-datetime-edit,.share-panel__input::-webkit-datetime-edit-fields-wrapper,.share-panel__input::-webkit-datetime-edit-text,.share-panel__input::-webkit-datetime-edit-month-field,.share-panel__input::-webkit-datetime-edit-day-field,.share-panel__input::-webkit-datetime-edit-year-field,.share-panel__input::-webkit-datetime-edit-hour-field,.share-panel__input::-webkit-datetime-edit-minute-field{color:var(--text)}
+.share-panel__input[type="number"]::-webkit-outer-spin-button,.share-panel__input[type="number"]::-webkit-inner-spin-button{opacity:1}
 
 .share-shell{margin:0;min-height:100vh;background:radial-gradient(circle at top,#16263f 0,#08111d 45%,#050a14 100%);color:var(--text)}
 .share-layout{min-height:100vh;display:grid;place-items:center;padding:28px}
