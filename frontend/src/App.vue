@@ -465,7 +465,6 @@ function previewMode(item) {
 
 async function openPreview(item) {
   previewItem.value = item;
-  infoItem.value = item;
   previewText.value = '';
 
   if (previewMode(item) === 'text') {
@@ -771,7 +770,6 @@ async function createShareLink(item = shareContextItem.value, { open = false } =
     shareState.link = payload.share;
 
     let copied = false;
-
     try {
       copied = await writeShareLink(payload.share.url);
     } catch (error) {
@@ -1516,7 +1514,7 @@ onBeforeUnmount(() => {
         </section>
 
         <section v-else-if="route.section === 'permissions'" class="admin-grid">
-          <article class="panel">
+          <article class="panel panel-form">
             <p class="panel-kicker">Who Gets Access?</p>
             <h2>{{ permissionPrincipalCopy.title }}</h2>
             <p>{{ permissionPrincipalCopy.body }}</p>

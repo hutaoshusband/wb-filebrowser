@@ -47,7 +47,7 @@ try {
                         <p><?= wb_h($file['mime_type']) ?></p>
                     </div>
                     <div class="share-actions">
-                        <a class="header-button" href="<?= wb_h($file['download_url']) ?>">Download</a>
+                        <a class="header-button" href="<?= wb_h($share['download_url']) ?>">Download</a>
                     </div>
                 </header>
 
@@ -71,8 +71,7 @@ try {
                         <?php else: ?>
                             <div class="empty-state compact">
                                 <h2>Preview not available</h2>
-                                <p>This file type opens as a direct download from the shared page.</p>
-                                <a class="header-button" href="<?= wb_h($file['download_url']) ?>">Download file</a>
+                                <p>Use the download button in the top right to save this file.</p>
                             </div>
                         <?php endif; ?>
                     </div>
@@ -85,8 +84,16 @@ try {
                             <div><dt>Shared</dt><dd><?= wb_h(wb_relative_time($share['created_at'])) ?></dd></div>
                             <div><dt>Checksum</dt><dd><?= wb_h($file['checksum']) ?></dd></div>
                         </dl>
-                        <div class="share-sidebar__actions">
-                            <a class="header-button" href="<?= wb_h($file['download_url']) ?>">Download file</a>
+                        <div class="share-direct-link">
+                            <label class="share-direct-link__label" for="share-direct-link">Direct Link:</label>
+                            <input
+                                id="share-direct-link"
+                                class="share-direct-link__field"
+                                type="text"
+                                readonly
+                                value="<?= wb_h($share['download_url']) ?>"
+                                onclick="this.select();"
+                            >
                         </div>
                     </aside>
                 </div>
