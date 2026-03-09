@@ -8,9 +8,20 @@ use WbFileBrowser\FileShares;
 use WbFileBrowser\Security;
 
 header('X-Robots-Tag: noindex, nofollow, noarchive');
-Security::sendPageHeaders();
+
+// Override the default page headers with a relaxed CSP that allows highlight.js from cdnjs
+$shareHeaders = Security::pageHeaders();
+$shareHeaders['Content-Security-Policy'] = "default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com 'unsafe-inline'; connect-src 'self'; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; img-src 'self' data: blob:; media-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
+foreach ($shareHeaders as $headerName => $headerValue) {
+    header($headerName . ': ' . $headerValue);
+}
 
 $bootstrap = wb_bootstrap_page('share');
+try {
+    \WbFileBrowser\IpBanService::assertCurrentIpAllowed();
+} catch (RuntimeException) {
+    wb_forbidden_page('Access blocked', 'This IP address has been blocked by an administrator.');
+}
 $token = trim((string) ($_GET['token'] ?? ''));
 $payload = null;
 
@@ -44,8 +55,23 @@ try {
 <head>
     <?= wb_page_head(($payload === null ? 'Shared file unavailable' : $payload['file']['name']) . ' | wb-filebrowser') ?>
     <meta name="robots" content="noindex,nofollow,noarchive">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css" integrity="sha512-IcFlCApjMGRGOjIzuoEVRzG0VFfIlVMl5XGXfbB0hAGsiOoMhmRe5Y7IFvkR1onRnOBjnMYCnjRCgnOqol2yBw==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
     <style>
+        /* Force the text preview to fill the frame and scroll inside it */
+        .preview-frame:has(.share-text-preview) {
+            place-items: stretch;
+        }
+        .share-text-preview {
+            min-height: 0;
+            overflow: hidden;
+        }
+        .share-text-preview pre {
+            margin: 0;
+            width: 100%;
+            min-height: 0;
+            overflow: auto;
+            background: #08111d;
+        }
         .share-text-preview pre code.hljs {
             background: transparent;
             padding: 20px;
@@ -53,14 +79,6 @@ try {
             font-size: .9rem;
             line-height: 1.6;
             tab-size: 4;
-        }
-        .share-text-preview pre {
-            margin: 0;
-            width: 100%;
-            height: 100%;
-            overflow: auto;
-            background: #08111d;
-            border-radius: 0;
         }
         /* Harmonise hljs token colours with the site palette */
         .share-text-preview .hljs-keyword,
@@ -169,7 +187,7 @@ try {
             <?php endif; ?>
         </section>
     </main>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js" integrity="sha512-EBLzUFvhGRVMOiaBSTpeY5cHa6yGEEFnTnmRm/KOgFcdCpSXJR+z5Aiv9T+CJNLS8Mp/EEfzMBKoip0fmkBEQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
     <script>
     (function() {
         var el = document.getElementById('share-code');

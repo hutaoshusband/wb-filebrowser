@@ -50,6 +50,13 @@ final class Auth
 
         if (!is_array($user) || $user['status'] !== 'active' || !password_verify($password, (string) $user['password_hash'])) {
             self::recordAttempt($pdo, $username, $ip, false);
+            AuditLog::record('auth.login.failure', 'auth_failure', [
+                'actor_username' => $username,
+                'ip_address' => $ip,
+                'target_type' => 'auth',
+                'target_label' => $username,
+                'summary' => 'Failed login for ' . $username,
+            ], $pdo);
             Security::consumeRateLimit($rateLimitBuckets, $pdo);
             throw new RuntimeException('Invalid username or password.');
         }
@@ -66,12 +73,33 @@ final class Auth
             ':id' => $user['id'],
         ]);
 
-        return self::currentUser($pdo) ?? throw new RuntimeException('Unable to load the authenticated user.');
+        $currentUser = self::currentUser($pdo) ?? throw new RuntimeException('Unable to load the authenticated user.');
+        AuditLog::record('auth.login.success', 'auth_success', [
+            'actor_user' => $currentUser,
+            'ip_address' => $ip,
+            'target_type' => 'auth',
+            'target_id' => (int) $currentUser['id'],
+            'target_label' => (string) $currentUser['username'],
+            'summary' => 'Logged in as ' . $currentUser['username'],
+        ], $pdo);
+
+        return $currentUser;
     }
 
     public static function logout(): void
     {
         Security::startSession();
+        $user = self::currentUser();
+
+        if ($user !== null) {
+            AuditLog::record('auth.logout', 'auth_success', [
+                'actor_user' => $user,
+                'target_type' => 'auth',
+                'target_id' => (int) $user['id'],
+                'target_label' => (string) $user['username'],
+                'summary' => 'Logged out ' . $user['username'],
+            ]);
+        }
 
         $_SESSION = [];
 

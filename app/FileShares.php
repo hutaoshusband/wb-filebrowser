@@ -65,7 +65,21 @@ final class FileShares
                 throw new RuntimeException('Unable to update the share link right now.');
             }
 
-            return self::serializeShare($share, $file);
+            $serialized = self::serializeShare($share, $file);
+            AuditLog::record('share.create', 'admin_actions', [
+                'actor_user' => $user,
+                'target_type' => 'file',
+                'target_id' => (int) $file['id'],
+                'target_label' => (string) $file['original_name'],
+                'summary' => 'Updated share link for ' . $file['original_name'],
+                'metadata' => [
+                    'expires_at' => $serialized['expires_at'],
+                    'max_views' => $serialized['max_views'],
+                    'share_url' => $serialized['url'],
+                ],
+            ], $pdo);
+
+            return $serialized;
         }
 
         $statement = $pdo->prepare(
@@ -119,7 +133,21 @@ final class FileShares
             throw new RuntimeException('Unable to create a share link right now.');
         }
 
-        return self::serializeShare($share, $file);
+        $serialized = self::serializeShare($share, $file);
+        AuditLog::record('share.create', 'admin_actions', [
+            'actor_user' => $user,
+            'target_type' => 'file',
+            'target_id' => (int) $file['id'],
+            'target_label' => (string) $file['original_name'],
+            'summary' => 'Created share link for ' . $file['original_name'],
+            'metadata' => [
+                'expires_at' => $serialized['expires_at'],
+                'max_views' => $serialized['max_views'],
+                'share_url' => $serialized['url'],
+            ],
+        ], $pdo);
+
+        return $serialized;
     }
 
     public static function revoke(array $user, int $fileId, ?PDO $pdo = null): void
@@ -143,6 +171,13 @@ final class FileShares
             ':updated_at' => $now,
             ':file_id' => $fileId,
         ]);
+        AuditLog::record('share.revoke', 'admin_actions', [
+            'actor_user' => $user,
+            'target_type' => 'file',
+            'target_id' => (int) $file['id'],
+            'target_label' => (string) $file['original_name'],
+            'summary' => 'Revoked share link for ' . $file['original_name'],
+        ], $pdo);
     }
 
     public static function viewPayload(string $token, ?PDO $pdo = null): array
@@ -167,6 +202,15 @@ final class FileShares
             }
 
             $pdo->commit();
+            AuditLog::record('share.view', 'file_views', [
+                'target_type' => 'file',
+                'target_id' => (int) $share['file_id'],
+                'target_label' => (string) $share['original_name'],
+                'summary' => 'Viewed shared file ' . $share['original_name'],
+                'metadata' => [
+                    'view_count' => (int) $share['view_count'],
+                ],
+            ], $pdo);
 
             return [
                 'share' => self::serializeResolvedShare($share),
@@ -189,6 +233,16 @@ final class FileShares
         $pdo ??= Database::connection();
         self::cleanupInactiveShares($pdo);
         $share = self::resolveActiveShare($token, $pdo);
+        $dispositionType = $disposition === 'attachment' ? 'attachment' : 'inline';
+
+        if ($dispositionType === 'attachment') {
+            AuditLog::record('share.download', 'file_downloads', [
+                'target_type' => 'file',
+                'target_id' => (int) $share['file_id'],
+                'target_label' => (string) $share['original_name'],
+                'summary' => 'Downloaded shared file ' . $share['original_name'],
+            ], $pdo);
+        }
 
         Security::sendFile(
             self::blobPath((string) $share['disk_name'], (string) $share['disk_extension']),
@@ -209,6 +263,15 @@ final class FileShares
         $pdo ??= Database::connection();
         $share = self::resolveShareByToken((string) ($payload['token'] ?? ''), $pdo);
         $disposition = (string) ($payload['disposition'] ?? 'inline');
+
+        if ($disposition === 'attachment') {
+            AuditLog::record('share.download', 'file_downloads', [
+                'target_type' => 'file',
+                'target_id' => (int) $share['file_id'],
+                'target_label' => (string) $share['original_name'],
+                'summary' => 'Downloaded shared file ' . $share['original_name'],
+            ], $pdo);
+        }
 
         Security::sendFile(
             self::blobPath((string) $share['disk_name'], (string) $share['disk_extension']),

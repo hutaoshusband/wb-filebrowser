@@ -175,6 +175,19 @@ function installFetchStub(overrides = {}) {
         access: { public_access: false },
         uploads: { max_file_size_mb: 256, allowed_extensions: '', stale_upload_ttl_hours: 24 },
         automation: { runner_enabled: true, diagnostic_interval_minutes: 30, cleanup_interval_minutes: 60, storage_alert_threshold_pct: 85 },
+        security: {
+          audit_enabled: false,
+          audit_retention_days: 30,
+          log_auth_success: true,
+          log_auth_failure: true,
+          log_file_views: true,
+          log_file_downloads: true,
+          log_file_uploads: true,
+          log_file_management: true,
+          log_deletions: true,
+          log_admin_actions: true,
+          log_security_actions: true,
+        },
       },
       diagnostics: { exposed: false, checked_at: '', message: 'Shield healthy.', probe_path: 'probe/file.txt', probe_url: '/storage/probe/file.txt' },
       upload_policy: uploadPolicy(),
@@ -198,9 +211,115 @@ function installFetchStub(overrides = {}) {
         access: { public_access: true },
         uploads: { max_file_size_mb: 64, allowed_extensions: 'png, pdf', stale_upload_ttl_hours: 8 },
         automation: { runner_enabled: true, diagnostic_interval_minutes: 30, cleanup_interval_minutes: 60, storage_alert_threshold_pct: 85 },
+        security: {
+          audit_enabled: true,
+          audit_retention_days: 14,
+          log_auth_success: true,
+          log_auth_failure: true,
+          log_file_views: true,
+          log_file_downloads: true,
+          log_file_uploads: true,
+          log_file_management: true,
+          log_deletions: true,
+          log_admin_actions: true,
+          log_security_actions: true,
+        },
       },
       diagnostics: { exposed: false, checked_at: '', message: 'Shield healthy.', probe_path: 'probe/file.txt', probe_url: '/storage/probe/file.txt' },
       automation: { jobs: [] },
+    }),
+    'admin.audit.list': (input) => {
+      const url = new URL(String(input));
+      return jsonResponse({
+        entries: [
+          {
+            id: 1,
+            event_type: 'file.view',
+            category: url.searchParams.get('category') || 'file_views',
+            category_label: 'File views',
+            actor_user_id: 1,
+            actor_username: 'admin',
+            ip_address: '127.0.0.1',
+            target_type: 'file',
+            target_id: 7,
+            target_label: 'Home / brochure.pdf',
+            summary: 'Viewed file brochure.pdf',
+            metadata: {},
+            created_at: '2026-03-09T00:00:00Z',
+          },
+        ],
+        page: Number(url.searchParams.get('page') || '1'),
+        page_size: 25,
+        total_items: 26,
+        total_pages: 2,
+        query: url.searchParams.get('query') || '',
+        category: url.searchParams.get('category') || '',
+        categories: [
+          { key: 'file_views', label: 'File views' },
+          { key: 'admin_actions', label: 'Admin actions' },
+        ],
+      });
+    },
+    'admin.security.get': () => jsonResponse({
+      settings: {
+        access: { public_access: false },
+        uploads: { max_file_size_mb: 256, allowed_extensions: '', stale_upload_ttl_hours: 24 },
+        automation: { runner_enabled: true, diagnostic_interval_minutes: 30, cleanup_interval_minutes: 60, storage_alert_threshold_pct: 85 },
+        security: {
+          audit_enabled: false,
+          audit_retention_days: 30,
+          log_auth_success: true,
+          log_auth_failure: true,
+          log_file_views: true,
+          log_file_downloads: true,
+          log_file_uploads: true,
+          log_file_management: true,
+          log_deletions: true,
+          log_admin_actions: true,
+          log_security_actions: true,
+        },
+      },
+      diagnostics: { exposed: false, checked_at: '', message: 'Shield healthy.', probe_path: 'probe/file.txt', probe_url: '/storage/probe/file.txt' },
+      upload_policy: uploadPolicy(),
+      can_manage_settings: true,
+      active_bans: [
+        {
+          id: 3,
+          ip_address: '203.0.113.42',
+          reason: 'Abuse',
+          created_by_username: 'admin',
+          created_at: '2026-03-09T00:00:00Z',
+          expires_at: null,
+          revoked_at: null,
+          revoked_reason: null,
+          revoked_by_username: null,
+          is_active: true,
+        },
+      ],
+      ban_history: [
+        {
+          id: 2,
+          ip_address: '198.51.100.7',
+          reason: 'Expired block',
+          created_by_username: 'admin',
+          created_at: '2026-03-08T00:00:00Z',
+          expires_at: '2026-03-08T01:00:00Z',
+          revoked_at: '2026-03-08T01:00:00Z',
+          revoked_reason: 'expired',
+          revoked_by_username: null,
+          is_active: false,
+        },
+      ],
+    }),
+    'admin.security.ban': () => jsonResponse({
+      ban: { id: 4, ip_address: '192.0.2.55' },
+      active_bans: [],
+      ban_history: [],
+    }),
+    'admin.security.unban': () => jsonResponse({
+      ban: { id: 3, ip_address: '203.0.113.42' },
+      active_bans: [],
+      ban_history: [],
     }),
     'admin.users.update': () => jsonResponse({}),
     'admin.permissions.save': () => jsonResponse({}),
@@ -357,6 +476,70 @@ describe('Admin app shell', () => {
     expect(body.uploads.max_file_size_mb).toBe(64);
     expect(body.uploads.allowed_extensions).toBe('png, pdf');
     expect(body.uploads.stale_upload_ttl_hours).toBe(8);
+  });
+
+  it('loads audit logs, applies category filters, and paginates', async () => {
+    const { wrapper, calls } = await mountAdminApp({ hash: '#/audit' });
+
+    expect(wrapper.text()).toContain('Recorded activity');
+    expect(calls.some((call) => call.action === 'admin.audit.list')).toBe(true);
+
+    const categorySelect = wrapper.find('select');
+    await categorySelect.setValue('file_views');
+    await flushPromises();
+    await flushPromises();
+
+    const nextButton = wrapper.findAll('button').find((button) => button.text() === 'Next');
+    await nextButton.trigger('click');
+    await flushPromises();
+    await flushPromises();
+
+    const lastAuditCall = calls.filter((call) => call.action === 'admin.audit.list').at(-1);
+
+    expect(lastAuditCall).toBeTruthy();
+    expect(lastAuditCall.action).toBe('admin.audit.list');
+    expect(lastAuditCall.init.method ?? 'GET').toBe('GET');
+    expect(wrapper.text()).toContain('Viewed file brochure.pdf');
+  });
+
+  it('renders the security surface, saves audit settings, and submits ban actions', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const { wrapper, calls } = await mountAdminApp({ hash: '#/security' });
+
+    expect(wrapper.text()).toContain('Audit logging and protection');
+    expect(wrapper.text()).toContain('Blocked IP addresses');
+
+    const securityCheckboxes = wrapper.findAll('.settings-pane input[type="checkbox"]');
+    await securityCheckboxes[0].setValue(true);
+    const retentionInput = wrapper.find('.settings-pane input[type="number"]');
+    await retentionInput.setValue('14');
+    const saveButton = wrapper.findAll('button').find((button) => button.text() === 'Save security settings');
+    await saveButton.trigger('click');
+
+    const saveCall = calls.find((call) => call.action === 'admin.settings.save');
+    const saveBody = JSON.parse(saveCall.init.body);
+    expect(saveBody.security.audit_enabled).toBe(true);
+    expect(saveBody.security.audit_retention_days).toBe(14);
+
+    const banInputs = wrapper.findAll('.security-ban-form input');
+    await banInputs[0].setValue('192.0.2.55');
+    await banInputs[1].setValue('Test block');
+    await wrapper.find('.security-ban-form').trigger('submit');
+    await flushPromises();
+
+    const banCall = calls.find((call) => call.action === 'admin.security.ban');
+    const banBody = JSON.parse(banCall.init.body);
+    expect(banBody.ip_address).toBe('192.0.2.55');
+    expect(banBody.reason).toBe('Test block');
+
+    const unbanButton = wrapper.findAll('button').find((button) => button.text() === 'Unban');
+    await unbanButton.trigger('click');
+    await flushPromises();
+
+    const unbanCall = calls.find((call) => call.action === 'admin.security.unban');
+    const unbanBody = JSON.parse(unbanCall.init.body);
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(unbanBody.ban_id).toBe(3);
   });
 
   it('creates a share link from the file preview in the browser shell', async () => {

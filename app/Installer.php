@@ -364,6 +364,33 @@ XML;
                 window_started_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )',
+            'CREATE TABLE IF NOT EXISTS audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_type TEXT NOT NULL,
+                category TEXT NOT NULL,
+                actor_user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+                actor_username TEXT NULL,
+                ip_address TEXT NOT NULL,
+                target_type TEXT NULL,
+                target_id INTEGER NULL,
+                target_label TEXT NULL,
+                metadata_json TEXT NOT NULL DEFAULT \'{}\',
+                created_at TEXT NOT NULL
+            )',
+            'CREATE TABLE IF NOT EXISTS ip_bans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ip_address TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+                created_by_username TEXT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NULL,
+                revoked_at TEXT NULL,
+                revoked_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+                revoked_by_username TEXT NULL,
+                revoked_reason TEXT NULL CHECK (revoked_reason IN (\'manual\', \'expired\')),
+                updated_at TEXT NOT NULL
+            )',
             'CREATE TABLE IF NOT EXISTS automation_jobs (
                 job_key TEXT PRIMARY KEY,
                 label TEXT NOT NULL,
@@ -382,6 +409,11 @@ XML;
             'CREATE INDEX IF NOT EXISTS idx_permissions_principal ON folder_permissions(principal_type, principal_id)',
             'CREATE INDEX IF NOT EXISTS idx_login_attempts_lookup ON login_attempts(username, ip_address, attempted_at)',
             'CREATE INDEX IF NOT EXISTS idx_rate_limits_updated_at ON rate_limits(updated_at)',
+            'CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at)',
+            'CREATE INDEX IF NOT EXISTS idx_audit_logs_category_created_at ON audit_logs(category, created_at)',
+            'CREATE INDEX IF NOT EXISTS idx_audit_logs_ip_created_at ON audit_logs(ip_address, created_at)',
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_ip_bans_active_ip ON ip_bans(ip_address) WHERE revoked_at IS NULL',
+            'CREATE INDEX IF NOT EXISTS idx_ip_bans_history ON ip_bans(ip_address, revoked_at, expires_at)',
             'CREATE INDEX IF NOT EXISTS idx_automation_jobs_next_run ON automation_jobs(next_run_at)',
         ];
     }

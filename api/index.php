@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 use WbFileBrowser\Auth;
 use WbFileBrowser\AutomationRunner;
+use WbFileBrowser\AuditLog;
 use WbFileBrowser\Database;
 use WbFileBrowser\FileManager;
 use WbFileBrowser\FileShares;
+use WbFileBrowser\IpBanService;
 use WbFileBrowser\Installer;
 use WbFileBrowser\Permissions;
 use WbFileBrowser\Security;
@@ -18,6 +20,19 @@ $action = (string) ($_GET['action'] ?? '');
 $installed = Installer::isInstalled();
 
 Security::sendApiHeaders();
+
+if ($installed) {
+    try {
+        IpBanService::assertCurrentIpAllowed();
+    } catch (RuntimeException $exception) {
+        if (in_array($action, ['files.stream', 'share.stream'], true)) {
+            http_response_code(403);
+            exit;
+        }
+
+        wb_error_response($exception->getMessage(), 403);
+    }
+}
 
 try {
     $requestData = wb_request_data();
@@ -424,6 +439,17 @@ try {
                 ':created_at' => wb_now(),
                 ':updated_at' => wb_now(),
             ]);
+            $createdUserId = (int) Database::connection()->lastInsertId();
+            AuditLog::record('admin.user.create', 'admin_actions', [
+                'actor_user' => $actor,
+                'target_type' => 'user',
+                'target_id' => $createdUserId,
+                'target_label' => wb_validate_entry_name((string) ($requestData['username'] ?? ''), 'username'),
+                'summary' => 'Created user ' . (string) ($requestData['username'] ?? ''),
+                'metadata' => [
+                    'role' => $role,
+                ],
+            ]);
             wb_json_response(['ok' => true], 201);
 
         case 'admin.users.update':
@@ -481,6 +507,18 @@ try {
                 ':updated_at' => wb_now(),
                 ':id' => $targetId,
             ]);
+            AuditLog::record('admin.user.update', 'admin_actions', [
+                'actor_user' => $actor,
+                'target_type' => 'user',
+                'target_id' => $targetId,
+                'target_label' => (string) $target['username'],
+                'summary' => 'Updated user ' . $target['username'],
+                'metadata' => [
+                    'role' => $role,
+                    'status' => (string) ($requestData['status'] ?? $target['status']),
+                    'force_password_reset' => wb_parse_bool($requestData['force_password_reset'] ?? $target['force_password_reset']),
+                ],
+            ], $pdo);
             wb_json_response(['ok' => true]);
 
         case 'admin.users.password':
@@ -517,6 +555,13 @@ try {
                 ':updated_at' => wb_now(),
                 ':id' => $targetId,
             ]);
+            AuditLog::record('admin.user.password_reset', 'admin_actions', [
+                'actor_user' => $actor,
+                'target_type' => 'user',
+                'target_id' => $targetId,
+                'target_label' => (string) $target['username'],
+                'summary' => 'Reset password for ' . $target['username'],
+            ], $pdo);
             wb_json_response(['ok' => true]);
 
         case 'admin.permissions.get':
@@ -537,7 +582,69 @@ try {
             $principalId = $principalType === 'guest' ? 0 : (int) ($requestData['principal_id'] ?? 0);
             $entries = $requestData['entries'] ?? [];
             Permissions::saveMatrix($actor, $principalType, $principalId, is_array($entries) ? $entries : []);
+            $activeEntries = is_array($entries)
+                ? array_values(array_filter($entries, static fn (mixed $entry): bool => is_array($entry) && wb_parse_bool($entry['can_view'] ?? false)))
+                : [];
+            AuditLog::record('admin.permissions.save', 'admin_actions', [
+                'actor_user' => $actor,
+                'target_type' => 'permissions',
+                'target_id' => $principalId,
+                'target_label' => $principalType === 'guest' ? 'Guest permissions' : 'User permissions #' . $principalId,
+                'summary' => 'Saved ' . $principalType . ' permissions',
+                'metadata' => [
+                    'principal_type' => $principalType,
+                    'principal_id' => $principalId,
+                    'visible_entries' => count($activeEntries),
+                ],
+            ]);
             wb_json_response(['ok' => true]);
+
+        case 'admin.audit.list':
+            Auth::requireAdmin();
+            wb_json_response([
+                'ok' => true,
+                ...AuditLog::list([
+                    'page' => (int) ($_GET['page'] ?? 1),
+                    'query' => (string) ($_GET['query'] ?? ''),
+                    'category' => (string) ($_GET['category'] ?? ''),
+                ]),
+            ]);
+
+        case 'admin.security.get':
+            $user = Auth::requireAdmin();
+            wb_json_response([
+                'ok' => true,
+                'settings' => Settings::grouped(),
+                'diagnostics' => Settings::diagnosticState(),
+                'upload_policy' => Settings::uploadPolicy(),
+                'can_manage_settings' => $user['role'] === 'super_admin',
+                ...IpBanService::list(),
+            ]);
+
+        case 'admin.security.ban':
+            $requireCsrf();
+            $actor = Auth::requireSuperAdmin();
+            $ban = IpBanService::ban(
+                $actor,
+                (string) ($requestData['ip_address'] ?? ''),
+                (string) ($requestData['reason'] ?? ''),
+                isset($requestData['expires_at']) ? (string) $requestData['expires_at'] : null
+            );
+            wb_json_response([
+                'ok' => true,
+                'ban' => $ban,
+                ...IpBanService::list(),
+            ], 201);
+
+        case 'admin.security.unban':
+            $requireCsrf();
+            $actor = Auth::requireSuperAdmin();
+            $ban = IpBanService::unban($actor, (int) ($requestData['ban_id'] ?? 0));
+            wb_json_response([
+                'ok' => true,
+                'ban' => $ban,
+                ...IpBanService::list(),
+            ]);
 
         case 'admin.settings.get':
             $user = Auth::requireAdmin();
@@ -549,8 +656,14 @@ try {
 
         case 'admin.settings.save':
             $requireCsrf();
-            Auth::requireSuperAdmin();
+            $actor = Auth::requireSuperAdmin();
             $settings = Settings::saveAdminSettings($requestData);
+            AuditLog::record('admin.settings.save', 'admin_actions', [
+                'actor_user' => $actor,
+                'target_type' => 'settings',
+                'target_label' => 'Application settings',
+                'summary' => 'Saved admin settings',
+            ]);
             wb_json_response([
                 'ok' => true,
                 'settings' => $settings,
@@ -562,18 +675,36 @@ try {
 
         case 'admin.automation.tick':
             $requireCsrf();
-            Auth::requireAdmin();
+            $actor = Auth::requireAdmin();
+            $result = AutomationRunner::tick(wb_request_origin());
+            AuditLog::record('admin.automation.tick', 'admin_actions', [
+                'actor_user' => $actor,
+                'target_type' => 'automation',
+                'target_label' => 'Due jobs',
+                'summary' => 'Ran due automation checks',
+                'metadata' => [
+                    'locked' => (bool) ($result['locked'] ?? false),
+                ],
+            ]);
             wb_json_response([
                 'ok' => true,
-                ...AutomationRunner::tick(wb_request_origin()),
+                ...$result,
             ]);
 
         case 'admin.automation.run':
             $requireCsrf();
-            Auth::requireAdmin();
+            $actor = Auth::requireAdmin();
+            $jobKey = (string) ($requestData['job_key'] ?? '');
+            $result = AutomationRunner::run($jobKey, wb_request_origin());
+            AuditLog::record('admin.automation.run', 'admin_actions', [
+                'actor_user' => $actor,
+                'target_type' => 'automation',
+                'target_label' => $jobKey,
+                'summary' => 'Ran automation job ' . $jobKey,
+            ]);
             wb_json_response([
                 'ok' => true,
-                ...AutomationRunner::run((string) ($requestData['job_key'] ?? ''), wb_request_origin()),
+                ...$result,
             ]);
 
         case 'admin.diagnostic.update':
@@ -594,7 +725,7 @@ try {
 } catch (\RuntimeException $exception) {
     $status = match ($exception->getMessage()) {
         'Authentication is required.' => 401,
-        'Administrator access is required.', 'Super-Admin access is required.' => 403,
+        'Administrator access is required.', 'Super-Admin access is required.', 'This IP address has been banned.' => 403,
         default => 400,
     };
     wb_error_response($exception->getMessage(), $status);

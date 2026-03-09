@@ -28,11 +28,23 @@ export function getSearchConfig(shell, section, options = {}) {
         placeholder: 'Filter folders...',
         emptyText: 'Filter the permission matrix by folder path.',
       };
+    case 'audit':
+      return {
+        enabled: true,
+        placeholder: 'Search audit logs...',
+        emptyText: 'Search audit events by event key, user, IP, or target.',
+      };
+    case 'security':
+      return {
+        enabled: false,
+        placeholder: 'Search is not used in Security',
+        emptyText: 'Review audit settings, storage health, and banned IP addresses.',
+      };
     case 'settings':
       return {
         enabled: false,
         placeholder: 'Search is not used in Settings',
-        emptyText: 'Use the settings tabs to move between Access, Uploads, Automation, and Security.',
+        emptyText: 'Use the settings tabs to move between Access, Uploads, and Automation.',
       };
     default:
       return {

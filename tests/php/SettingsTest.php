@@ -27,6 +27,19 @@ final class SettingsTest extends DatabaseTestCase
                 'cleanup_interval_minutes' => 45,
                 'storage_alert_threshold_pct' => 90,
             ],
+            'security' => [
+                'audit_enabled' => true,
+                'audit_retention_days' => 14,
+                'log_auth_success' => true,
+                'log_auth_failure' => true,
+                'log_file_views' => true,
+                'log_file_downloads' => false,
+                'log_file_uploads' => true,
+                'log_file_management' => true,
+                'log_deletions' => true,
+                'log_admin_actions' => true,
+                'log_security_actions' => true,
+            ],
         ]);
 
         $payload = Settings::adminPayload();
@@ -37,6 +50,9 @@ final class SettingsTest extends DatabaseTestCase
         $this->assertSame(12, $payload['settings']['uploads']['stale_upload_ttl_hours']);
         $this->assertFalse($payload['settings']['automation']['runner_enabled']);
         $this->assertSame(15, $payload['settings']['automation']['diagnostic_interval_minutes']);
+        $this->assertTrue($payload['settings']['security']['audit_enabled']);
+        $this->assertSame(14, $payload['settings']['security']['audit_retention_days']);
+        $this->assertFalse($payload['settings']['security']['log_file_downloads']);
         $this->assertCount(3, $payload['automation']['jobs']);
         $this->assertSame(15, AutomationRunner::jobs()[0]['interval_minutes']);
     }

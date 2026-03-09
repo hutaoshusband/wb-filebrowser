@@ -3,8 +3,8 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { describePermissionPrincipal, filterPermissionRows, filterUsers, getSearchConfig, jobTone } from './lib/admin.js';
 import { validateUploadCandidate } from './lib/uploadPolicy.js';
 
-const ADMIN_SECTIONS = ['dashboard', 'users', 'permissions', 'settings'];
-const SETTING_TABS = ['access', 'uploads', 'automation', 'security'];
+const ADMIN_SECTIONS = ['dashboard', 'users', 'permissions', 'settings', 'audit', 'security'];
+const SETTING_TABS = ['access', 'uploads', 'automation'];
 
 function createDefaultUploadPolicy() {
   return {
@@ -33,6 +33,19 @@ function createDefaultSettings() {
       diagnostic_interval_minutes: 30,
       cleanup_interval_minutes: 60,
       storage_alert_threshold_pct: 85,
+    },
+    security: {
+      audit_enabled: false,
+      audit_retention_days: 30,
+      log_auth_success: true,
+      log_auth_failure: true,
+      log_file_views: true,
+      log_file_downloads: true,
+      log_file_uploads: true,
+      log_file_management: true,
+      log_deletions: true,
+      log_admin_actions: true,
+      log_security_actions: true,
     },
   };
 }
@@ -93,6 +106,15 @@ const adminState = reactive({
   userPermissionEntries: {},
   automationJobs: [],
   automationBusy: false,
+  auditLogs: [],
+  auditPage: 1,
+  auditTotalPages: 1,
+  auditTotalItems: 0,
+  auditCategory: '',
+  auditCategories: [],
+  activeBans: [],
+  banHistory: [],
+  securityBusy: false,
 });
 
 const shareState = reactive({
@@ -108,6 +130,7 @@ const shareForm = reactive({
 
 const authForm = reactive({ username: '', password: '' });
 const newUserForm = reactive({ username: '', password: '', role: 'user', force_password_reset: false });
+const banForm = reactive({ ipAddress: '', reason: '', expiresAtLocal: '' });
 
 const searchQuery = ref('');
 const sortBy = ref('name');
@@ -312,6 +335,12 @@ function applySettingsPayload(payload) {
   applyAutomationState(payload.automation ?? payload);
 }
 
+function applySecurityPayload(payload) {
+  applySettingsPayload(payload);
+  adminState.activeBans = payload.active_bans ?? [];
+  adminState.banHistory = payload.ban_history ?? [];
+}
+
 async function refreshCurrentView() {
   if (isAdminShell.value) {
     if (isAdmin.value) {
@@ -375,6 +404,9 @@ function debounceSearch() {
   searchTimer = window.setTimeout(async () => {
     try {
       if (shell === 'admin') {
+        if (route.section === 'audit' && isAdmin.value) {
+          await loadAuditLogs(1);
+        }
         return;
       }
 
@@ -1008,6 +1040,28 @@ async function loadAdminUsers() {
   }));
 }
 
+async function loadAuditLogs(page = adminState.auditPage) {
+  const payload = await api('admin.audit.list', {
+    params: {
+      page,
+      query: searchQuery.value.trim(),
+      category: adminState.auditCategory,
+    },
+  });
+
+  adminState.auditLogs = payload.entries ?? [];
+  adminState.auditPage = payload.page ?? page;
+  adminState.auditTotalPages = payload.total_pages ?? 1;
+  adminState.auditTotalItems = payload.total_items ?? 0;
+  adminState.auditCategory = payload.category ?? adminState.auditCategory;
+  adminState.auditCategories = payload.categories ?? [];
+}
+
+async function loadSecurityState() {
+  const payload = await api('admin.security.get');
+  applySecurityPayload(payload);
+}
+
 function createPermissionEntry() {
   return {
     can_view: false,
@@ -1171,6 +1225,16 @@ async function loadAdminSection() {
       return;
     }
 
+    if (route.section === 'audit') {
+      await loadAuditLogs(1);
+      return;
+    }
+
+    if (route.section === 'security') {
+      await loadSecurityState();
+      return;
+    }
+
     const payload = await api('admin.settings.get');
     applySettingsPayload(payload);
   } finally {
@@ -1256,7 +1320,56 @@ async function saveSettings() {
   });
   applySettingsPayload(payload);
   await refreshSession();
+
+  if (route.section === 'security') {
+    await loadSecurityState();
+  }
+
   showMessage('Settings updated.');
+}
+
+function resetBanForm() {
+  banForm.ipAddress = '';
+  banForm.reason = '';
+  banForm.expiresAtLocal = '';
+}
+
+async function createIpBan() {
+  await api('admin.security.ban', {
+    method: 'POST',
+    body: {
+      ip_address: banForm.ipAddress,
+      reason: banForm.reason,
+      expires_at: fromLocalDateTimeInput(banForm.expiresAtLocal),
+    },
+  });
+  resetBanForm();
+  await loadSecurityState();
+  showMessage('IP address banned.');
+}
+
+async function unbanIp(ban) {
+  if (!ban) {
+    return;
+  }
+
+  if (!window.confirm(`Unban ${ban.ip_address}?`)) {
+    return;
+  }
+
+  await api('admin.security.unban', {
+    method: 'POST',
+    body: {
+      ban_id: ban.id,
+    },
+  });
+  await loadSecurityState();
+  showMessage(`Unbanned ${ban.ip_address}.`);
+}
+
+async function goToAuditPage(page) {
+  const nextPage = Math.max(1, Math.min(page, adminState.auditTotalPages || 1));
+  await loadAuditLogs(nextPage);
 }
 
 async function tickAutomation({ silent = false } = {}) {
@@ -1368,6 +1481,30 @@ function formatDateLabel(value) {
   return date.toLocaleString();
 }
 
+function auditActorLabel(entry) {
+  if (entry?.actor_username) {
+    return entry.actor_username;
+  }
+
+  if (entry?.ip_address) {
+    return `IP ${entry.ip_address}`;
+  }
+
+  return 'Unknown';
+}
+
+function auditTargetLabel(entry) {
+  return entry?.target_label || entry?.target_type || 'No target';
+}
+
+function banStatusLabel(ban) {
+  if (!ban?.revoked_at) {
+    return ban?.expires_at ? 'Scheduled expiry' : 'Active';
+  }
+
+  return ban.revoked_reason === 'expired' ? 'Expired' : 'Manually lifted';
+}
+
 function uploadLimitLabel(policy = session.uploadPolicy) {
   if (!policy || policy.has_app_limit === false || !Number.isFinite(policy.max_file_size_bytes)) {
     return 'No app limit';
@@ -1395,7 +1532,7 @@ function stopAutomationPulse() {
 }
 
 watch(searchQuery, () => {
-  if (shell === 'app') {
+  if (shell === 'app' || (shell === 'admin' && route.section === 'audit')) {
     debounceSearch();
   }
 });
@@ -1447,6 +1584,16 @@ watch(() => shareContextItem.value?.id ?? 0, async (fileId) => {
   } catch (error) {
     resetShareState();
     showMessage(error instanceof Error ? error.message : 'Unable to load the share link.');
+  }
+});
+
+watch(() => adminState.auditCategory, async () => {
+  if (shell === 'admin' && route.section === 'audit' && isAdmin.value && !isBooting.value) {
+    try {
+      await loadAuditLogs(1);
+    } catch (error) {
+      showMessage(error instanceof Error ? error.message : 'Unable to filter audit logs.');
+    }
   }
 });
 
@@ -1600,6 +1747,8 @@ onBeforeUnmount(() => {
           <button :class="{ active: route.section === 'users' }" type="button" @click="setAdminSection('users')">Users</button>
           <button :class="{ active: route.section === 'permissions' }" type="button" @click="setAdminSection('permissions')">Permissions</button>
           <button :class="{ active: route.section === 'settings' }" type="button" @click="setAdminSection('settings')">Settings</button>
+          <button :class="{ active: route.section === 'audit' }" type="button" @click="setAdminSection('audit')">Audit Logs</button>
+          <button :class="{ active: route.section === 'security' }" type="button" @click="setAdminSection('security')">Security</button>
         </div>
 
         <section v-if="route.section === 'dashboard'" class="admin-grid">
@@ -1918,7 +2067,7 @@ onBeforeUnmount(() => {
           </article>
         </section>
 
-        <section v-else class="admin-grid">
+        <section v-else-if="route.section === 'settings'" class="admin-grid">
           <article class="panel panel-wide">
             <div class="panel-header">
               <div>
@@ -1935,7 +2084,7 @@ onBeforeUnmount(() => {
                 type="button"
                 @click="adminState.settingsTab = tab"
               >
-                {{ tab === 'security' ? 'Security & Health' : tab.charAt(0).toUpperCase() + tab.slice(1) }}
+                {{ tab.charAt(0).toUpperCase() + tab.slice(1) }}
               </button>
             </div>
 
@@ -2008,26 +2157,244 @@ onBeforeUnmount(() => {
                 </div>
               </div>
             </div>
+          </article>
+        </section>
 
-            <div v-else class="settings-pane">
-              <p class="panel-kicker">Security & Health</p>
-              <h2>Current status</h2>
-              <div class="health-stack">
-                <div class="health-card" :class="{ 'is-warning': session.diagnostic.exposed }">
-                  <strong>{{ session.diagnostic.exposed ? 'Storage is exposed' : 'Storage shield looks healthy' }}</strong>
-                  <p>{{ session.diagnostic.message }}</p>
-                  <small>Last checked: {{ formatDateLabel(session.diagnostic.checked_at) }}</small>
-                </div>
-                <div class="health-card">
-                  <strong>Upload policy preview</strong>
-                  <p>Limit: {{ uploadLimitLabel(session.uploadPolicy) }} | Allowed: {{ session.uploadPolicy.allowed_extensions_label }}</p>
-                  <small>Abandoned uploads are cleared after {{ session.uploadPolicy.stale_upload_ttl_hours }} hours.</small>
-                </div>
+        <section v-else-if="route.section === 'audit'" class="admin-grid">
+          <article class="panel">
+            <p class="panel-kicker">Audit Logs</p>
+            <h2>{{ adminState.auditTotalItems }} event{{ adminState.auditTotalItems === 1 ? '' : 's' }}</h2>
+            <p>Search the server-side log stream by event key, actor, IP address, or target.</p>
+            <p class="panel-meta">Page {{ adminState.auditPage }} of {{ adminState.auditTotalPages }}</p>
+          </article>
+
+          <article class="panel">
+            <p class="panel-kicker">Filter</p>
+            <h2>Category</h2>
+            <label>
+              <span>Audit category</span>
+              <select v-model="adminState.auditCategory">
+                <option value="">All categories</option>
+                <option v-for="category in adminState.auditCategories" :key="category.key" :value="category.key">
+                  {{ category.label }}
+                </option>
+              </select>
+            </label>
+            <p class="panel-meta">Use the search bar above for text filters.</p>
+          </article>
+
+          <article class="panel panel-table panel-wide">
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">Event Stream</p>
+                <h2>Recorded activity</h2>
               </div>
-              <div class="quick-actions">
-                <button type="button" :disabled="adminState.automationBusy" @click="runAutomationJob('storage_shield_check')">Run shield check</button>
-                <button type="button" :disabled="adminState.automationBusy" @click="runAutomationJob('storage_usage_alert')">Check storage alert</button>
+              <div class="table-actions">
+                <button type="button" :disabled="adminState.auditPage <= 1 || adminState.loading" @click="goToAuditPage(adminState.auditPage - 1)">Previous</button>
+                <button type="button" :disabled="adminState.auditPage >= adminState.auditTotalPages || adminState.loading" @click="goToAuditPage(adminState.auditPage + 1)">Next</button>
               </div>
+            </div>
+            <table v-if="adminState.auditLogs.length > 0">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Event</th>
+                  <th>Category</th>
+                  <th>User / IP</th>
+                  <th>Target</th>
+                  <th>Summary</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="entry in adminState.auditLogs" :key="entry.id">
+                  <td>{{ formatDateLabel(entry.created_at) }}</td>
+                  <td><code>{{ entry.event_type }}</code></td>
+                  <td>{{ entry.category_label }}</td>
+                  <td>{{ auditActorLabel(entry) }}</td>
+                  <td>{{ auditTargetLabel(entry) }}</td>
+                  <td>{{ entry.summary }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <div v-else class="empty-inline">
+              <strong>No audit events match this filter.</strong>
+              <span>Change the category or search query to widen the result set.</span>
+            </div>
+          </article>
+        </section>
+
+        <section v-else class="admin-grid">
+          <article class="panel panel-wide">
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">Security</p>
+                <h2>Audit logging and protection</h2>
+              </div>
+              <button class="primary-button" type="button" :disabled="!adminState.canManageSettings" @click="saveSettings">Save security settings</button>
+            </div>
+            <div class="settings-pane">
+              <label class="checkbox-row">
+                <input v-model="adminState.settings.security.audit_enabled" type="checkbox" :disabled="!adminState.canManageSettings">
+                <span>Enable audit logging</span>
+              </label>
+              <label>
+                <span>Audit retention (days)</span>
+                <input v-model.number="adminState.settings.security.audit_retention_days" type="number" min="1" max="3650" :disabled="!adminState.canManageSettings">
+              </label>
+              <div class="security-toggle-grid">
+                <label class="checkbox-row">
+                  <input v-model="adminState.settings.security.log_auth_success" type="checkbox" :disabled="!adminState.canManageSettings">
+                  <span>Auth successes</span>
+                </label>
+                <label class="checkbox-row">
+                  <input v-model="adminState.settings.security.log_auth_failure" type="checkbox" :disabled="!adminState.canManageSettings">
+                  <span>Auth failures</span>
+                </label>
+                <label class="checkbox-row">
+                  <input v-model="adminState.settings.security.log_file_views" type="checkbox" :disabled="!adminState.canManageSettings">
+                  <span>File views</span>
+                </label>
+                <label class="checkbox-row">
+                  <input v-model="adminState.settings.security.log_file_downloads" type="checkbox" :disabled="!adminState.canManageSettings">
+                  <span>File downloads</span>
+                </label>
+                <label class="checkbox-row">
+                  <input v-model="adminState.settings.security.log_file_uploads" type="checkbox" :disabled="!adminState.canManageSettings">
+                  <span>File uploads</span>
+                </label>
+                <label class="checkbox-row">
+                  <input v-model="adminState.settings.security.log_file_management" type="checkbox" :disabled="!adminState.canManageSettings">
+                  <span>File management</span>
+                </label>
+                <label class="checkbox-row">
+                  <input v-model="adminState.settings.security.log_deletions" type="checkbox" :disabled="!adminState.canManageSettings">
+                  <span>Deletions</span>
+                </label>
+                <label class="checkbox-row">
+                  <input v-model="adminState.settings.security.log_admin_actions" type="checkbox" :disabled="!adminState.canManageSettings">
+                  <span>Admin actions</span>
+                </label>
+                <label class="checkbox-row">
+                  <input v-model="adminState.settings.security.log_security_actions" type="checkbox" :disabled="!adminState.canManageSettings">
+                  <span>Security actions</span>
+                </label>
+              </div>
+              <p class="panel-meta">Category switches only apply when the audit master switch is enabled.</p>
+            </div>
+          </article>
+
+          <article class="panel">
+            <p class="panel-kicker">Storage Shield</p>
+            <h2>{{ session.diagnostic.exposed ? 'Storage is exposed' : 'Storage shield looks healthy' }}</h2>
+            <p>{{ session.diagnostic.message }}</p>
+            <p class="panel-meta">Last checked: {{ formatDateLabel(session.diagnostic.checked_at) }}</p>
+            <div class="quick-actions">
+              <button type="button" :disabled="adminState.automationBusy" @click="runAutomationJob('storage_shield_check')">Run shield check</button>
+              <button type="button" :disabled="adminState.automationBusy" @click="runAutomationJob('storage_usage_alert')">Check storage alert</button>
+            </div>
+          </article>
+
+          <article class="panel">
+            <p class="panel-kicker">Upload Policy</p>
+            <h2>{{ uploadLimitLabel(session.uploadPolicy) }}</h2>
+            <p>{{ session.uploadPolicy.allowed_extensions_label }}</p>
+            <p class="panel-meta">Abandoned uploads are cleared after {{ session.uploadPolicy.stale_upload_ttl_hours }} hours.</p>
+          </article>
+
+          <article class="panel panel-wide">
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">IP Banning</p>
+                <h2>Block an address</h2>
+              </div>
+            </div>
+            <form class="auth-form compact security-ban-form" @submit.prevent="createIpBan">
+              <label>
+                <span>IP address</span>
+                <input v-model="banForm.ipAddress" type="text" required placeholder="203.0.113.42">
+              </label>
+              <label>
+                <span>Reason</span>
+                <input v-model="banForm.reason" type="text" required placeholder="Repeated abuse or hostile traffic">
+              </label>
+              <label>
+                <span>Expires at</span>
+                <input v-model="banForm.expiresAtLocal" type="datetime-local">
+                <small class="panel-meta">Leave empty for a permanent ban.</small>
+              </label>
+              <button type="submit" :disabled="!adminState.canManageSettings">Ban IP</button>
+            </form>
+          </article>
+
+          <article class="panel panel-table panel-wide">
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">Active Bans</p>
+                <h2>Blocked IP addresses</h2>
+              </div>
+            </div>
+            <table v-if="adminState.activeBans.length > 0">
+              <thead>
+                <tr>
+                  <th>IP</th>
+                  <th>Reason</th>
+                  <th>Created</th>
+                  <th>Expires</th>
+                  <th>By</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="ban in adminState.activeBans" :key="ban.id">
+                  <td><strong>{{ ban.ip_address }}</strong></td>
+                  <td>{{ ban.reason }}</td>
+                  <td>{{ formatDateLabel(ban.created_at) }}</td>
+                  <td>{{ formatDateLabel(ban.expires_at) }}</td>
+                  <td>{{ ban.created_by_username || 'Unknown' }}</td>
+                  <td class="table-actions">
+                    <button type="button" :disabled="!adminState.canManageSettings" @click="unbanIp(ban)">Unban</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <div v-else class="empty-inline">
+              <strong>No active IP bans.</strong>
+              <span>The security surface will show new bans here immediately.</span>
+            </div>
+          </article>
+
+          <article class="panel panel-table panel-wide">
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">Ban History</p>
+                <h2>Unbanned and expired entries</h2>
+              </div>
+            </div>
+            <table v-if="adminState.banHistory.length > 0">
+              <thead>
+                <tr>
+                  <th>IP</th>
+                  <th>Status</th>
+                  <th>Reason</th>
+                  <th>Created</th>
+                  <th>Ended</th>
+                  <th>By</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="ban in adminState.banHistory" :key="ban.id">
+                  <td><strong>{{ ban.ip_address }}</strong></td>
+                  <td>{{ banStatusLabel(ban) }}</td>
+                  <td>{{ ban.reason }}</td>
+                  <td>{{ formatDateLabel(ban.created_at) }}</td>
+                  <td>{{ formatDateLabel(ban.revoked_at) }}</td>
+                  <td>{{ ban.revoked_by_username || 'System' }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <div v-else class="empty-inline">
+              <strong>No historic IP bans.</strong>
+              <span>Manual unbans and automatic expiries will appear here.</span>
             </div>
           </article>
         </section>

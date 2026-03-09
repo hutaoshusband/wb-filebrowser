@@ -146,6 +146,16 @@ final class FileManager
 
         $folder = self::folderById((int) $pdo->lastInsertId(), $pdo);
 
+        if ($folder !== null) {
+            AuditLog::record('folder.create', 'file_management', [
+                'actor_user' => $user,
+                'target_type' => 'folder',
+                'target_id' => (int) $folder['id'],
+                'target_label' => self::folderPathLabelFromRow($folder, $pdo),
+                'summary' => 'Created folder ' . $folder['name'],
+            ], $pdo);
+        }
+
         return self::serializeFolder($folder, $user, $pdo, Permissions::scope($user, $pdo));
     }
 
@@ -153,8 +163,9 @@ final class FileManager
     {
         self::assertEditableFolder($user, $folderId);
         $pdo = Database::connection();
+        $folder = self::folderById($folderId, $pdo);
 
-        if (self::folderById($folderId, $pdo) === null) {
+        if ($folder === null) {
             throw new RuntimeException('Folder not found.');
         }
 
@@ -164,12 +175,27 @@ final class FileManager
             ':updated_at' => wb_now(),
             ':id' => $folderId,
         ]);
+        $updatedFolder = self::folderById($folderId, $pdo);
+
+        if ($updatedFolder !== null) {
+            AuditLog::record('folder.rename', 'file_management', [
+                'actor_user' => $user,
+                'target_type' => 'folder',
+                'target_id' => $folderId,
+                'target_label' => self::folderPathLabelFromRow($updatedFolder, $pdo),
+                'summary' => 'Renamed folder to ' . $updatedFolder['name'],
+                'metadata' => [
+                    'previous_name' => (string) $folder['name'],
+                ],
+            ], $pdo);
+        }
     }
 
     public static function moveFolder(array $user, int $folderId, int $targetParentId): void
     {
         self::assertEditableFolder($user, $folderId);
         $pdo = Database::connection();
+        $folder = self::folderById($folderId, $pdo);
 
         if ($folderId === $targetParentId) {
             throw new RuntimeException('A folder cannot be moved into itself.');
@@ -195,13 +221,29 @@ final class FileManager
             ':updated_at' => wb_now(),
             ':id' => $folderId,
         ]);
+        $updatedFolder = self::folderById($folderId, $pdo);
+
+        if ($updatedFolder !== null) {
+            AuditLog::record('folder.move', 'file_management', [
+                'actor_user' => $user,
+                'target_type' => 'folder',
+                'target_id' => $folderId,
+                'target_label' => self::folderPathLabelFromRow($updatedFolder, $pdo),
+                'summary' => 'Moved folder ' . $updatedFolder['name'],
+                'metadata' => [
+                    'from' => $folder === null ? null : self::folderPathLabelFromRow($folder, $pdo),
+                ],
+            ], $pdo);
+        }
     }
 
     public static function deleteFolder(array $user, int $folderId): void
     {
         self::assertDeletableFolder($user, $folderId);
         $pdo = Database::connection();
+        $folder = self::folderById($folderId, $pdo);
         $descendants = self::descendantFolderIds($folderId, $pdo);
+        $folderLabel = $folder === null ? 'Unknown folder' : self::folderPathLabelFromRow($folder, $pdo);
         $placeholders = implode(',', array_fill(0, count($descendants), '?'));
         $fileStatement = $pdo->prepare(
             'SELECT disk_name, disk_extension FROM files WHERE folder_id IN (' . $placeholders . ')'
@@ -214,6 +256,16 @@ final class FileManager
 
         $statement = $pdo->prepare('DELETE FROM folders WHERE id = :id');
         $statement->execute([':id' => $folderId]);
+        AuditLog::record('folder.delete', 'deletions', [
+            'actor_user' => $user,
+            'target_type' => 'folder',
+            'target_id' => $folderId,
+            'target_label' => $folderLabel,
+            'summary' => 'Deleted folder ' . $folderLabel,
+            'metadata' => [
+                'descendant_count' => count($descendants),
+            ],
+        ], $pdo);
     }
 
     public static function renameFile(array $user, int $fileId, string $name): void
@@ -235,6 +287,20 @@ final class FileManager
             ':updated_at' => wb_now(),
             ':id' => $fileId,
         ]);
+        $updatedFile = self::fileById($fileId, $pdo);
+
+        if ($updatedFile !== null) {
+            AuditLog::record('file.rename', 'file_management', [
+                'actor_user' => $user,
+                'target_type' => 'file',
+                'target_id' => $fileId,
+                'target_label' => self::filePathLabel($updatedFile, $pdo),
+                'summary' => 'Renamed file to ' . $updatedFile['original_name'],
+                'metadata' => [
+                    'previous_name' => (string) $file['original_name'],
+                ],
+            ], $pdo);
+        }
     }
 
     public static function moveFile(array $user, int $fileId, int $targetFolderId): void
@@ -264,6 +330,20 @@ final class FileManager
             ':updated_at' => wb_now(),
             ':id' => $fileId,
         ]);
+        $updatedFile = self::fileById($fileId, $pdo);
+
+        if ($updatedFile !== null) {
+            AuditLog::record('file.move', 'file_management', [
+                'actor_user' => $user,
+                'target_type' => 'file',
+                'target_id' => $fileId,
+                'target_label' => self::filePathLabel($updatedFile, $pdo),
+                'summary' => 'Moved file ' . $updatedFile['original_name'],
+                'metadata' => [
+                    'from' => self::filePathLabel($file, $pdo),
+                ],
+            ], $pdo);
+        }
     }
 
     public static function deleteFile(array $user, int $fileId): void
@@ -279,10 +359,18 @@ final class FileManager
             throw new RuntimeException('You do not have permission to delete files here.');
         }
 
+        $fileLabel = self::filePathLabel($file, $pdo);
         self::deleteBlob((string) $file['disk_name'], (string) $file['disk_extension']);
 
         $statement = $pdo->prepare('DELETE FROM files WHERE id = :id');
         $statement->execute([':id' => $fileId]);
+        AuditLog::record('file.delete', 'deletions', [
+            'actor_user' => $user,
+            'target_type' => 'file',
+            'target_id' => $fileId,
+            'target_label' => $fileLabel,
+            'summary' => 'Deleted file ' . $file['original_name'],
+        ], $pdo);
     }
 
     public static function uploadInit(array $user, int $folderId, string $originalName, int $size, string $mimeType, int $totalChunks): array
@@ -462,6 +550,20 @@ final class FileManager
 
         $file = self::fileById((int) $pdo->lastInsertId(), $pdo);
 
+        if ($file !== null) {
+            AuditLog::record('file.upload', 'file_uploads', [
+                'actor_user' => $user,
+                'target_type' => 'file',
+                'target_id' => (int) $file['id'],
+                'target_label' => self::filePathLabel($file, $pdo),
+                'summary' => 'Uploaded file ' . $file['original_name'],
+                'metadata' => [
+                    'size' => (int) $file['size'],
+                    'mime_type' => (string) $file['mime_type'],
+                ],
+            ], $pdo);
+        }
+
         return self::serializeFile($file, $user, $pdo, Permissions::scope($user, $pdo));
     }
 
@@ -506,6 +608,15 @@ final class FileManager
             http_response_code(403);
             exit;
         }
+
+        $dispositionType = $disposition === 'attachment' ? 'attachment' : 'inline';
+        AuditLog::record($dispositionType === 'attachment' ? 'file.download' : 'file.view', $dispositionType === 'attachment' ? 'file_downloads' : 'file_views', [
+            'actor_user' => $user,
+            'target_type' => 'file',
+            'target_id' => $fileId,
+            'target_label' => self::filePathLabel($file, $pdo),
+            'summary' => ($dispositionType === 'attachment' ? 'Downloaded file ' : 'Viewed file ') . $file['original_name'],
+        ], $pdo);
 
         Security::sendFile(
             self::blobPath((string) $file['disk_name'], (string) $file['disk_extension']),
@@ -714,6 +825,50 @@ final class FileManager
 
             return $direction * ($leftValue <=> $rightValue);
         });
+    }
+
+    private static function folderPathLabel(int $folderId, PDO $pdo): string
+    {
+        $folder = self::folderById($folderId, $pdo);
+
+        return $folder === null ? 'Unknown folder' : self::folderPathLabelFromRow($folder, $pdo);
+    }
+
+    private static function folderPathLabelFromRow(array $folder, PDO $pdo): string
+    {
+        $segments = [];
+        $current = $folder;
+
+        while (true) {
+            $currentId = (int) ($current['id'] ?? 0);
+
+            if ($currentId === Database::rootFolderId()) {
+                array_unshift($segments, 'Home');
+                break;
+            }
+
+            array_unshift($segments, (string) ($current['name'] ?? ''));
+            $parentId = $current['parent_id'] === null ? null : (int) $current['parent_id'];
+
+            if ($parentId === null) {
+                break;
+            }
+
+            $parent = self::folderById($parentId, $pdo);
+
+            if ($parent === null) {
+                break;
+            }
+
+            $current = $parent;
+        }
+
+        return implode(' / ', array_filter($segments, static fn (string $segment): bool => $segment !== ''));
+    }
+
+    private static function filePathLabel(array $file, PDO $pdo): string
+    {
+        return self::folderPathLabel((int) $file['folder_id'], $pdo) . ' / ' . (string) $file['original_name'];
     }
 
     private static function assertEditableFolder(array $user, int $folderId): void

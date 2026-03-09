@@ -23,6 +23,8 @@ require_once __DIR__ . '/Auth.php';
 require_once __DIR__ . '/Permissions.php';
 require_once __DIR__ . '/FileManager.php';
 require_once __DIR__ . '/FileShares.php';
+require_once __DIR__ . '/AuditLog.php';
+require_once __DIR__ . '/IpBanService.php';
 require_once __DIR__ . '/AutomationRunner.php';
 
 if (!defined('WB_BASE_PATH')) {

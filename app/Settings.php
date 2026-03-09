@@ -51,6 +51,17 @@ final class Settings
             'automation_diagnostic_interval_minutes' => (string) $normalized['automation']['diagnostic_interval_minutes'],
             'automation_cleanup_interval_minutes' => (string) $normalized['automation']['cleanup_interval_minutes'],
             'automation_storage_alert_threshold_pct' => (string) $normalized['automation']['storage_alert_threshold_pct'],
+            'audit_enabled' => $normalized['security']['audit_enabled'] ? '1' : '0',
+            'audit_retention_days' => (string) $normalized['security']['audit_retention_days'],
+            'log_auth_success' => $normalized['security']['log_auth_success'] ? '1' : '0',
+            'log_auth_failure' => $normalized['security']['log_auth_failure'] ? '1' : '0',
+            'log_file_views' => $normalized['security']['log_file_views'] ? '1' : '0',
+            'log_file_downloads' => $normalized['security']['log_file_downloads'] ? '1' : '0',
+            'log_file_uploads' => $normalized['security']['log_file_uploads'] ? '1' : '0',
+            'log_file_management' => $normalized['security']['log_file_management'] ? '1' : '0',
+            'log_deletions' => $normalized['security']['log_deletions'] ? '1' : '0',
+            'log_admin_actions' => $normalized['security']['log_admin_actions'] ? '1' : '0',
+            'log_security_actions' => $normalized['security']['log_security_actions'] ? '1' : '0',
             'diagnostic_message' => 'Storage shield checks will start after setup.',
         ];
     }
@@ -73,6 +84,19 @@ final class Settings
                 'diagnostic_interval_minutes' => self::parseInteger(Database::setting('automation_diagnostic_interval_minutes', '30'), 'Storage shield interval', 5, 1440),
                 'cleanup_interval_minutes' => self::parseInteger(Database::setting('automation_cleanup_interval_minutes', '60'), 'Cleanup interval', 5, 1440),
                 'storage_alert_threshold_pct' => self::parseInteger(Database::setting('automation_storage_alert_threshold_pct', '85'), 'Storage alert threshold', 50, 99),
+            ],
+            'security' => [
+                'audit_enabled' => wb_parse_bool(Database::setting('audit_enabled', '0')),
+                'audit_retention_days' => self::parseInteger(Database::setting('audit_retention_days', '30'), 'Audit log retention', 1, 3650),
+                'log_auth_success' => wb_parse_bool(Database::setting('log_auth_success', '1')),
+                'log_auth_failure' => wb_parse_bool(Database::setting('log_auth_failure', '1')),
+                'log_file_views' => wb_parse_bool(Database::setting('log_file_views', '1')),
+                'log_file_downloads' => wb_parse_bool(Database::setting('log_file_downloads', '1')),
+                'log_file_uploads' => wb_parse_bool(Database::setting('log_file_uploads', '1')),
+                'log_file_management' => wb_parse_bool(Database::setting('log_file_management', '1')),
+                'log_deletions' => wb_parse_bool(Database::setting('log_deletions', '1')),
+                'log_admin_actions' => wb_parse_bool(Database::setting('log_admin_actions', '1')),
+                'log_security_actions' => wb_parse_bool(Database::setting('log_security_actions', '1')),
             ],
         ];
     }
@@ -111,6 +135,17 @@ final class Settings
             'automation_diagnostic_interval_minutes' => (string) $normalized['automation']['diagnostic_interval_minutes'],
             'automation_cleanup_interval_minutes' => (string) $normalized['automation']['cleanup_interval_minutes'],
             'automation_storage_alert_threshold_pct' => (string) $normalized['automation']['storage_alert_threshold_pct'],
+            'audit_enabled' => $normalized['security']['audit_enabled'] ? '1' : '0',
+            'audit_retention_days' => (string) $normalized['security']['audit_retention_days'],
+            'log_auth_success' => $normalized['security']['log_auth_success'] ? '1' : '0',
+            'log_auth_failure' => $normalized['security']['log_auth_failure'] ? '1' : '0',
+            'log_file_views' => $normalized['security']['log_file_views'] ? '1' : '0',
+            'log_file_downloads' => $normalized['security']['log_file_downloads'] ? '1' : '0',
+            'log_file_uploads' => $normalized['security']['log_file_uploads'] ? '1' : '0',
+            'log_file_management' => $normalized['security']['log_file_management'] ? '1' : '0',
+            'log_deletions' => $normalized['security']['log_deletions'] ? '1' : '0',
+            'log_admin_actions' => $normalized['security']['log_admin_actions'] ? '1' : '0',
+            'log_security_actions' => $normalized['security']['log_security_actions'] ? '1' : '0',
         ];
 
         foreach ($updates as $key => $value) {
@@ -208,6 +243,24 @@ final class Settings
             ['runner_enabled', 'diagnostic_interval_minutes', 'cleanup_interval_minutes', 'storage_alert_threshold_pct'],
             $base['automation']
         );
+        $securityInput = self::normalizeGroupInput(
+            $payload,
+            'security',
+            [
+                'audit_enabled',
+                'audit_retention_days',
+                'log_auth_success',
+                'log_auth_failure',
+                'log_file_views',
+                'log_file_downloads',
+                'log_file_uploads',
+                'log_file_management',
+                'log_deletions',
+                'log_admin_actions',
+                'log_security_actions',
+            ],
+            $base['security']
+        );
 
         return [
             'access' => [
@@ -246,6 +299,24 @@ final class Settings
                     99
                 ),
             ],
+            'security' => [
+                'audit_enabled' => wb_parse_bool($securityInput['audit_enabled'] ?? $base['security']['audit_enabled']),
+                'audit_retention_days' => self::parseInteger(
+                    $securityInput['audit_retention_days'] ?? $base['security']['audit_retention_days'],
+                    'Audit log retention',
+                    1,
+                    3650
+                ),
+                'log_auth_success' => wb_parse_bool($securityInput['log_auth_success'] ?? $base['security']['log_auth_success']),
+                'log_auth_failure' => wb_parse_bool($securityInput['log_auth_failure'] ?? $base['security']['log_auth_failure']),
+                'log_file_views' => wb_parse_bool($securityInput['log_file_views'] ?? $base['security']['log_file_views']),
+                'log_file_downloads' => wb_parse_bool($securityInput['log_file_downloads'] ?? $base['security']['log_file_downloads']),
+                'log_file_uploads' => wb_parse_bool($securityInput['log_file_uploads'] ?? $base['security']['log_file_uploads']),
+                'log_file_management' => wb_parse_bool($securityInput['log_file_management'] ?? $base['security']['log_file_management']),
+                'log_deletions' => wb_parse_bool($securityInput['log_deletions'] ?? $base['security']['log_deletions']),
+                'log_admin_actions' => wb_parse_bool($securityInput['log_admin_actions'] ?? $base['security']['log_admin_actions']),
+                'log_security_actions' => wb_parse_bool($securityInput['log_security_actions'] ?? $base['security']['log_security_actions']),
+            ],
         ];
     }
 
@@ -265,6 +336,19 @@ final class Settings
                 'diagnostic_interval_minutes' => 30,
                 'cleanup_interval_minutes' => 60,
                 'storage_alert_threshold_pct' => 85,
+            ],
+            'security' => [
+                'audit_enabled' => false,
+                'audit_retention_days' => 30,
+                'log_auth_success' => true,
+                'log_auth_failure' => true,
+                'log_file_views' => true,
+                'log_file_downloads' => true,
+                'log_file_uploads' => true,
+                'log_file_management' => true,
+                'log_deletions' => true,
+                'log_admin_actions' => true,
+                'log_security_actions' => true,
             ],
         ];
     }
@@ -289,6 +373,19 @@ final class Settings
             'automation_diagnostic_interval_minutes' => '30',
             'automation_cleanup_interval_minutes' => '60',
             'automation_storage_alert_threshold_pct' => '85',
+            'audit_enabled' => '0',
+            'audit_retention_days' => '30',
+            'log_auth_success' => '1',
+            'log_auth_failure' => '1',
+            'log_file_views' => '1',
+            'log_file_downloads' => '1',
+            'log_file_uploads' => '1',
+            'log_file_management' => '1',
+            'log_deletions' => '1',
+            'log_admin_actions' => '1',
+            'log_security_actions' => '1',
+            'audit_last_pruned_at' => '',
+            'ip_bans_last_pruned_at' => '',
             'automation_lock_token' => '',
             'automation_lock_until' => '',
         ];
