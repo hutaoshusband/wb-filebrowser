@@ -268,6 +268,43 @@ final class FileManager
         ], $pdo);
     }
 
+    public static function saveFolderDescription(array $user, int $folderId, string $description): array
+    {
+        self::assertEditableFolder($user, $folderId);
+        $pdo = Database::connection();
+        $folder = self::folderById($folderId, $pdo);
+
+        if ($folder === null) {
+            throw new RuntimeException('Folder not found.');
+        }
+
+        $normalized = self::normalizeDescription($description);
+        $statement = $pdo->prepare(
+            'UPDATE folders SET description = :description, updated_at = :updated_at WHERE id = :id'
+        );
+        $statement->execute([
+            ':description' => $normalized,
+            ':updated_at' => wb_now(),
+            ':id' => $folderId,
+        ]);
+
+        $updatedFolder = self::folderById($folderId, $pdo);
+
+        if ($updatedFolder !== null) {
+            AuditLog::record('folder.description.update', 'file_management', [
+                'actor_user' => $user,
+                'target_type' => 'folder',
+                'target_id' => $folderId,
+                'target_label' => self::folderPathLabelFromRow($updatedFolder, $pdo),
+                'summary' => 'Updated folder description for ' . $updatedFolder['name'],
+            ], $pdo);
+
+            return self::serializeFolder($updatedFolder, $user, $pdo, Permissions::scope($user, $pdo));
+        }
+
+        throw new RuntimeException('Folder not found.');
+    }
+
     public static function renameFile(array $user, int $fileId, string $name): void
     {
         $pdo = Database::connection();
@@ -371,6 +408,46 @@ final class FileManager
             'target_label' => $fileLabel,
             'summary' => 'Deleted file ' . $file['original_name'],
         ], $pdo);
+    }
+
+    public static function saveFileDescription(array $user, int $fileId, string $description): array
+    {
+        $pdo = Database::connection();
+        $file = self::fileById($fileId, $pdo);
+
+        if ($file === null) {
+            throw new RuntimeException('File not found.');
+        }
+
+        if (!Permissions::canEditFolder((int) $file['folder_id'], $user, $pdo)) {
+            throw new RuntimeException('You do not have permission to edit this file.');
+        }
+
+        $normalized = self::normalizeDescription($description);
+        $statement = $pdo->prepare(
+            'UPDATE files SET description = :description, updated_at = :updated_at WHERE id = :id'
+        );
+        $statement->execute([
+            ':description' => $normalized,
+            ':updated_at' => wb_now(),
+            ':id' => $fileId,
+        ]);
+
+        $updatedFile = self::fileById($fileId, $pdo);
+
+        if ($updatedFile !== null) {
+            AuditLog::record('file.description.update', 'file_management', [
+                'actor_user' => $user,
+                'target_type' => 'file',
+                'target_id' => $fileId,
+                'target_label' => self::filePathLabel($updatedFile, $pdo),
+                'summary' => 'Updated file description for ' . $updatedFile['original_name'],
+            ], $pdo);
+
+            return self::serializeFile($updatedFile, $user, $pdo, Permissions::scope($user, $pdo));
+        }
+
+        throw new RuntimeException('File not found.');
     }
 
     public static function uploadInit(array $user, int $folderId, string $originalName, int $size, string $mimeType, int $totalChunks): array
@@ -650,6 +727,78 @@ final class FileManager
         ];
     }
 
+    public static function refreshFolderSizeCache(?PDO $pdo = null): int
+    {
+        $pdo ??= Database::connection();
+        $folderRows = $pdo->query('SELECT id, parent_id FROM folders')->fetchAll();
+
+        if ($folderRows === []) {
+            return 0;
+        }
+
+        $childrenMap = [];
+        $sizes = [];
+
+        foreach ($folderRows as $folder) {
+            $folderId = (int) $folder['id'];
+            $parentId = $folder['parent_id'] === null ? null : (int) $folder['parent_id'];
+            $childrenMap[$parentId ?? 0][] = $folderId;
+            $sizes[$folderId] = 0;
+        }
+
+        $fileSizes = $pdo->query(
+            'SELECT folder_id, COALESCE(SUM(size), 0) AS folder_file_size FROM files GROUP BY folder_id'
+        )->fetchAll();
+
+        foreach ($fileSizes as $row) {
+            $folderId = (int) ($row['folder_id'] ?? 0);
+
+            if (isset($sizes[$folderId])) {
+                $sizes[$folderId] = (int) ($row['folder_file_size'] ?? 0);
+            }
+        }
+
+        $visited = [];
+        $computeSize = static function (int $folderId) use (&$computeSize, &$sizes, $childrenMap, &$visited): int {
+            if (isset($visited[$folderId])) {
+                return $sizes[$folderId] ?? 0;
+            }
+
+            $visited[$folderId] = true;
+            $totalSize = $sizes[$folderId] ?? 0;
+
+            foreach ($childrenMap[$folderId] ?? [] as $childId) {
+                $totalSize += $computeSize($childId);
+            }
+
+            $sizes[$folderId] = $totalSize;
+
+            return $totalSize;
+        };
+
+        foreach (array_keys($sizes) as $folderId) {
+            $computeSize((int) $folderId);
+        }
+
+        $statement = $pdo->prepare(
+            'UPDATE folders
+             SET cached_size_bytes = :cached_size_bytes,
+                 cached_size_calculated_at = :cached_size_calculated_at
+             WHERE id = :id'
+        );
+        $calculatedAt = wb_now();
+
+        foreach ($sizes as $folderId => $size) {
+            $statement->execute([
+                ':cached_size_bytes' => $size,
+                ':cached_size_calculated_at' => $calculatedAt,
+                ':id' => $folderId,
+            ]);
+        }
+
+        return count($sizes);
+    }
+
     public static function cleanupStaleUploads(int $ttlHours): int
     {
         $chunkRoot = wb_storage_path('chunks');
@@ -760,17 +909,20 @@ final class FileManager
         $childCountStatement = $pdo->prepare('SELECT COUNT(*) FROM folders WHERE parent_id = :parent_id');
         $childCountStatement->execute([':parent_id' => $folderId]);
         $isRoot = $folderId === Database::rootFolderId();
+        $cachedSize = $folder['cached_size_bytes'] === null ? null : (int) $folder['cached_size_bytes'];
 
         return [
             'id' => $folderId,
             'type' => 'folder',
             'name' => $isRoot ? 'Home' : $folder['name'],
             'parent_id' => $folder['parent_id'] === null ? null : (int) $folder['parent_id'],
-            'size' => null,
-            'size_label' => '-',
+            'size' => $cachedSize,
+            'size_label' => $cachedSize === null ? '-' : wb_format_bytes($cachedSize),
             'mime_type' => 'inode/directory',
+            'description' => (string) ($folder['description'] ?? ''),
             'updated_at' => $folder['updated_at'],
             'updated_relative' => wb_relative_time($folder['updated_at']),
+            'cached_size_calculated_at' => $folder['cached_size_calculated_at'] === null ? null : (string) $folder['cached_size_calculated_at'],
             'child_count' => (int) $childCountStatement->fetchColumn(),
             'can_open' => $scope['all'] || in_array($folderId, $scope['ancestors'], true),
             'can_upload' => Permissions::canUploadToFolder($folderId, $user, $pdo, $scope),
@@ -794,6 +946,7 @@ final class FileManager
             'size' => (int) $file['size'],
             'size_label' => wb_format_bytes((int) $file['size']),
             'mime_type' => $file['mime_type'],
+            'description' => (string) ($file['description'] ?? ''),
             'updated_at' => $file['updated_at'],
             'updated_relative' => wb_relative_time($file['updated_at']),
             'checksum' => $file['checksum'],
@@ -1062,5 +1215,16 @@ final class FileManager
         }
 
         @rmdir($path);
+    }
+
+    private static function normalizeDescription(string $description): string
+    {
+        $normalized = str_replace(["\r\n", "\r"], "\n", trim($description));
+
+        if (mb_strlen($normalized) > 1000) {
+            throw new RuntimeException('Descriptions must be 1000 characters or fewer.');
+        }
+
+        return $normalized;
     }
 }

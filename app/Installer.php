@@ -262,6 +262,14 @@ XML;
             'password_hash TEXT NULL',
             'password_version INTEGER NOT NULL DEFAULT 0',
         ]);
+        self::ensureTableColumns($pdo, 'folders', [
+            'description TEXT NOT NULL DEFAULT \'\'',
+            'cached_size_bytes INTEGER NULL',
+            'cached_size_calculated_at TEXT NULL',
+        ]);
+        self::ensureTableColumns($pdo, 'files', [
+            'description TEXT NOT NULL DEFAULT \'\'',
+        ]);
         self::ensureTableColumns($pdo, 'folder_permissions', [
             'can_edit INTEGER NOT NULL DEFAULT 0',
             'can_delete INTEGER NOT NULL DEFAULT 0',
@@ -307,6 +315,9 @@ XML;
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 parent_id INTEGER NULL REFERENCES folders(id) ON DELETE CASCADE,
                 name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT \'\',
+                cached_size_bytes INTEGER NULL,
+                cached_size_calculated_at TEXT NULL,
                 created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -320,6 +331,7 @@ XML;
                 disk_extension TEXT NOT NULL,
                 mime_type TEXT NOT NULL,
                 size INTEGER NOT NULL,
+                description TEXT NOT NULL DEFAULT \'\',
                 checksum TEXT NOT NULL,
                 created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
                 created_at TEXT NOT NULL,

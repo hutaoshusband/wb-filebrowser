@@ -44,6 +44,9 @@ final class Settings
             'root_folder_id' => (string) $rootFolderId,
             'probe_relative_path' => $probeRelativePath,
             'public_access' => $normalized['access']['public_access'] ? '1' : '0',
+            'maintenance_enabled' => $normalized['access']['maintenance_enabled'] ? '1' : '0',
+            'maintenance_scope' => $normalized['access']['maintenance_scope'],
+            'maintenance_message' => $normalized['access']['maintenance_message'],
             'uploads_max_file_size_mb' => (string) $normalized['uploads']['max_file_size_mb'],
             'uploads_allowed_extensions' => self::implodeExtensions($normalized['uploads']['allowed_extensions']),
             'uploads_stale_upload_ttl_hours' => (string) $normalized['uploads']['stale_upload_ttl_hours'],
@@ -51,6 +54,7 @@ final class Settings
             'automation_diagnostic_interval_minutes' => (string) $normalized['automation']['diagnostic_interval_minutes'],
             'automation_cleanup_interval_minutes' => (string) $normalized['automation']['cleanup_interval_minutes'],
             'automation_storage_alert_threshold_pct' => (string) $normalized['automation']['storage_alert_threshold_pct'],
+            'automation_folder_size_interval_minutes' => (string) $normalized['automation']['folder_size_interval_minutes'],
             'audit_enabled' => $normalized['security']['audit_enabled'] ? '1' : '0',
             'audit_retention_days' => (string) $normalized['security']['audit_retention_days'],
             'log_auth_success' => $normalized['security']['log_auth_success'] ? '1' : '0',
@@ -62,6 +66,7 @@ final class Settings
             'log_deletions' => $normalized['security']['log_deletions'] ? '1' : '0',
             'log_admin_actions' => $normalized['security']['log_admin_actions'] ? '1' : '0',
             'log_security_actions' => $normalized['security']['log_security_actions'] ? '1' : '0',
+            'display_grid_thumbnails_enabled' => $normalized['display']['grid_thumbnails_enabled'] ? '1' : '0',
             'diagnostic_message' => 'Storage shield checks will start after setup.',
         ];
     }
@@ -73,6 +78,15 @@ final class Settings
         return [
             'access' => [
                 'public_access' => wb_parse_bool(Database::setting('public_access', '0')),
+                'maintenance_enabled' => wb_parse_bool(Database::setting('maintenance_enabled', '0')),
+                'maintenance_scope' => self::parseMaintenanceScope(Database::setting('maintenance_scope', MaintenanceMode::SCOPE_APP_ONLY)),
+                'maintenance_message' => self::parseText(
+                    Database::setting('maintenance_message', MaintenanceMode::defaultMessage()),
+                    'Maintenance message',
+                    2000,
+                    false,
+                    MaintenanceMode::defaultMessage()
+                ),
             ],
             'uploads' => [
                 'max_file_size_mb' => self::parseUploadLimitMb(Database::setting('uploads_max_file_size_mb', '0')),
@@ -84,6 +98,12 @@ final class Settings
                 'diagnostic_interval_minutes' => self::parseInteger(Database::setting('automation_diagnostic_interval_minutes', '30'), 'Storage shield interval', 5, 1440),
                 'cleanup_interval_minutes' => self::parseInteger(Database::setting('automation_cleanup_interval_minutes', '60'), 'Cleanup interval', 5, 1440),
                 'storage_alert_threshold_pct' => self::parseInteger(Database::setting('automation_storage_alert_threshold_pct', '85'), 'Storage alert threshold', 50, 99),
+                'folder_size_interval_minutes' => self::parseInteger(
+                    Database::setting('automation_folder_size_interval_minutes', '1440'),
+                    'Folder size refresh interval',
+                    60,
+                    10080
+                ),
             ],
             'security' => [
                 'audit_enabled' => wb_parse_bool(Database::setting('audit_enabled', '0')),
@@ -97,6 +117,9 @@ final class Settings
                 'log_deletions' => wb_parse_bool(Database::setting('log_deletions', '1')),
                 'log_admin_actions' => wb_parse_bool(Database::setting('log_admin_actions', '1')),
                 'log_security_actions' => wb_parse_bool(Database::setting('log_security_actions', '1')),
+            ],
+            'display' => [
+                'grid_thumbnails_enabled' => wb_parse_bool(Database::setting('display_grid_thumbnails_enabled', '1')),
             ],
         ];
     }
@@ -128,6 +151,9 @@ final class Settings
 
         $updates = [
             'public_access' => $normalized['access']['public_access'] ? '1' : '0',
+            'maintenance_enabled' => $normalized['access']['maintenance_enabled'] ? '1' : '0',
+            'maintenance_scope' => $normalized['access']['maintenance_scope'],
+            'maintenance_message' => $normalized['access']['maintenance_message'],
             'uploads_max_file_size_mb' => (string) $normalized['uploads']['max_file_size_mb'],
             'uploads_allowed_extensions' => self::implodeExtensions($normalized['uploads']['allowed_extensions']),
             'uploads_stale_upload_ttl_hours' => (string) $normalized['uploads']['stale_upload_ttl_hours'],
@@ -135,6 +161,7 @@ final class Settings
             'automation_diagnostic_interval_minutes' => (string) $normalized['automation']['diagnostic_interval_minutes'],
             'automation_cleanup_interval_minutes' => (string) $normalized['automation']['cleanup_interval_minutes'],
             'automation_storage_alert_threshold_pct' => (string) $normalized['automation']['storage_alert_threshold_pct'],
+            'automation_folder_size_interval_minutes' => (string) $normalized['automation']['folder_size_interval_minutes'],
             'audit_enabled' => $normalized['security']['audit_enabled'] ? '1' : '0',
             'audit_retention_days' => (string) $normalized['security']['audit_retention_days'],
             'log_auth_success' => $normalized['security']['log_auth_success'] ? '1' : '0',
@@ -146,6 +173,7 @@ final class Settings
             'log_deletions' => $normalized['security']['log_deletions'] ? '1' : '0',
             'log_admin_actions' => $normalized['security']['log_admin_actions'] ? '1' : '0',
             'log_security_actions' => $normalized['security']['log_security_actions'] ? '1' : '0',
+            'display_grid_thumbnails_enabled' => $normalized['display']['grid_thumbnails_enabled'] ? '1' : '0',
         ];
 
         foreach ($updates as $key => $value) {
@@ -230,7 +258,12 @@ final class Settings
     public static function normalizePayload(array $payload, ?array $base = null): array
     {
         $base ??= self::defaultGrouped();
-        $accessInput = self::normalizeGroupInput($payload, 'access', ['public_access'], $base['access']);
+        $accessInput = self::normalizeGroupInput(
+            $payload,
+            'access',
+            ['public_access', 'maintenance_enabled', 'maintenance_scope', 'maintenance_message'],
+            $base['access']
+        );
         $uploadInput = self::normalizeGroupInput(
             $payload,
             'uploads',
@@ -240,7 +273,7 @@ final class Settings
         $automationInput = self::normalizeGroupInput(
             $payload,
             'automation',
-            ['runner_enabled', 'diagnostic_interval_minutes', 'cleanup_interval_minutes', 'storage_alert_threshold_pct'],
+            ['runner_enabled', 'diagnostic_interval_minutes', 'cleanup_interval_minutes', 'storage_alert_threshold_pct', 'folder_size_interval_minutes'],
             $base['automation']
         );
         $securityInput = self::normalizeGroupInput(
@@ -261,10 +294,25 @@ final class Settings
             ],
             $base['security']
         );
+        $displayInput = self::normalizeGroupInput(
+            $payload,
+            'display',
+            ['grid_thumbnails_enabled'],
+            $base['display']
+        );
 
         return [
             'access' => [
                 'public_access' => wb_parse_bool($accessInput['public_access'] ?? $base['access']['public_access']),
+                'maintenance_enabled' => wb_parse_bool($accessInput['maintenance_enabled'] ?? $base['access']['maintenance_enabled']),
+                'maintenance_scope' => self::parseMaintenanceScope($accessInput['maintenance_scope'] ?? $base['access']['maintenance_scope']),
+                'maintenance_message' => self::parseText(
+                    $accessInput['maintenance_message'] ?? $base['access']['maintenance_message'],
+                    'Maintenance message',
+                    2000,
+                    false,
+                    MaintenanceMode::defaultMessage()
+                ),
             ],
             'uploads' => [
                 'max_file_size_mb' => self::parseUploadLimitMb(
@@ -298,6 +346,12 @@ final class Settings
                     50,
                     99
                 ),
+                'folder_size_interval_minutes' => self::parseInteger(
+                    $automationInput['folder_size_interval_minutes'] ?? $base['automation']['folder_size_interval_minutes'],
+                    'Folder size refresh interval',
+                    60,
+                    10080
+                ),
             ],
             'security' => [
                 'audit_enabled' => wb_parse_bool($securityInput['audit_enabled'] ?? $base['security']['audit_enabled']),
@@ -317,6 +371,9 @@ final class Settings
                 'log_admin_actions' => wb_parse_bool($securityInput['log_admin_actions'] ?? $base['security']['log_admin_actions']),
                 'log_security_actions' => wb_parse_bool($securityInput['log_security_actions'] ?? $base['security']['log_security_actions']),
             ],
+            'display' => [
+                'grid_thumbnails_enabled' => wb_parse_bool($displayInput['grid_thumbnails_enabled'] ?? $base['display']['grid_thumbnails_enabled']),
+            ],
         ];
     }
 
@@ -325,6 +382,9 @@ final class Settings
         return [
             'access' => [
                 'public_access' => false,
+                'maintenance_enabled' => false,
+                'maintenance_scope' => MaintenanceMode::SCOPE_APP_ONLY,
+                'maintenance_message' => MaintenanceMode::defaultMessage(),
             ],
             'uploads' => [
                 'max_file_size_mb' => 0,
@@ -336,6 +396,7 @@ final class Settings
                 'diagnostic_interval_minutes' => 30,
                 'cleanup_interval_minutes' => 60,
                 'storage_alert_threshold_pct' => 85,
+                'folder_size_interval_minutes' => 1440,
             ],
             'security' => [
                 'audit_enabled' => false,
@@ -350,6 +411,9 @@ final class Settings
                 'log_admin_actions' => true,
                 'log_security_actions' => true,
             ],
+            'display' => [
+                'grid_thumbnails_enabled' => true,
+            ],
         ];
     }
 
@@ -359,6 +423,9 @@ final class Settings
             'app_version' => Installer::VERSION,
             'app_secret' => wb_random_token(32),
             'public_access' => '0',
+            'maintenance_enabled' => '0',
+            'maintenance_scope' => MaintenanceMode::SCOPE_APP_ONLY,
+            'maintenance_message' => MaintenanceMode::defaultMessage(),
             'diagnostic_exposed' => '0',
             'diagnostic_checked_at' => '',
             'diagnostic_message' => 'Storage shield checks will start after setup.',
@@ -373,6 +440,7 @@ final class Settings
             'automation_diagnostic_interval_minutes' => '30',
             'automation_cleanup_interval_minutes' => '60',
             'automation_storage_alert_threshold_pct' => '85',
+            'automation_folder_size_interval_minutes' => '1440',
             'audit_enabled' => '0',
             'audit_retention_days' => '30',
             'log_auth_success' => '1',
@@ -384,6 +452,7 @@ final class Settings
             'log_deletions' => '1',
             'log_admin_actions' => '1',
             'log_security_actions' => '1',
+            'display_grid_thumbnails_enabled' => '1',
             'audit_last_pruned_at' => '',
             'ip_bans_last_pruned_at' => '',
             'automation_lock_token' => '',
@@ -481,5 +550,40 @@ final class Settings
         $jsMax = intdiv($jsMaxSafeInteger, $bytesPerMegabyte);
 
         return min($phpMax, $jsMax);
+    }
+
+    private static function parseMaintenanceScope(mixed $value): string
+    {
+        $scope = trim((string) $value);
+
+        if (!in_array($scope, MaintenanceMode::scopes(), true)) {
+            throw new InvalidArgumentException('Maintenance scope is invalid.');
+        }
+
+        return $scope;
+    }
+
+    private static function parseText(
+        mixed $value,
+        string $label,
+        int $maxLength,
+        bool $required = false,
+        string $fallback = ''
+    ): string {
+        $text = str_replace(["\r\n", "\r"], "\n", trim((string) $value));
+
+        if ($text === '') {
+            if ($required) {
+                throw new InvalidArgumentException($label . ' is required.');
+            }
+
+            return $fallback;
+        }
+
+        if (mb_strlen($text) > $maxLength) {
+            throw new InvalidArgumentException(sprintf('%s must be %d characters or fewer.', $label, $maxLength));
+        }
+
+        return $text;
     }
 }

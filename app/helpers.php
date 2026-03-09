@@ -141,6 +141,18 @@ function wb_error_response(string $message, int $status = 400, array $extra = []
     ], $status);
 }
 
+/**
+ * @param array<string, mixed> $maintenance
+ */
+function wb_maintenance_response(array $maintenance, int $status = 503): never
+{
+    wb_json_response([
+        'ok' => false,
+        'message' => (string) ($maintenance['message'] ?? WbFileBrowser\MaintenanceMode::defaultMessage()),
+        'maintenance' => $maintenance,
+    ], $status);
+}
+
 function wb_blocked_response(WbFileBrowser\BlockedAccessException $exception, int $status = 403): never
 {
     wb_json_response([
@@ -199,6 +211,21 @@ function wb_blocked_page(array $blocked): never
         : ($blockedUntilTimestamp > 0 ? wb_countdown_label($blockedUntilTimestamp - time()) : 'Temporarily');
 
     echo '<!doctype html><html lang="en"><head>' . wb_page_head('You have been blocked | wb-filebrowser') . '</head><body class="install-shell"><main class="install-layout"><section class="install-card blocked-card"><div class="install-header blocked-card__header"><p class="install-kicker">Blocked</p><h1>You have been blocked</h1><p class="blocked-card__status"' . ($blockedUntilTimestamp > 0 ? ' data-blocked-until-ts="' . $blockedUntilTimestamp . '"' : '') . '>' . wb_h($statusLabel) . '</p></div></section></main><script src="' . wb_h(wb_url('/media/blocked-countdown.js')) . '"></script></body></html>';
+    exit;
+}
+
+/**
+ * @param array<string, mixed> $maintenance
+ */
+function wb_maintenance_page(array $maintenance): never
+{
+    WbFileBrowser\Security::sendPageHeaders();
+    http_response_code(503);
+    $message = trim((string) ($maintenance['message'] ?? '')) !== ''
+        ? (string) $maintenance['message']
+        : WbFileBrowser\MaintenanceMode::defaultMessage();
+
+    echo '<!doctype html><html lang="en"><head>' . wb_page_head('Maintenance in progress | wb-filebrowser') . '</head><body class="install-shell"><main class="install-layout"><section class="install-card"><div class="install-header"><p class="install-kicker">Maintenance</p><h1>The file browser is temporarily unavailable</h1><p>' . nl2br(wb_h($message), false) . '</p></div></section></main></body></html>';
     exit;
 }
 

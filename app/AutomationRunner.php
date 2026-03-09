@@ -28,6 +28,10 @@ final class AutomationRunner
                 'label' => 'Storage usage alert',
                 'interval_key' => 'automation_diagnostic_interval_minutes',
             ],
+            'refresh_folder_sizes' => [
+                'label' => 'Refresh folder sizes',
+                'interval_key' => 'automation_folder_size_interval_minutes',
+            ],
         ];
     }
 
@@ -274,6 +278,7 @@ final class AutomationRunner
                 'storage_shield_check' => self::evaluateStorageShield($origin),
                 'cleanup_abandoned_uploads' => self::cleanupAbandonedUploads($pdo),
                 'storage_usage_alert' => self::checkStorageUsage($pdo),
+                'refresh_folder_sizes' => self::refreshFolderSizes($pdo),
                 default => throw new RuntimeException('Unknown automation job.'),
             };
             $duration = (int) round((microtime(true) - $start) * 1000);
@@ -361,6 +366,21 @@ final class AutomationRunner
                 $usage,
                 $threshold
             ),
+        ];
+    }
+
+    /**
+     * @return array{state: string, message: string}
+     */
+    private static function refreshFolderSizes(PDO $pdo): array
+    {
+        $updatedCount = FileManager::refreshFolderSizeCache($pdo);
+
+        return [
+            'state' => 'success',
+            'message' => $updatedCount === 1
+                ? 'Refreshed cached size for 1 folder.'
+                : sprintf('Refreshed cached sizes for %d folders.', $updatedCount),
         ];
     }
 

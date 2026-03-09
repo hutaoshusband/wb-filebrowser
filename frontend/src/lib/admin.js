@@ -44,7 +44,7 @@ export function getSearchConfig(shell, section, options = {}) {
       return {
         enabled: false,
         placeholder: 'Search is not used in Settings',
-        emptyText: 'Use the settings tabs to move between Access, Uploads, and Automation.',
+        emptyText: 'Use the settings tabs to move between Access, Display, Uploads, and Automation.',
       };
     default:
       return {

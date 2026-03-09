@@ -24,6 +24,11 @@ try {
 } catch (BlockedAccessException $exception) {
     wb_blocked_page($exception->payload());
 }
+try {
+    \WbFileBrowser\MaintenanceMode::assertAllowed($bootstrap['user'] ?? null, 'share');
+} catch (\WbFileBrowser\MaintenanceModeException $exception) {
+    wb_maintenance_page($exception->payload());
+}
 $token = trim((string) ($_GET['token'] ?? ''));
 $payload = null;
 $shareContext = null;

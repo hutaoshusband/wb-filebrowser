@@ -10,6 +10,11 @@ try {
 } catch (WbFileBrowser\BlockedAccessException $exception) {
     wb_blocked_page($exception->payload());
 }
+try {
+    WbFileBrowser\MaintenanceMode::assertAllowed($bootstrap['user'] ?? null, 'app');
+} catch (WbFileBrowser\MaintenanceModeException $exception) {
+    wb_maintenance_page($exception->payload());
+}
 WbFileBrowser\Security::sendPageHeaders();
 ?>
 <!doctype html>

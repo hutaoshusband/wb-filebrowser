@@ -1,11 +1,13 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { describePermissionPrincipal, filterPermissionRows, filterUsers, getSearchConfig, jobTone } from './lib/admin.js';
+import { renderPdfThumbnail } from './lib/thumbnails.js';
 import { validateUploadCandidate } from './lib/uploadPolicy.js';
 
 const ADMIN_SECTIONS = ['dashboard', 'users', 'permissions', 'settings', 'audit', 'security'];
-const SETTING_TABS = ['access', 'uploads', 'automation'];
+const SETTING_TABS = ['access', 'display', 'uploads', 'automation'];
 const BLOCKED_STORAGE_KEY = 'wb-filebrowser:blocked-state';
+const THUMB_OBSERVER_KEY = Symbol('wb-thumb-observer');
 
 function createDefaultUploadPolicy() {
   return {
@@ -19,10 +21,28 @@ function createDefaultUploadPolicy() {
   };
 }
 
+function createDefaultMaintenance() {
+  return {
+    enabled: false,
+    scope: 'app_only',
+    message: 'The file browser is temporarily unavailable while maintenance is in progress. Please try again later.',
+    blocks_current_user: false,
+  };
+}
+
+function createDefaultDisplaySettings() {
+  return {
+    grid_thumbnails_enabled: true,
+  };
+}
+
 function createDefaultSettings() {
   return {
     access: {
       public_access: false,
+      maintenance_enabled: false,
+      maintenance_scope: 'app_only',
+      maintenance_message: createDefaultMaintenance().message,
     },
     uploads: {
       max_file_size_mb: 0,
@@ -34,6 +54,7 @@ function createDefaultSettings() {
       diagnostic_interval_minutes: 30,
       cleanup_interval_minutes: 60,
       storage_alert_threshold_pct: 85,
+      folder_size_interval_minutes: 1440,
     },
     security: {
       audit_enabled: false,
@@ -48,6 +69,7 @@ function createDefaultSettings() {
       log_admin_actions: true,
       log_security_actions: true,
     },
+    display: createDefaultDisplaySettings(),
   };
 }
 
@@ -67,6 +89,8 @@ const session = reactive({
   appVersion: bootstrap.app_version ?? '1.0.0-alpha',
   storage: { used_label: '0 B', total_label: 'Unknown' },
   diagnostic: { exposed: false, checked_at: '', message: '', probe_path: '', probe_url: '' },
+  maintenance: { ...createDefaultMaintenance(), ...(bootstrap.maintenance ?? {}) },
+  display: { ...createDefaultDisplaySettings(), ...(bootstrap.display ?? {}) },
   help: { title: 'Help', body: 'Use the admin panel to publish folders and review the storage shield diagnostic.' },
   uploadPolicy: createDefaultUploadPolicy(),
 });
@@ -151,6 +175,15 @@ const dragDepth = ref(0);
 const isBooting = ref(true);
 const fileInput = ref(null);
 const blockedCountdown = ref('');
+const descriptionDraft = ref('');
+const descriptionSaving = ref(false);
+
+const thumbnailState = reactive({
+  imageErrors: {},
+  pdfUrls: {},
+  pdfLoading: {},
+  pdfErrors: {},
+});
 
 const blockedState = reactive({
   active: false,
@@ -177,6 +210,7 @@ const selectedItem = computed(() => currentEntries.value.find((item) => rowKey(i
 const canUploadHere = computed(() => shell === 'app' && session.user !== null && folderState.can_upload);
 const canCreateFoldersHere = computed(() => shell === 'app' && folderState.can_create_folders);
 const canManageShares = computed(() => shell === 'app' && isAdmin.value);
+const canEditDescription = computed(() => Boolean(infoItem.value?.can_edit));
 const breadcrumbItems = computed(() => searchActive.value
   ? [{ id: session.rootFolderId, name: 'Home' }, { id: -1, name: 'Search results' }]
   : folderState.breadcrumbs);
@@ -194,6 +228,15 @@ const dueAutomationCount = computed(() => automationJobs.value.filter((job) => j
 const uploadAccept = computed(() => session.uploadPolicy.allowed_extensions.length === 0
   ? null
   : session.uploadPolicy.allowed_extensions.map((extension) => `.${extension}`).join(','));
+const thumbnailsEnabled = computed(() => Boolean(session.display?.grid_thumbnails_enabled));
+const descriptionDirty = computed(() => {
+  if (!infoItem.value) {
+    return false;
+  }
+
+  return descriptionDraft.value !== String(infoItem.value.description ?? '');
+});
+const descriptionTooLong = computed(() => descriptionDraft.value.length > 1000);
 const shareContextItem = computed(() => {
   if (!canManageShares.value) {
     return null;
@@ -241,6 +284,9 @@ async function api(action, options = {}) {
   if (!response.ok || !payload.ok) {
     if (payload?.blocked) {
       applyBlockedState(payload.blocked);
+    }
+    if (payload?.maintenance) {
+      applyMaintenanceState(payload.maintenance);
     }
     throw new Error(payload.message ?? 'Request failed.');
   }
@@ -299,20 +345,24 @@ function syncRouteFromHash() {
 }
 
 async function refreshSession() {
-  const payload = await api('auth.session');
+  const payload = await api('auth.session', {
+    params: { surface: shell },
+  });
   session.user = payload.user ?? null;
   session.publicAccess = Boolean(payload.public_access);
   session.rootFolderId = payload.root_folder_id ?? 1;
   session.appVersion = payload.app_version ?? session.appVersion;
   session.storage = payload.storage ?? session.storage;
   session.diagnostic = payload.diagnostic ?? session.diagnostic;
+  session.display = { ...createDefaultDisplaySettings(), ...(payload.display ?? session.display) };
+  applyMaintenanceState(payload.maintenance);
   session.help = payload.help ?? session.help;
   session.uploadPolicy = payload.upload_policy ?? session.uploadPolicy;
   session.csrfToken = payload.csrf_token ?? session.csrfToken;
 }
 
 function showMessage(message) {
-  if (blockedState.active) {
+  if (blockedState.active || session.maintenance.blocks_current_user) {
     return;
   }
 
@@ -327,6 +377,14 @@ function setSearchForSection(section) {
   if (!getSearchConfig(shell, section).enabled) {
     searchQuery.value = '';
   }
+}
+
+function applyMaintenanceState(payload = null) {
+  session.maintenance = {
+    ...createDefaultMaintenance(),
+    ...(payload ?? {}),
+    blocks_current_user: Boolean(payload?.blocks_current_user),
+  };
 }
 
 function applyAutomationState(payload) {
@@ -351,6 +409,9 @@ function applySettingsPayload(payload) {
   if (payload.upload_policy) {
     session.uploadPolicy = payload.upload_policy;
   }
+  if (payload.settings?.display) {
+    session.display = { ...createDefaultDisplaySettings(), ...payload.settings.display };
+  }
   applyAutomationState(payload.automation ?? payload);
 }
 
@@ -365,6 +426,15 @@ async function refreshCurrentView() {
     if (isAdmin.value) {
       await loadAdminSection();
     }
+    return;
+  }
+
+  if (session.maintenance.blocks_current_user) {
+    folderState.folders = [];
+    folderState.files = [];
+    folderState.breadcrumbs = [];
+    searchState.folders = [];
+    searchState.files = [];
     return;
   }
 
@@ -551,6 +621,37 @@ function canShowItemActions(item) {
   return canEditItem(item) || canDeleteItem(item) || (item.type === 'file' && canManageShares.value);
 }
 
+function replaceEntry(list, item) {
+  const index = list.findIndex((entry) => rowKey(entry) === rowKey(item));
+
+  if (index !== -1) {
+    list[index] = item;
+  }
+}
+
+function applyItemUpdate(item) {
+  if (!item) {
+    return;
+  }
+
+  replaceEntry(folderState.folders, item);
+  replaceEntry(folderState.files, item);
+  replaceEntry(searchState.folders, item);
+  replaceEntry(searchState.files, item);
+
+  if (infoItem.value && rowKey(infoItem.value) === rowKey(item)) {
+    infoItem.value = item;
+  }
+
+  if (previewItem.value && rowKey(previewItem.value) === rowKey(item)) {
+    previewItem.value = item;
+  }
+}
+
+function syncDescriptionDraft(item = infoItem.value) {
+  descriptionDraft.value = item ? String(item.description ?? '') : '';
+}
+
 function handleContextMenu(event, item) {
   if (shell !== 'app' || !canShowItemActions(item)) {
     return;
@@ -578,6 +679,97 @@ function fallbackLabel(item) {
   return item?.fallback_label ?? 'Download-only file';
 }
 
+function thumbnailKey(item) {
+  return `${rowKey(item)}:${item.preview_url ?? item.download_url ?? ''}`;
+}
+
+function thumbnailKind(item) {
+  if (!thumbnailsEnabled.value || item?.type !== 'file') {
+    return null;
+  }
+
+  const mode = previewMode(item);
+
+  if (mode === 'image' || mode === 'pdf') {
+    return mode;
+  }
+
+  return null;
+}
+
+function thumbnailImageUrl(item) {
+  const kind = thumbnailKind(item);
+  const key = thumbnailKey(item);
+
+  if (kind === 'image' && !thumbnailState.imageErrors[key]) {
+    return item.preview_url;
+  }
+
+  if (kind === 'pdf' && thumbnailState.pdfUrls[key]) {
+    return thumbnailState.pdfUrls[key];
+  }
+
+  return null;
+}
+
+function markThumbnailError(item) {
+  thumbnailState.imageErrors[thumbnailKey(item)] = true;
+}
+
+async function ensurePdfThumbnail(item) {
+  if (thumbnailKind(item) !== 'pdf') {
+    return;
+  }
+
+  const key = thumbnailKey(item);
+
+  if (thumbnailState.pdfUrls[key] || thumbnailState.pdfLoading[key] || thumbnailState.pdfErrors[key]) {
+    return;
+  }
+
+  thumbnailState.pdfLoading[key] = true;
+
+  try {
+    thumbnailState.pdfUrls[key] = await renderPdfThumbnail(item.preview_url);
+  } catch (_) {
+    thumbnailState.pdfErrors[key] = true;
+  } finally {
+    delete thumbnailState.pdfLoading[key];
+  }
+}
+
+const vThumbObserve = {
+  mounted(element, binding) {
+    if (typeof binding.value !== 'function') {
+      return;
+    }
+
+    if (typeof IntersectionObserver === 'undefined') {
+      binding.value();
+      return;
+    }
+
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) {
+        return;
+      }
+
+      binding.value();
+      observer.disconnect();
+      delete element[THUMB_OBSERVER_KEY];
+    }, {
+      rootMargin: '160px',
+    });
+
+    observer.observe(element);
+    element[THUMB_OBSERVER_KEY] = observer;
+  },
+  unmounted(element) {
+    element[THUMB_OBSERVER_KEY]?.disconnect?.();
+    delete element[THUMB_OBSERVER_KEY];
+  },
+};
+
 async function openPreview(item) {
   previewItem.value = item;
   previewText.value = '';
@@ -591,6 +783,36 @@ async function openPreview(item) {
 function closePreview() {
   previewItem.value = null;
   previewText.value = '';
+}
+
+async function saveDescription() {
+  if (!infoItem.value || !canEditDescription.value) {
+    showMessage('You do not have permission to edit this description.');
+    return;
+  }
+
+  if (descriptionTooLong.value) {
+    showMessage('Descriptions must be 1000 characters or fewer.');
+    return;
+  }
+
+  descriptionSaving.value = true;
+
+  try {
+    const payload = await api(infoItem.value.type === 'folder' ? 'folders.notes.save' : 'files.notes.save', {
+      method: 'POST',
+      body: infoItem.value.type === 'folder'
+        ? { folder_id: infoItem.value.id, description: descriptionDraft.value }
+        : { file_id: infoItem.value.id, description: descriptionDraft.value },
+    });
+    applyItemUpdate(payload.item);
+    syncDescriptionDraft(payload.item);
+    showMessage('Description saved.');
+  } catch (error) {
+    showMessage(error instanceof Error ? error.message : 'Unable to save the description.');
+  } finally {
+    descriptionSaving.value = false;
+  }
 }
 
 async function submitLogin() {
@@ -1748,6 +1970,10 @@ watch(() => route.userId, async (userId) => {
   }
 });
 
+watch(() => infoItem.value ? rowKey(infoItem.value) : '', () => {
+  syncDescriptionDraft();
+});
+
 watch(() => shareContextItem.value?.id ?? 0, async (fileId) => {
   if (!fileId) {
     resetShareState();
@@ -1760,6 +1986,18 @@ watch(() => shareContextItem.value?.id ?? 0, async (fileId) => {
     resetShareState();
     showMessage(error instanceof Error ? error.message : 'Unable to load the share link.');
   }
+});
+
+watch(() => session.maintenance.blocks_current_user, (blocked) => {
+  if (!blocked) {
+    return;
+  }
+
+  previewItem.value = null;
+  infoItem.value = null;
+  selectedKey.value = '';
+  closeContextMenu();
+  resetShareState();
 });
 
 watch(() => adminState.auditCategory, async () => {
@@ -1818,6 +2056,21 @@ onBeforeUnmount(() => {
           <p class="install-kicker">Blocked</p>
           <h1>You have been blocked</h1>
           <p class="blocked-card__status">{{ blockedCountdown || 'Calculating...' }}</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div v-else-if="session.maintenance.blocks_current_user" class="install-shell">
+    <main class="install-layout">
+      <section class="install-card">
+        <div class="install-header">
+          <p class="install-kicker">Maintenance</p>
+          <h1>The file browser is temporarily unavailable</h1>
+          <p class="maintenance-copy">{{ session.maintenance.message }}</p>
+        </div>
+        <div v-if="session.user" class="quick-actions">
+          <button class="header-button" type="button" @click="logout">Logout</button>
         </div>
       </section>
     </main>
@@ -1983,6 +2236,7 @@ onBeforeUnmount(() => {
               <button type="button" @click="setAdminSection('permissions')">Review permissions</button>
               <button type="button" @click="setAdminSection('settings')">Open settings</button>
               <button type="button" :disabled="adminState.automationBusy" @click="runAutomationJob('cleanup_abandoned_uploads')">Clean abandoned uploads</button>
+              <button type="button" :disabled="adminState.automationBusy" @click="runAutomationJob('refresh_folder_sizes')">Refresh folder sizes</button>
             </div>
           </article>
 
@@ -2279,12 +2533,43 @@ onBeforeUnmount(() => {
 
             <div v-if="adminState.settingsTab === 'access'" class="settings-pane">
               <p class="panel-kicker">Access</p>
-              <h2>Published browsing</h2>
+              <h2>Published browsing and maintenance</h2>
               <label class="checkbox-row">
                 <input v-model="adminState.settings.access.public_access" type="checkbox" :disabled="!adminState.canManageSettings">
                 <span>Allow published folders to be browsed without login</span>
               </label>
+              <label class="checkbox-row">
+                <input v-model="adminState.settings.access.maintenance_enabled" type="checkbox" :disabled="!adminState.canManageSettings">
+                <span>Enable maintenance mode for non-admin users</span>
+              </label>
+              <label>
+                <span>Maintenance scope</span>
+                <select v-model="adminState.settings.access.maintenance_scope" :disabled="!adminState.canManageSettings || !adminState.settings.access.maintenance_enabled">
+                  <option value="app_only">App frontend only</option>
+                  <option value="app_and_share">App and share links</option>
+                  <option value="all_non_admin">Everything except admin</option>
+                </select>
+              </label>
+              <label>
+                <span>Maintenance message</span>
+                <textarea
+                  v-model="adminState.settings.access.maintenance_message"
+                  rows="4"
+                  :disabled="!adminState.canManageSettings || !adminState.settings.access.maintenance_enabled"
+                  placeholder="Tell users that updates or backups are currently in progress."
+                />
+              </label>
               <p class="panel-meta">Guests only see folders you publish in the Permissions tab.</p>
+            </div>
+
+            <div v-else-if="adminState.settingsTab === 'display'" class="settings-pane">
+              <p class="panel-kicker">Display</p>
+              <h2>Grid thumbnails</h2>
+              <label class="checkbox-row">
+                <input v-model="adminState.settings.display.grid_thumbnails_enabled" type="checkbox" :disabled="!adminState.canManageSettings">
+                <span>Generate image and PDF thumbnails in grid view</span>
+              </label>
+              <p class="panel-meta">Images load lazily, and PDF thumbnails are rendered in the browser from the first page.</p>
             </div>
 
             <div v-else-if="adminState.settingsTab === 'uploads'" class="settings-pane">
@@ -2329,6 +2614,10 @@ onBeforeUnmount(() => {
               <label>
                 <span>Storage alert threshold (%)</span>
                 <input v-model.number="adminState.settings.automation.storage_alert_threshold_pct" type="number" min="50" max="99" :disabled="!adminState.canManageSettings">
+              </label>
+              <label>
+                <span>Folder size refresh interval (minutes)</span>
+                <input v-model.number="adminState.settings.automation.folder_size_interval_minutes" type="number" min="60" max="10080" :disabled="!adminState.canManageSettings">
               </label>
               <div class="job-list">
                 <div
@@ -2609,9 +2898,19 @@ onBeforeUnmount(() => {
             @click="handleEntryClick(item)"
             @contextmenu="handleContextMenu($event, item)"
           >
-            <div class="grid-card__icon">{{ item.type === 'folder' ? '📁' : '📄' }}</div>
+            <div v-thumb-observe="() => ensurePdfThumbnail(item)" class="grid-card__media">
+              <img
+                v-if="thumbnailImageUrl(item)"
+                class="grid-card__thumb"
+                :src="thumbnailImageUrl(item)"
+                :alt="item.name"
+                loading="lazy"
+                @error="markThumbnailError(item)"
+              >
+              <div v-else class="grid-card__icon">{{ item.type === 'folder' ? '📁' : '📄' }}</div>
+            </div>
             <strong>{{ item.name }}</strong>
-            <span>{{ item.type === 'folder' ? '-' : item.size_label }}</span>
+            <span>{{ item.size_label }}</span>
             <small>{{ item.updated_relative }}</small>
           </button>
         </section>
@@ -2634,7 +2933,7 @@ onBeforeUnmount(() => {
                 @contextmenu="handleContextMenu($event, item)"
               >
                 <td class="name-cell"><span class="row-icon">{{ item.type === 'folder' ? '📁' : '📄' }}</span><span>{{ item.name }}</span></td>
-                <td>{{ item.type === 'folder' ? '-' : item.size_label }}</td>
+                <td>{{ item.size_label }}</td>
                 <td>{{ item.updated_relative }}</td>
               </tr>
             </tbody>
@@ -2739,9 +3038,29 @@ onBeforeUnmount(() => {
       <dl>
         <div><dt>Name</dt><dd>{{ infoItem.name }}</dd></div>
         <div><dt>Type</dt><dd>{{ infoItem.type }}</dd></div>
-        <div><dt>Size</dt><dd>{{ infoItem.type === 'folder' ? '-' : infoItem.size_label }}</dd></div>
+        <div><dt>Size</dt><dd>{{ infoItem.size_label }}</dd></div>
         <div><dt>Last modified</dt><dd>{{ infoItem.updated_relative }}</dd></div>
       </dl>
+      <div class="note-panel">
+        <strong>Description</strong>
+        <textarea
+          v-model="descriptionDraft"
+          class="share-panel__input note-panel__input"
+          rows="5"
+          :readonly="!canEditDescription"
+          :disabled="descriptionSaving"
+          placeholder="Add context, a short note, or tags for this item."
+        />
+        <small class="panel-meta">{{ descriptionDraft.length }}/1000 characters</small>
+        <button
+          v-if="canEditDescription"
+          type="button"
+          :disabled="descriptionSaving || !descriptionDirty || descriptionTooLong"
+          @click="saveDescription"
+        >
+          {{ descriptionSaving ? 'Saving...' : 'Save description' }}
+        </button>
+      </div>
       <div v-if="canManageShares && infoItem.type === 'file'" class="share-panel">
         <strong>Public share</strong>
         <p v-if="shareState.loading && shareState.fileId === infoItem.id">Checking share link...</p>

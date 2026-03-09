@@ -11,6 +11,8 @@ use WbFileBrowser\FileManager;
 use WbFileBrowser\FileShares;
 use WbFileBrowser\IpBanService;
 use WbFileBrowser\Installer;
+use WbFileBrowser\MaintenanceMode;
+use WbFileBrowser\MaintenanceModeException;
 use WbFileBrowser\Permissions;
 use WbFileBrowser\Security;
 use WbFileBrowser\Settings;
@@ -38,6 +40,11 @@ if ($installed) {
 try {
     $requestData = wb_request_data();
     $csrfToken = $requestData['csrf_token'] ?? ($_SERVER['HTTP_X_CSRF_TOKEN'] ?? null);
+    $currentUser = $installed ? Auth::currentUser() : null;
+
+    if ($installed) {
+        MaintenanceMode::assertActionAllowed($action, $currentUser);
+    }
 
     $requireCsrf = static function () use ($action, $csrfToken): void {
         if (wb_request_method() !== 'GET' && !in_array($action, ['auth.logout'], true)) {
@@ -80,6 +87,11 @@ try {
             }
 
             $user = Auth::currentUser();
+            $surface = match ((string) ($_GET['surface'] ?? 'app')) {
+                'admin' => 'admin',
+                'share' => 'share',
+                default => 'app',
+            };
             wb_json_response([
                 'ok' => true,
                 'installed' => true,
@@ -91,6 +103,8 @@ try {
                 'app_version' => Database::setting('app_version', Installer::VERSION),
                 'storage' => FileManager::storageStats(),
                 'diagnostic' => Settings::diagnosticState(),
+                'maintenance' => MaintenanceMode::payload($user, $surface),
+                'display' => Settings::grouped()['display'],
                 'upload_policy' => Settings::uploadPolicy(),
                 'help' => [
                     'title' => 'Help',
@@ -228,6 +242,30 @@ try {
             $user = Auth::requireUser();
             FileManager::deleteFile($user, (int) ($requestData['file_id'] ?? 0));
             wb_json_response(['ok' => true]);
+
+        case 'files.notes.save':
+            $requireCsrf();
+            $user = Auth::requireUser();
+            wb_json_response([
+                'ok' => true,
+                'item' => FileManager::saveFileDescription(
+                    $user,
+                    (int) ($requestData['file_id'] ?? 0),
+                    (string) ($requestData['description'] ?? '')
+                ),
+            ]);
+
+        case 'folders.notes.save':
+            $requireCsrf();
+            $user = Auth::requireUser();
+            wb_json_response([
+                'ok' => true,
+                'item' => FileManager::saveFolderDescription(
+                    $user,
+                    (int) ($requestData['folder_id'] ?? 0),
+                    (string) ($requestData['description'] ?? '')
+                ),
+            ]);
 
         case 'files.share.get':
             $user = Auth::requireAdmin();
@@ -726,6 +764,8 @@ try {
         default:
             wb_error_response('Unknown API action.', 404);
     }
+} catch (MaintenanceModeException $exception) {
+    wb_maintenance_response($exception->payload(), 503);
 } catch (BlockedAccessException $exception) {
     if (in_array($action, ['files.stream', 'share.stream'], true)) {
         http_response_code(403);

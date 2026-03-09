@@ -1,4 +1,9 @@
 import { flushPromises, mount } from '@vue/test-utils';
+vi.mock('../../frontend/src/lib/thumbnails.js', () => ({
+  renderPdfThumbnail: vi.fn(async () => 'data:image/png;base64,pdf-thumb'),
+}));
+
+import { renderPdfThumbnail } from '../../frontend/src/lib/thumbnails.js';
 import App from '../../frontend/src/App.vue';
 
 function adminUser(role = 'admin') {
@@ -37,6 +42,15 @@ function sessionPayload(user = adminUser()) {
     app_version: '1.0.0-alpha',
     storage: { used_label: '0 B', total_label: '100 GB' },
     diagnostic: { exposed: false, checked_at: '', message: 'Shield healthy.', probe_path: 'probe/file.txt', probe_url: '/storage/probe/file.txt' },
+    maintenance: {
+      enabled: false,
+      scope: 'app_only',
+      message: 'The file browser is temporarily unavailable while maintenance is in progress. Please try again later.',
+      blocks_current_user: false,
+    },
+    display: {
+      grid_thumbnails_enabled: true,
+    },
     upload_policy: uploadPolicy(),
     help: { title: 'Help', body: 'Help text' },
   };
@@ -68,6 +82,7 @@ function browserFile(overrides = {}) {
     updated_at: '2026-03-09T00:00:00Z',
     updated_relative: 'just now',
     checksum: 'abc123',
+    description: '',
     extension: 'pdf',
     can_edit: true,
     can_delete: true,
@@ -84,7 +99,7 @@ function browserFile(overrides = {}) {
 function browserTreePayload(fileOverrides = {}) {
   return {
     data: {
-      folder: { id: 1, type: 'folder', name: 'Home', parent_id: null, updated_relative: 'just now' },
+      folder: { id: 1, type: 'folder', name: 'Home', parent_id: null, updated_relative: 'just now', size_label: '-', description: '' },
       breadcrumbs: [{ id: 1, name: 'Home' }],
       folders: [],
       files: [browserFile(fileOverrides)],
@@ -179,9 +194,20 @@ function installFetchStub(overrides = {}) {
     },
     'admin.settings.get': () => jsonResponse({
       settings: {
-        access: { public_access: false },
+        access: {
+          public_access: false,
+          maintenance_enabled: false,
+          maintenance_scope: 'app_only',
+          maintenance_message: 'The file browser is temporarily unavailable while maintenance is in progress. Please try again later.',
+        },
         uploads: { max_file_size_mb: 256, allowed_extensions: '', stale_upload_ttl_hours: 24 },
-        automation: { runner_enabled: true, diagnostic_interval_minutes: 30, cleanup_interval_minutes: 60, storage_alert_threshold_pct: 85 },
+        automation: {
+          runner_enabled: true,
+          diagnostic_interval_minutes: 30,
+          cleanup_interval_minutes: 60,
+          storage_alert_threshold_pct: 85,
+          folder_size_interval_minutes: 1440,
+        },
         security: {
           audit_enabled: false,
           audit_retention_days: 30,
@@ -194,6 +220,9 @@ function installFetchStub(overrides = {}) {
           log_deletions: true,
           log_admin_actions: true,
           log_security_actions: true,
+        },
+        display: {
+          grid_thumbnails_enabled: true,
         },
       },
       diagnostics: { exposed: false, checked_at: '', message: 'Shield healthy.', probe_path: 'probe/file.txt', probe_url: '/storage/probe/file.txt' },
@@ -215,9 +244,20 @@ function installFetchStub(overrides = {}) {
     }),
     'admin.settings.save': () => jsonResponse({
       settings: {
-        access: { public_access: true },
+        access: {
+          public_access: true,
+          maintenance_enabled: true,
+          maintenance_scope: 'app_and_share',
+          maintenance_message: 'Updates in progress',
+        },
         uploads: { max_file_size_mb: 64, allowed_extensions: 'png, pdf', stale_upload_ttl_hours: 8 },
-        automation: { runner_enabled: true, diagnostic_interval_minutes: 30, cleanup_interval_minutes: 60, storage_alert_threshold_pct: 85 },
+        automation: {
+          runner_enabled: true,
+          diagnostic_interval_minutes: 30,
+          cleanup_interval_minutes: 60,
+          storage_alert_threshold_pct: 85,
+          folder_size_interval_minutes: 1440,
+        },
         security: {
           audit_enabled: true,
           audit_retention_days: 14,
@@ -230,6 +270,9 @@ function installFetchStub(overrides = {}) {
           log_deletions: true,
           log_admin_actions: true,
           log_security_actions: true,
+        },
+        display: {
+          grid_thumbnails_enabled: false,
         },
       },
       diagnostics: { exposed: false, checked_at: '', message: 'Shield healthy.', probe_path: 'probe/file.txt', probe_url: '/storage/probe/file.txt' },
@@ -269,9 +312,20 @@ function installFetchStub(overrides = {}) {
     },
     'admin.security.get': () => jsonResponse({
       settings: {
-        access: { public_access: false },
+        access: {
+          public_access: false,
+          maintenance_enabled: false,
+          maintenance_scope: 'app_only',
+          maintenance_message: 'The file browser is temporarily unavailable while maintenance is in progress. Please try again later.',
+        },
         uploads: { max_file_size_mb: 256, allowed_extensions: '', stale_upload_ttl_hours: 24 },
-        automation: { runner_enabled: true, diagnostic_interval_minutes: 30, cleanup_interval_minutes: 60, storage_alert_threshold_pct: 85 },
+        automation: {
+          runner_enabled: true,
+          diagnostic_interval_minutes: 30,
+          cleanup_interval_minutes: 60,
+          storage_alert_threshold_pct: 85,
+          folder_size_interval_minutes: 1440,
+        },
         security: {
           audit_enabled: false,
           audit_retention_days: 30,
@@ -284,6 +338,9 @@ function installFetchStub(overrides = {}) {
           log_deletions: true,
           log_admin_actions: true,
           log_security_actions: true,
+        },
+        display: {
+          grid_thumbnails_enabled: true,
         },
       },
       diagnostics: { exposed: false, checked_at: '', message: 'Shield healthy.', probe_path: 'probe/file.txt', probe_url: '/storage/probe/file.txt' },
@@ -468,6 +525,18 @@ describe('Admin app shell', () => {
   it('submits grouped settings changes', async () => {
     const { wrapper, calls } = await mountAdminApp({ hash: '#/settings' });
 
+    const accessCheckboxes = wrapper.findAll('.settings-pane input[type="checkbox"]');
+    await accessCheckboxes[1].setValue(true);
+    await wrapper.find('.settings-pane select').setValue('app_and_share');
+    await wrapper.find('.settings-pane textarea').setValue('Updates in progress');
+
+    const displayTab = wrapper.findAll('.settings-tabs button').find((button) => button.text() === 'Display');
+    await displayTab.trigger('click');
+    await flushPromises();
+
+    const displayCheckbox = wrapper.find('.settings-pane input[type="checkbox"]');
+    await displayCheckbox.setValue(false);
+
     const uploadsTab = wrapper.findAll('.settings-tabs button').find((button) => button.text() === 'Uploads');
     await uploadsTab.trigger('click');
     await flushPromises();
@@ -476,14 +545,28 @@ describe('Admin app shell', () => {
     await inputs[0].setValue('64');
     await wrapper.find('.settings-pane textarea').setValue('png, pdf');
     await inputs[1].setValue('8');
+    const automationTab = wrapper.findAll('.settings-tabs button').find((button) => button.text() === 'Automation');
+    await automationTab.trigger('click');
+    await flushPromises();
+
+    const automationInputs = wrapper.findAll('.settings-pane input[type="number"]');
+    await automationInputs[3].setValue('720');
+
+    await uploadsTab.trigger('click');
+    await flushPromises();
     await wrapper.find('.primary-button').trigger('click');
 
     const saveCall = calls.find((call) => call.action === 'admin.settings.save');
     const body = JSON.parse(saveCall.init.body);
 
+    expect(body.access.maintenance_enabled).toBe(true);
+    expect(body.access.maintenance_scope).toBe('app_and_share');
+    expect(body.access.maintenance_message).toBe('Updates in progress');
+    expect(body.display.grid_thumbnails_enabled).toBe(false);
     expect(body.uploads.max_file_size_mb).toBe(64);
     expect(body.uploads.allowed_extensions).toBe('png, pdf');
     expect(body.uploads.stale_upload_ttl_hours).toBe(8);
+    expect(body.automation.folder_size_interval_minutes).toBe(720);
   });
 
   it('loads audit logs, applies category filters, and paginates', async () => {
@@ -738,6 +821,107 @@ describe('Admin app shell', () => {
 
     expect(wrapper.text()).toContain('You have been blocked');
     expect(wrapper.text()).not.toContain('Sign in to continue');
+  });
+
+  it('renders the maintenance state for blocked browser sessions', async () => {
+    const { wrapper } = await mountBrowserApp({
+      bootstrapUser: null,
+      handlers: {
+        'auth.session': () => jsonResponse({
+          ...sessionPayload(null),
+          maintenance: {
+            enabled: true,
+            scope: 'app_only',
+            message: 'Scheduled updates are running.\nPlease come back shortly.',
+            blocks_current_user: true,
+          },
+        }),
+      },
+    });
+
+    expect(wrapper.text()).toContain('The file browser is temporarily unavailable');
+    expect(wrapper.text()).toContain('Scheduled updates are running.');
+    expect(wrapper.text()).not.toContain('Sign in to continue');
+  });
+
+  it('saves file descriptions from the info drawer', async () => {
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'files.share.get': () => jsonResponse({ share: null }),
+        'files.notes.save': () => jsonResponse({
+          item: browserFile({
+            description: 'Pinned reference',
+          }),
+        }),
+      },
+    });
+
+    await wrapper.find('tbody tr').trigger('click');
+    await flushPromises();
+
+    const infoButton = wrapper.findAll('button').find((button) => button.text() === 'Info');
+    await infoButton.trigger('click');
+    await flushPromises();
+
+    const textarea = wrapper.find('.note-panel textarea');
+    await textarea.setValue('Pinned reference');
+
+    const saveButton = wrapper.findAll('.note-panel button').find((button) => button.text() === 'Save description');
+    await saveButton.trigger('click');
+    await flushPromises();
+
+    const saveCall = calls.find((call) => call.action === 'files.notes.save');
+    const body = JSON.parse(saveCall.init.body);
+    expect(body.file_id).toBe(7);
+    expect(body.description).toBe('Pinned reference');
+    expect(wrapper.find('.note-panel textarea').element.value).toBe('Pinned reference');
+  });
+
+  it('renders cached folder sizes and PDF thumbnails in grid view', async () => {
+    localStorage.setItem('wb-filebrowser:view-mode', 'grid');
+
+    const { wrapper } = await mountBrowserApp({
+      handlers: {
+        'tree.list': () => jsonResponse({
+          data: {
+            folder: { id: 1, type: 'folder', name: 'Home', parent_id: null, size_label: '-', updated_relative: 'just now', description: '' },
+            breadcrumbs: [{ id: 1, name: 'Home' }],
+            folders: [
+              {
+                id: 2,
+                type: 'folder',
+                name: 'Reports',
+                parent_id: 1,
+                size: 8192,
+                size_label: '8 KB',
+                mime_type: 'inode/directory',
+                description: '',
+                updated_at: '2026-03-09T00:00:00Z',
+                updated_relative: 'just now',
+                cached_size_calculated_at: '2026-03-09T00:00:00Z',
+                child_count: 0,
+                can_open: true,
+                can_upload: false,
+                can_create_folders: false,
+                can_edit: true,
+                can_delete: true,
+              },
+            ],
+            files: [browserFile()],
+            can_upload: true,
+            can_create_folders: true,
+            can_edit: true,
+            can_delete: true,
+          },
+        }),
+      },
+    });
+
+    await flushPromises();
+
+    expect(renderPdfThumbnail).toHaveBeenCalled();
+    expect(wrapper.text()).toContain('8 KB');
+    expect(wrapper.find('.grid-card__thumb').attributes('src')).toBe('data:image/png;base64,pdf-thumb');
   });
 
   it('shows a username-aware upload toast for a single file', async () => {

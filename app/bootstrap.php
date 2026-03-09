@@ -20,6 +20,8 @@ require_once __DIR__ . '/Installer.php';
 require_once __DIR__ . '/Database.php';
 require_once __DIR__ . '/Security.php';
 require_once __DIR__ . '/BlockedAccessException.php';
+require_once __DIR__ . '/MaintenanceModeException.php';
+require_once __DIR__ . '/MaintenanceMode.php';
 require_once __DIR__ . '/Auth.php';
 require_once __DIR__ . '/Permissions.php';
 require_once __DIR__ . '/FileManager.php';
@@ -64,5 +66,18 @@ function wb_bootstrap_page(string $surface): array
         'app_version' => Installer::VERSION,
         'csrf_token' => Security::csrfToken(),
         'user' => $user,
+        'maintenance' => $installed
+            ? WbFileBrowser\MaintenanceMode::payload(
+                $user,
+                $surface === 'share'
+                    ? 'share'
+                    : ($surface === 'admin' ? 'admin' : 'app')
+            )
+            : [
+                'enabled' => false,
+                'scope' => WbFileBrowser\MaintenanceMode::SCOPE_APP_ONLY,
+                'message' => WbFileBrowser\MaintenanceMode::defaultMessage(),
+                'blocks_current_user' => false,
+            ],
     ];
 }

@@ -83,6 +83,8 @@ final class Auth
             throw new RuntimeException('Invalid username or password.');
         }
 
+        MaintenanceMode::assertAllowed($user, 'app', $pdo);
+
         self::recordAttempt($pdo, $username, $ip, true);
         Security::clearRateLimit($rateLimitBuckets, $pdo);
         Security::regenerateSession();
