@@ -26,7 +26,7 @@ button{cursor:pointer}
 .wb-sidebar{background:linear-gradient(180deg,#07101d 0,#0c1729 100%);border-right:1px solid rgba(255,255,255,.06);padding:24px 18px;display:flex;flex-direction:column;gap:28px}
 .sidebar-brand{display:flex;align-items:center;gap:14px;padding:10px 8px;border-radius:16px;cursor:pointer}
 .sidebar-brand--icon{justify-content:center;width:100%;padding:6px;background:transparent;border:0}
-.brand-mark{display:grid;place-items:center;width:48px;height:48px;border-radius:14px;background:linear-gradient(135deg,#60a5fa,#2563eb);font-weight:700}
+.brand-mark{display:grid;place-items:center;width:48px;height:48px;border-radius:14px;background:none;font-weight:700}
 .brand-mark--large{width:92px;height:92px;padding:10px;border-radius:24px;object-fit:contain}
 .sidebar-brand p,.storage-meter span,.sidebar-meta{margin:0;color:var(--text-soft);font-size:.92rem}
 .sidebar-nav{display:grid;gap:10px}

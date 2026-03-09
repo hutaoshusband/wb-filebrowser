@@ -1,64 +1,53 @@
 # wb-filebrowser
 
-A sleek, fast, and secure web-based file browser.
+A web-based file browser built with PHP and Vue.
 
 ## Requirements
 
-- PHP 8.0 or newer (with `sqlite3`, `fileinfo`, and `mbstring` extensions enabled)
-- A web server (Apache, Nginx, IIS, etc.)
-- SQLite (included with PHP by default)
+- PHP 8.0+ with `pdo_sqlite`, `fileinfo`, and `mbstring`
+- Composer
+- Node.js 18+ and npm
+- A web server (Apache, Nginx, etc.)
 
-## Installation
-
-### Method 1: Auto-Installer (Linux/macOS)
-The easiest way to setup dependencies and folder permissions is by running the included setup script via your terminal.
-1. **Download the latest release:** Go to the [Releases](https://github.com/hutaoshusband/wb-filebrowser/releases) tab and download the latest `.zip` release.
-2. **Extract and Upload:** Extract the zip file and upload the contents to your web server's directory (e.g., `/var/www/html/filebrowser`).
-3. **Run the script:** Navigate to the folder in your terminal and execute:
+## Quick Start
 
 ```bash
+git clone https://github.com/hutaoshusband/wb-filebrowser.git
+cd wb-filebrowser
 chmod +x install.sh
 sudo ./install.sh
 ```
 
-### Method 2: Manual Installation
-1. **Download the latest release:** Go to the [Releases](https://github.com/hutaoshusband/wb-filebrowser/releases) tab on GitHub and download the latest `.zip` release. *(Do not download the source code zip, as it requires manual building of frontend assets and PHP dependencies).*
-2. **Extract and Upload:** Extract the zip file and upload the contents to your web server's directory (e.g., `public_html/filebrowser` or `/var/www/html/filebrowser`).
-3. **Folder Permissions:** Ensure that the `storage/` directory and all of its contents are readable and writable by your web server software (such as `www-data` or `apache`).
-   ```bash
-   chmod -R 775 storage/
-   # If necessary, give explicit ownership to the web server user:
-   # chown -R www-data:www-data storage/
-   ```
+The script handles everything: installs composer if missing, installs node via nvm if missing, pulls PHP and JS dependencies, builds the frontend, creates the storage directories, and sets permissions.
 
-### Finalizing Setup
+Once it finishes, point your web server at the project directory and open `/install/` in a browser to create your admin account.
 
-4. **Run the Installer:** Open your web browser and navigate to the application's install directory: `http://your-domain.com/install/`. Follow the on-screen instructions to set up your administrator account and initialize the database.
-5. **Delete Installer (Optional but Recommended):** After successful installation, you can delete the `install/` directory for an extra layer of security.
+## Manual Setup
 
-## Server Configuration & Security (IMPORTANT)
+If you prefer to do it yourself:
 
-It is **critical** to configure your web server to block direct access to internal application directories—especially the `storage/` folder, which contains your SQLite database, logs, and sensitive session data.
+```bash
+composer install --no-dev --optimize-autoloader
+npm ci
+npm run build
+mkdir -p storage/{uploads,chunks,sessions,logs,probe}
+chmod -R 775 storage/
+sudo chown -R www-data:www-data storage/
+```
+
+Then open `http://your-domain/install/` to finish.
+
+## Web Server Security
 
 ### Apache
-
-If you are using Apache, the application includes `.htaccess` files to automatically protect sensitive directories. However, your server must be configured to allow them:
-- Ensure your Apache VirtualHost configuration has `AllowOverride All` enabled for your document root so that the `.htaccess` files are read and processed.
+The included `.htaccess` files block direct access to `storage/`. Make sure `AllowOverride All` is enabled in your VirtualHost config.
 
 ### Nginx
-
-Nginx ignores `.htaccess` files. You **must** manually add the following rules to your Nginx site configuration (inside your `server { ... }` block) to ensure your data is secure:
+Add this to your server block:
 
 ```nginx
-    # Block access to the storage directory and other sensitive internal folders
-    location ~ ^/(storage|vendor|node_modules|tests|\.git)/ {
-        deny all;
-        return 404;
-    }
-
-    # Block direct access to specific sensitive file extensions
-    location ~ \.(sqlite|sqlite3|db|json|lock|xml|md)$ {
-        deny all;
-        return 404;
-    }
+location ~ ^/(storage|vendor|node_modules|tests|\.git)/ {
+    deny all;
+    return 404;
+}
 ```

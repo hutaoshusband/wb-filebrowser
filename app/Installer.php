@@ -37,8 +37,7 @@ final class Installer
 
     public static function environmentChecks(): array
     {
-        $storageRoot = dirname(wb_storage_path());
-        $storageParentWritable = is_writable($storageRoot);
+        $storageWritable = is_writable(wb_storage_path());
 
         return [
             [
@@ -62,9 +61,9 @@ final class Installer
                 'message' => extension_loaded('mbstring') ? 'Enabled' : 'Missing',
             ],
             [
-                'label' => 'Project directory writable',
-                'ok' => $storageParentWritable,
-                'message' => $storageParentWritable ? 'Writable' : 'Not writable! Run: chmod -R 775 storage/',
+                'label' => 'Storage directory writable',
+                'ok' => $storageWritable,
+                'message' => $storageWritable ? 'Writable' : 'Not writable! Run: chmod -R 775 storage/',
             ],
             [
                 'label' => 'Session directory writable',
