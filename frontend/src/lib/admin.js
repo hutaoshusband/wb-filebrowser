@@ -1,4 +1,4 @@
-export function getSearchConfig(shell, section) {
+export function getSearchConfig(shell, section, options = {}) {
   if (shell !== 'admin') {
     return {
       enabled: true,
@@ -9,6 +9,14 @@ export function getSearchConfig(shell, section) {
 
   switch (section) {
     case 'users':
+      if (Number(options.userId) > 0) {
+        return {
+          enabled: true,
+          placeholder: 'Filter folder permissions...',
+          emptyText: 'Search the selected user permission matrix by folder path.',
+        };
+      }
+
       return {
         enabled: true,
         placeholder: 'Search users...',
@@ -63,7 +71,7 @@ export function describePermissionPrincipal(type, principalId, users) {
   if (type === 'guest') {
     return {
       title: 'Published folders for guests',
-      body: 'Guests can only browse folders you explicitly publish. Upload stays admin-only for guest access.',
+      body: 'Guests can only browse folders you explicitly publish. User-specific edit, delete, and create rights are managed from each user detail page.',
     };
   }
 
@@ -72,8 +80,8 @@ export function describePermissionPrincipal(type, principalId, users) {
   return {
     title: user ? `Permissions for ${user.username}` : 'Permissions for a selected user',
     body: user
-      ? 'These rules decide which folders this user can open and where uploads are allowed.'
-      : 'Choose a user account to review folder access and upload rights.',
+      ? 'These rules decide which folders this user can open, upload into, edit, delete, and extend with new folders.'
+      : 'Choose a user account to review folder access and management rights.',
   };
 }
 

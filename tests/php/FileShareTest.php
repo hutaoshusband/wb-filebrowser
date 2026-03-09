@@ -14,7 +14,9 @@ final class FileShareTest extends DatabaseTestCase
     {
         $file = $this->createFile('notes.txt', "shared notes\nsecond line");
 
-        $share = FileShares::create($this->superAdmin(), (int) $file['id']);
+        $share = FileShares::create($this->superAdmin(), (int) $file['id'], [
+            'max_views' => 3,
+        ]);
         $payload = FileShares::viewPayload($share['token']);
 
         $this->assertSame((int) $file['id'], $share['file_id']);
@@ -23,6 +25,10 @@ final class FileShareTest extends DatabaseTestCase
         $this->assertSame('text', $payload['preview_mode']);
         $this->assertSame('notes.txt', $payload['file']['name']);
         $this->assertSame("shared notes\nsecond line", $payload['text_preview']);
+        $this->assertSame(3, $share['max_views']);
+        $this->assertSame(1, $payload['share']['view_count']);
+        $this->assertSame(2, $payload['share']['remaining_views']);
+        $this->assertStringContainsString('grant=', $payload['file']['preview_url']);
     }
 
     public function testRevokingAShareLinkMakesThePublicViewerUnavailable(): void
@@ -48,5 +54,47 @@ final class FileShareTest extends DatabaseTestCase
         $this->expectExceptionMessage('Only administrators can manage share links.');
 
         FileShares::create($member, (int) $file['id']);
+    }
+
+    public function testShareMaxViewsRevokesAfterTheLimitIsReached(): void
+    {
+        $file = $this->createFile('notes.txt', "shared notes\nsecond line");
+        $share = FileShares::create($this->superAdmin(), (int) $file['id'], [
+            'max_views' => 1,
+        ]);
+
+        $payload = FileShares::viewPayload($share['token']);
+
+        $this->assertSame(1, $payload['share']['view_count']);
+        $this->assertSame(0, $payload['share']['remaining_views']);
+        $this->assertNull(FileShares::get($this->superAdmin(), (int) $file['id']));
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('Shared file not found.');
+
+        FileShares::viewPayload($share['token']);
+    }
+
+    public function testExpiredShareIsAutomaticallyRevoked(): void
+    {
+        $file = $this->createFile('notes.txt', "shared notes\nsecond line");
+        $share = FileShares::create($this->superAdmin(), (int) $file['id'], [
+            'expires_at' => gmdate('c', time() + 300),
+        ]);
+
+        $statement = \WbFileBrowser\Database::connection()->prepare(
+            'UPDATE file_shares SET expires_at = :expires_at, updated_at = :updated_at WHERE token = :token'
+        );
+        $statement->execute([
+            ':expires_at' => gmdate('c', time() - 60),
+            ':updated_at' => wb_now(),
+            ':token' => $share['token'],
+        ]);
+
+        $this->assertNull(FileShares::get($this->superAdmin(), (int) $file['id']));
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('Shared file not found.');
+
+        FileShares::viewPayload($share['token']);
     }
 }

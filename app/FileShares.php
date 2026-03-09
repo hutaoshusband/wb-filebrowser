@@ -11,10 +11,12 @@ use RuntimeException;
 final class FileShares
 {
     private const TEXT_PREVIEW_LIMIT_BYTES = 262144;
+    private const STREAM_GRANT_TTL_SECONDS = 600;
 
     public static function get(array $user, int $fileId, ?PDO $pdo = null): ?array
     {
         $pdo ??= Database::connection();
+        self::cleanupInactiveShares($pdo);
         $file = self::fileById($fileId, $pdo);
 
         if ($file === null) {
@@ -27,9 +29,10 @@ final class FileShares
         return $share === null ? null : self::serializeShare($share, $file);
     }
 
-    public static function create(array $user, int $fileId, ?PDO $pdo = null): array
+    public static function create(array $user, int $fileId, array $options = [], ?PDO $pdo = null): array
     {
         $pdo ??= Database::connection();
+        self::cleanupInactiveShares($pdo);
         $file = self::fileById($fileId, $pdo);
 
         if ($file === null) {
@@ -37,27 +40,70 @@ final class FileShares
         }
 
         self::assertCanManageShares($user, $file, $pdo);
+        $options = self::normalizeOptions($options);
         $existing = self::activeShareRow($fileId, $pdo);
+        $now = wb_now();
 
         if ($existing !== null) {
-            return self::serializeShare($existing, $file);
+            $update = $pdo->prepare(
+                'UPDATE file_shares
+                 SET expires_at = :expires_at,
+                     max_views = :max_views,
+                     updated_at = :updated_at
+                 WHERE id = :id'
+            );
+            $update->execute([
+                ':expires_at' => $options['expires_at'],
+                ':max_views' => $options['max_views'],
+                ':updated_at' => $now,
+                ':id' => $existing['id'],
+            ]);
+
+            $share = self::activeShareRow($fileId, $pdo);
+
+            if ($share === null) {
+                throw new RuntimeException('Unable to update the share link right now.');
+            }
+
+            return self::serializeShare($share, $file);
         }
 
         $statement = $pdo->prepare(
-            'INSERT INTO file_shares (file_id, token, created_by, created_at, updated_at, revoked_at)
-             VALUES (:file_id, :token, :created_by, :created_at, :updated_at, NULL)'
+            'INSERT INTO file_shares (
+                file_id,
+                token,
+                created_by,
+                expires_at,
+                max_views,
+                view_count,
+                created_at,
+                updated_at,
+                revoked_at
+             ) VALUES (
+                :file_id,
+                :token,
+                :created_by,
+                :expires_at,
+                :max_views,
+                0,
+                :created_at,
+                :updated_at,
+                NULL
+             )'
         );
-        $now = wb_now();
 
         try {
             $statement->execute([
                 ':file_id' => $fileId,
                 ':token' => wb_random_token(24),
                 ':created_by' => (int) $user['id'],
+                ':expires_at' => $options['expires_at'],
+                ':max_views' => $options['max_views'],
                 ':created_at' => $now,
                 ':updated_at' => $now,
             ]);
         } catch (PDOException $exception) {
+            self::cleanupInactiveShares($pdo);
             $existing = self::activeShareRow($fileId, $pdo);
 
             if ($existing !== null) {
@@ -102,32 +148,67 @@ final class FileShares
     public static function viewPayload(string $token, ?PDO $pdo = null): array
     {
         $pdo ??= Database::connection();
-        $share = self::resolveActiveShare($token, $pdo);
-        $file = self::serializeSharedFile($share);
-        $previewMode = self::previewMode($file['mime_type'], $file['extension']);
-        $textPreview = null;
-        $textPreviewTruncated = false;
+        self::cleanupInactiveShares($pdo);
+        $pdo->beginTransaction();
 
-        if ($previewMode === 'text') {
-            [$textPreview, $textPreviewTruncated] = self::readTextPreview(
-                (string) $share['disk_name'],
-                (string) $share['disk_extension']
-            );
+        try {
+            $share = self::resolveActiveShare($token, $pdo);
+            $share = self::incrementViewCount($share, $pdo);
+            $file = self::serializeSharedFile($share);
+            $previewMode = self::previewMode($file['mime_type'], $file['extension']);
+            $textPreview = null;
+            $textPreviewTruncated = false;
+
+            if ($previewMode === 'text') {
+                [$textPreview, $textPreviewTruncated] = self::readTextPreview(
+                    (string) $share['disk_name'],
+                    (string) $share['disk_extension']
+                );
+            }
+
+            $pdo->commit();
+
+            return [
+                'share' => self::serializeResolvedShare($share),
+                'file' => $file,
+                'preview_mode' => $previewMode,
+                'text_preview' => $textPreview,
+                'text_preview_truncated' => $textPreviewTruncated,
+            ];
+        } catch (\Throwable $exception) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+
+            throw $exception;
         }
-
-        return [
-            'share' => self::serializeResolvedShare($share),
-            'file' => $file,
-            'preview_mode' => $previewMode,
-            'text_preview' => $textPreview,
-            'text_preview_truncated' => $textPreviewTruncated,
-        ];
     }
 
     public static function stream(string $token, string $disposition = 'inline', ?PDO $pdo = null): never
     {
         $pdo ??= Database::connection();
+        self::cleanupInactiveShares($pdo);
         $share = self::resolveActiveShare($token, $pdo);
+
+        Security::sendFile(
+            self::blobPath((string) $share['disk_name'], (string) $share['disk_extension']),
+            (string) $share['mime_type'],
+            (string) $share['original_name'],
+            $disposition
+        );
+    }
+
+    public static function streamGranted(string $grant, ?PDO $pdo = null): never
+    {
+        $payload = Security::verifySignedPayload($grant);
+
+        if (($payload['type'] ?? '') !== 'share-stream') {
+            throw new RuntimeException('Shared file not found.');
+        }
+
+        $pdo ??= Database::connection();
+        $share = self::resolveShareByToken((string) ($payload['token'] ?? ''), $pdo);
+        $disposition = (string) ($payload['disposition'] ?? 'inline');
 
         Security::sendFile(
             self::blobPath((string) $share['disk_name'], (string) $share['disk_extension']),
@@ -148,13 +229,35 @@ final class FileShares
         }
     }
 
+    private static function cleanupInactiveShares(PDO $pdo): void
+    {
+        $now = wb_now();
+        $statement = $pdo->prepare(
+            'UPDATE file_shares
+             SET revoked_at = :now, updated_at = :now
+             WHERE revoked_at IS NULL
+               AND (
+                    (expires_at IS NOT NULL AND expires_at <= :now)
+                    OR
+                    (max_views IS NOT NULL AND view_count >= max_views)
+               )'
+        );
+        $statement->execute([':now' => $now]);
+    }
+
     private static function resolveActiveShare(string $token, PDO $pdo): array
     {
         self::assertToken($token);
+        $now = wb_now();
         $statement = $pdo->prepare(
             'SELECT
+                file_shares.id,
                 file_shares.file_id,
                 file_shares.token,
+                file_shares.expires_at,
+                file_shares.max_views,
+                file_shares.view_count,
+                file_shares.revoked_at,
                 file_shares.created_at AS share_created_at,
                 file_shares.updated_at AS share_updated_at,
                 files.folder_id,
@@ -167,7 +270,50 @@ final class FileShares
                 files.updated_at
              FROM file_shares
              INNER JOIN files ON files.id = file_shares.file_id
-             WHERE file_shares.token = :token AND file_shares.revoked_at IS NULL
+             WHERE file_shares.token = :token
+               AND file_shares.revoked_at IS NULL
+               AND (file_shares.expires_at IS NULL OR file_shares.expires_at > :now)
+               AND (file_shares.max_views IS NULL OR file_shares.view_count < file_shares.max_views)
+             LIMIT 1'
+        );
+        $statement->execute([
+            ':token' => $token,
+            ':now' => $now,
+        ]);
+        $share = $statement->fetch();
+
+        if (!is_array($share)) {
+            throw new RuntimeException('Shared file not found.');
+        }
+
+        return $share;
+    }
+
+    private static function resolveShareByToken(string $token, PDO $pdo): array
+    {
+        self::assertToken($token);
+        $statement = $pdo->prepare(
+            'SELECT
+                file_shares.id,
+                file_shares.file_id,
+                file_shares.token,
+                file_shares.expires_at,
+                file_shares.max_views,
+                file_shares.view_count,
+                file_shares.revoked_at,
+                file_shares.created_at AS share_created_at,
+                file_shares.updated_at AS share_updated_at,
+                files.folder_id,
+                files.original_name,
+                files.disk_name,
+                files.disk_extension,
+                files.mime_type,
+                files.size,
+                files.checksum,
+                files.updated_at
+             FROM file_shares
+             INNER JOIN files ON files.id = file_shares.file_id
+             WHERE file_shares.token = :token
              LIMIT 1'
         );
         $statement->execute([':token' => $token]);
@@ -180,8 +326,35 @@ final class FileShares
         return $share;
     }
 
+    private static function incrementViewCount(array $share, PDO $pdo): array
+    {
+        $newViewCount = (int) $share['view_count'] + 1;
+        $maxViews = $share['max_views'] === null ? null : (int) $share['max_views'];
+        $now = wb_now();
+        $revokedAt = $maxViews !== null && $newViewCount >= $maxViews ? $now : null;
+        $statement = $pdo->prepare(
+            'UPDATE file_shares
+             SET view_count = :view_count,
+                 updated_at = :updated_at,
+                 revoked_at = :revoked_at
+             WHERE id = :id'
+        );
+        $statement->execute([
+            ':view_count' => $newViewCount,
+            ':updated_at' => $now,
+            ':revoked_at' => $revokedAt,
+            ':id' => $share['id'],
+        ]);
+        $share['view_count'] = $newViewCount;
+        $share['share_updated_at'] = $now;
+        $share['revoked_at'] = $revokedAt;
+
+        return $share;
+    }
+
     private static function activeShareRow(int $fileId, PDO $pdo): ?array
     {
+        self::cleanupInactiveShares($pdo);
         $statement = $pdo->prepare(
             'SELECT *
              FROM file_shares
@@ -207,6 +380,8 @@ final class FileShares
     private static function serializeShare(array $share, array $file): array
     {
         $urls = self::shareUrls((string) $share['token']);
+        $viewCount = (int) ($share['view_count'] ?? 0);
+        $maxViews = $share['max_views'] === null ? null : (int) $share['max_views'];
 
         return [
             'file_id' => (int) $file['id'],
@@ -215,6 +390,10 @@ final class FileShares
             'download_url' => $urls['download'],
             'created_at' => (string) $share['created_at'],
             'updated_at' => (string) $share['updated_at'],
+            'expires_at' => $share['expires_at'] === null ? null : (string) $share['expires_at'],
+            'max_views' => $maxViews,
+            'view_count' => $viewCount,
+            'remaining_views' => $maxViews === null ? null : max(0, $maxViews - $viewCount),
             'revoked_at' => $share['revoked_at'] === null ? null : (string) $share['revoked_at'],
         ];
     }
@@ -222,6 +401,8 @@ final class FileShares
     private static function serializeResolvedShare(array $share): array
     {
         $urls = self::shareUrls((string) $share['token']);
+        $viewCount = (int) ($share['view_count'] ?? 0);
+        $maxViews = $share['max_views'] === null ? null : (int) $share['max_views'];
 
         return [
             'file_id' => (int) $share['file_id'],
@@ -230,6 +411,10 @@ final class FileShares
             'download_url' => $urls['download'],
             'created_at' => (string) $share['share_created_at'],
             'updated_at' => (string) $share['share_updated_at'],
+            'expires_at' => $share['expires_at'] === null ? null : (string) $share['expires_at'],
+            'max_views' => $maxViews,
+            'view_count' => $viewCount,
+            'remaining_views' => $maxViews === null ? null : max(0, $maxViews - $viewCount),
         ];
     }
 
@@ -268,11 +453,52 @@ final class FileShares
 
     private static function shareStreamUrls(string $token): array
     {
-        $base = '/api/index.php?action=share.stream&token=' . $token;
+        return [
+            'inline' => wb_url('/api/index.php?action=share.stream&grant=' . rawurlencode(self::streamGrant($token, 'inline'))),
+            'attachment' => wb_url('/api/index.php?action=share.stream&grant=' . rawurlencode(self::streamGrant($token, 'attachment'))),
+        ];
+    }
+
+    private static function streamGrant(string $token, string $disposition): string
+    {
+        return Security::signPayload([
+            'type' => 'share-stream',
+            'token' => $token,
+            'disposition' => $disposition === 'attachment' ? 'attachment' : 'inline',
+            'expires_at' => time() + self::STREAM_GRANT_TTL_SECONDS,
+        ]);
+    }
+
+    private static function normalizeOptions(array $options): array
+    {
+        $expiresAt = trim((string) ($options['expires_at'] ?? ''));
+        $maxViewsInput = $options['max_views'] ?? null;
+        $normalizedExpiresAt = null;
+        $normalizedMaxViews = null;
+
+        if ($expiresAt !== '') {
+            $timestamp = strtotime($expiresAt);
+
+            if ($timestamp === false || $timestamp <= time()) {
+                throw new RuntimeException('Share expiration must be in the future.');
+            }
+
+            $normalizedExpiresAt = gmdate('c', $timestamp);
+        }
+
+        if ($maxViewsInput !== null && $maxViewsInput !== '') {
+            $maxViews = filter_var($maxViewsInput, FILTER_VALIDATE_INT);
+
+            if ($maxViews === false || $maxViews < 1) {
+                throw new RuntimeException('Share view limit must be at least 1.');
+            }
+
+            $normalizedMaxViews = $maxViews;
+        }
 
         return [
-            'inline' => wb_url($base . '&disposition=inline'),
-            'attachment' => wb_url($base . '&disposition=attachment'),
+            'expires_at' => $normalizedExpiresAt,
+            'max_views' => $normalizedMaxViews,
         ];
     }
 

@@ -41,10 +41,8 @@ final class Auth
         $pdo = Database::connection();
         $username = wb_normalize_name($username);
         $ip = Security::clientIp();
-
-        if (self::tooManyAttempts($pdo, $username, $ip)) {
-            throw new RuntimeException('Too many failed login attempts. Please wait a few minutes and try again.');
-        }
+        $rateLimitBuckets = self::loginRateLimitBuckets($username, $ip);
+        Security::assertRateLimitAvailable($rateLimitBuckets, 'Too many failed login attempts. Please wait a few minutes and try again.', $pdo);
 
         $statement = $pdo->prepare('SELECT * FROM users WHERE username = :username LIMIT 1');
         $statement->execute([':username' => $username]);
@@ -52,10 +50,12 @@ final class Auth
 
         if (!is_array($user) || $user['status'] !== 'active' || !password_verify($password, (string) $user['password_hash'])) {
             self::recordAttempt($pdo, $username, $ip, false);
+            Security::consumeRateLimit($rateLimitBuckets, $pdo);
             throw new RuntimeException('Invalid username or password.');
         }
 
         self::recordAttempt($pdo, $username, $ip, true);
+        Security::clearRateLimit($rateLimitBuckets, $pdo);
         Security::regenerateSession();
         $_SESSION['user_id'] = (int) $user['id'];
 
@@ -116,20 +116,31 @@ final class Auth
         return $user;
     }
 
-    private static function tooManyAttempts(PDO $pdo, string $username, string $ip): bool
+    /**
+     * @return array<int, array{scope: string, identifier: string, limit: int, window: int}>
+     */
+    private static function loginRateLimitBuckets(string $username, string $ip): array
     {
-        $cutoff = gmdate('c', time() - (10 * 60));
-        $statement = $pdo->prepare(
-            'SELECT COUNT(*) FROM login_attempts
-             WHERE username = :username AND ip_address = :ip_address AND success = 0 AND attempted_at >= :cutoff'
-        );
-        $statement->execute([
-            ':username' => $username,
-            ':ip_address' => $ip,
-            ':cutoff' => $cutoff,
-        ]);
-
-        return (int) $statement->fetchColumn() >= 5;
+        return [
+            [
+                'scope' => 'login-user-ip',
+                'identifier' => $username . '|' . $ip,
+                'limit' => 5,
+                'window' => 10 * 60,
+            ],
+            [
+                'scope' => 'login-user',
+                'identifier' => $username,
+                'limit' => 10,
+                'window' => 15 * 60,
+            ],
+            [
+                'scope' => 'login-ip',
+                'identifier' => $ip,
+                'limit' => 25,
+                'window' => 15 * 60,
+            ],
+        ];
     }
 
     private static function recordAttempt(PDO $pdo, string $username, string $ip, bool $success): void

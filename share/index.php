@@ -5,27 +5,45 @@ declare(strict_types=1);
 require __DIR__ . '/../app/bootstrap.php';
 
 use WbFileBrowser\FileShares;
+use WbFileBrowser\Security;
 
 header('X-Robots-Tag: noindex, nofollow, noarchive');
+Security::sendPageHeaders();
 
 $bootstrap = wb_bootstrap_page('share');
 $token = trim((string) ($_GET['token'] ?? ''));
 $payload = null;
 
 try {
+    if ($token !== '') {
+        $shareRateLimitBuckets = [
+            [
+                'scope' => 'share-token-ip',
+                'identifier' => $token . '|' . Security::clientIp(),
+                'limit' => 20,
+                'window' => 5 * 60,
+            ],
+            [
+                'scope' => 'share-ip',
+                'identifier' => Security::clientIp(),
+                'limit' => 60,
+                'window' => 5 * 60,
+            ],
+        ];
+        Security::assertRateLimitAvailable($shareRateLimitBuckets, 'Shared file unavailable right now.');
+        Security::consumeRateLimit($shareRateLimitBuckets);
+    }
+
     $payload = FileShares::viewPayload($token);
 } catch (RuntimeException $exception) {
-    http_response_code(404);
+    http_response_code($exception->getMessage() === 'Shared file unavailable right now.' ? 429 : 404);
 }
 ?>
 <!doctype html>
 <html lang="en">
 <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title><?= $payload === null ? 'Shared file unavailable' : wb_h($payload['file']['name']) ?> | wb-filebrowser</title>
+    <?= wb_page_head(($payload === null ? 'Shared file unavailable' : $payload['file']['name']) . ' | wb-filebrowser') ?>
     <meta name="robots" content="noindex,nofollow,noarchive">
-    <link rel="stylesheet" href="<?= wb_h(wb_url('/assets/app.css')) ?>">
 </head>
 <body class="share-shell">
     <main class="share-layout">
@@ -91,8 +109,7 @@ try {
                                 class="share-direct-link__field"
                                 type="text"
                                 readonly
-                                value="<?= wb_h($share['download_url']) ?>"
-                                onclick="this.select();"
+                                value="<?= wb_h($share['url']) ?>"
                             >
                         </div>
                     </aside>

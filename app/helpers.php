@@ -167,6 +167,35 @@ function wb_random_token(int $bytes = 16): string
     return bin2hex(random_bytes($bytes));
 }
 
+function wb_json_html(mixed $value): string
+{
+    return (string) json_encode(
+        $value,
+        JSON_UNESCAPED_SLASHES
+        | JSON_UNESCAPED_UNICODE
+        | JSON_HEX_TAG
+        | JSON_HEX_AMP
+        | JSON_HEX_APOS
+        | JSON_HEX_QUOT
+    );
+}
+
+function wb_bootstrap_script_tag(array $bootstrap): string
+{
+    return '<script id="wb-bootstrap" type="application/json">' . wb_json_html($bootstrap) . '</script>';
+}
+
+function wb_page_head(string $title): string
+{
+    return implode("\n", [
+        '<meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        '<title>' . wb_h($title) . '</title>',
+        '<link rel="icon" type="image/svg+xml" href="' . wb_h(wb_url('/media/logo.svg')) . '">',
+        '<link rel="stylesheet" href="' . wb_h(wb_url('/assets/app.css')) . '">',
+    ]);
+}
+
 function wb_normalize_name(string $value): string
 {
     $value = trim($value);

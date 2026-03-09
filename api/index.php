@@ -17,6 +17,8 @@ require __DIR__ . '/../app/bootstrap.php';
 $action = (string) ($_GET['action'] ?? '');
 $installed = Installer::isInstalled();
 
+Security::sendApiHeaders();
+
 try {
     $requestData = wb_request_data();
     $csrfToken = $requestData['csrf_token'] ?? ($_SERVER['HTTP_X_CSRF_TOKEN'] ?? null);
@@ -137,6 +139,19 @@ try {
                 ),
             ]);
 
+        case 'tree.folders':
+            $pdo = Database::connection();
+            $user = Auth::currentUser($pdo);
+
+            if ($user === null && !Permissions::publicAccessEnabled($pdo)) {
+                wb_error_response('Please sign in to browse folders.', 401);
+            }
+
+            wb_json_response([
+                'ok' => true,
+                'folders' => FileManager::folderTree($user),
+            ]);
+
         case 'tree.details':
             $pdo = Database::connection();
             $user = Auth::currentUser($pdo);
@@ -210,7 +225,10 @@ try {
             $user = Auth::requireAdmin();
             wb_json_response([
                 'ok' => true,
-                'share' => FileShares::create($user, (int) ($requestData['file_id'] ?? 0)),
+                'share' => FileShares::create($user, (int) ($requestData['file_id'] ?? 0), [
+                    'expires_at' => $requestData['expires_at'] ?? null,
+                    'max_views' => $requestData['max_views'] ?? null,
+                ]),
             ], 201);
 
         case 'files.share.revoke':
@@ -222,6 +240,22 @@ try {
         case 'upload.init':
             $requireCsrf();
             $user = Auth::requireUser();
+            $uploadRateLimitBuckets = [
+                [
+                    'scope' => 'upload-init-user',
+                    'identifier' => (string) $user['id'],
+                    'limit' => 20,
+                    'window' => 10 * 60,
+                ],
+                [
+                    'scope' => 'upload-init-ip',
+                    'identifier' => Security::clientIp(),
+                    'limit' => 60,
+                    'window' => 10 * 60,
+                ],
+            ];
+            Security::assertRateLimitAvailable($uploadRateLimitBuckets, 'Too many upload attempts. Please wait a few minutes and try again.');
+            Security::consumeRateLimit($uploadRateLimitBuckets);
             wb_json_response([
                 'ok' => true,
                 'data' => FileManager::uploadInit(
@@ -268,6 +302,12 @@ try {
             }
 
             try {
+                $grant = (string) ($_GET['grant'] ?? '');
+
+                if ($grant !== '') {
+                    FileShares::streamGranted($grant);
+                }
+
                 FileShares::stream((string) ($_GET['token'] ?? ''), (string) ($_GET['disposition'] ?? 'inline'));
             } catch (\RuntimeException $exception) {
                 http_response_code(404);
@@ -315,8 +355,25 @@ try {
         case 'admin.users.list':
             Auth::requireAdmin();
             $users = Database::connection()->query(
-                'SELECT id, username, role, status, force_password_reset, is_immutable, created_at, updated_at, last_login_at
-                 FROM users ORDER BY role DESC, username ASC'
+                'SELECT
+                    users.id,
+                    users.username,
+                    users.role,
+                    users.status,
+                    users.force_password_reset,
+                    users.is_immutable,
+                    users.storage_quota_bytes,
+                    users.created_at,
+                    users.updated_at,
+                    users.last_login_at,
+                    COALESCE(file_usage.used_bytes, 0) AS storage_used_bytes
+                 FROM users
+                 LEFT JOIN (
+                    SELECT created_by, SUM(size) AS used_bytes
+                    FROM files
+                    GROUP BY created_by
+                 ) AS file_usage ON file_usage.created_by = users.id
+                 ORDER BY role DESC, username ASC'
             )->fetchAll();
             wb_json_response([
                 'ok' => true,
@@ -324,6 +381,12 @@ try {
                     $user['id'] = (int) $user['id'];
                     $user['force_password_reset'] = (int) $user['force_password_reset'] === 1;
                     $user['is_immutable'] = (int) $user['is_immutable'] === 1;
+                    $user['storage_used_bytes'] = (int) ($user['storage_used_bytes'] ?? 0);
+                    $user['storage_used_label'] = wb_format_bytes($user['storage_used_bytes']);
+                    $user['storage_quota_bytes'] = $user['storage_quota_bytes'] === null ? null : (int) $user['storage_quota_bytes'];
+                    $user['storage_quota_label'] = $user['storage_quota_bytes'] === null
+                        ? 'Unlimited'
+                        : wb_format_bytes($user['storage_quota_bytes']);
 
                     return $user;
                 }, $users),
@@ -390,13 +453,31 @@ try {
                 wb_error_response('Only the Super-Admin can grant administrator access.', 403);
             }
 
+            $storageQuotaBytes = null;
+            $storageQuotaInput = $requestData['storage_quota_bytes'] ?? $target['storage_quota_bytes'];
+
+            if ($role === 'user' && $storageQuotaInput !== null && $storageQuotaInput !== '') {
+                $storageQuotaBytes = filter_var($storageQuotaInput, FILTER_VALIDATE_INT);
+
+                if ($storageQuotaBytes === false || $storageQuotaBytes < 1) {
+                    wb_error_response('Storage quota must be a whole number of bytes greater than 0, or null for unlimited.', 422);
+                }
+            }
+
             $update = $pdo->prepare(
-                'UPDATE users SET role = :role, status = :status, force_password_reset = :force_password_reset, updated_at = :updated_at WHERE id = :id'
+                'UPDATE users
+                 SET role = :role,
+                     status = :status,
+                     force_password_reset = :force_password_reset,
+                     storage_quota_bytes = :storage_quota_bytes,
+                     updated_at = :updated_at
+                 WHERE id = :id'
             );
             $update->execute([
                 ':role' => $role,
                 ':status' => in_array((string) ($requestData['status'] ?? $target['status']), ['active', 'suspended'], true) ? $requestData['status'] : $target['status'],
                 ':force_password_reset' => wb_parse_bool($requestData['force_password_reset'] ?? $target['force_password_reset']) ? 1 : 0,
+                ':storage_quota_bytes' => $role === 'user' ? $storageQuotaBytes : null,
                 ':updated_at' => wb_now(),
                 ':id' => $targetId,
             ]);

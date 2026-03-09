@@ -60,6 +60,7 @@ const session = reactive({
 const route = reactive({
   folderId: 1,
   section: shell === 'admin' ? 'dashboard' : 'browse',
+  userId: 0,
 });
 
 const folderState = reactive({
@@ -69,7 +70,9 @@ const folderState = reactive({
   folders: [],
   files: [],
   can_upload: false,
-  can_manage: false,
+  can_create_folders: false,
+  can_edit: false,
+  can_delete: false,
 });
 
 const searchState = reactive({
@@ -86,8 +89,8 @@ const adminState = reactive({
   canManageSettings: false,
   permissionRows: [],
   permissionEntries: {},
-  permissionPrincipalType: 'guest',
-  permissionPrincipalId: 0,
+  userPermissionRows: [],
+  userPermissionEntries: {},
   automationJobs: [],
   automationBusy: false,
 });
@@ -96,6 +99,11 @@ const shareState = reactive({
   fileId: 0,
   loading: false,
   link: null,
+});
+const shareForm = reactive({
+  fileId: 0,
+  expiresAtLocal: '',
+  maxViews: '',
 });
 
 const authForm = reactive({ username: '', password: '' });
@@ -127,25 +135,25 @@ const isAdminShell = computed(() => shell === 'admin');
 const needsLogin = computed(() => isAdminShell.value ? session.user === null : session.user === null && !session.publicAccess);
 const accessDenied = computed(() => isAdminShell.value && session.user !== null && !isAdmin.value);
 const showDiagnosticWarning = computed(() => isAdmin.value && session.diagnostic.exposed);
-const searchConfig = computed(() => getSearchConfig(shell, route.section));
+const searchConfig = computed(() => getSearchConfig(shell, route.section, { userId: route.userId }));
 const searchActive = computed(() => shell !== 'admin' && searchQuery.value.trim() !== '');
 const currentEntries = computed(() => (searchActive.value ? [...searchState.folders, ...searchState.files] : [...folderState.folders, ...folderState.files]));
 const selectedItem = computed(() => currentEntries.value.find((item) => rowKey(item) === selectedKey.value) ?? null);
 const canUploadHere = computed(() => shell === 'app' && session.user !== null && folderState.can_upload);
-const canManageShares = computed(() => shell === 'app' && folderState.can_manage);
+const canCreateFoldersHere = computed(() => shell === 'app' && folderState.can_create_folders);
+const canManageShares = computed(() => shell === 'app' && isAdmin.value);
 const breadcrumbItems = computed(() => searchActive.value
   ? [{ id: session.rootFolderId, name: 'Home' }, { id: -1, name: 'Search results' }]
   : folderState.breadcrumbs);
-const principalUsers = computed(() => adminState.users.filter((user) => user.role === 'user'));
 const filteredUsers = computed(() => filterUsers(adminState.users, searchQuery.value, route.section));
 const filteredPermissionRows = computed(() => route.section === 'permissions'
   ? filterPermissionRows(adminState.permissionRows, searchQuery.value)
   : adminState.permissionRows);
-const permissionPrincipalCopy = computed(() => describePermissionPrincipal(
-  adminState.permissionPrincipalType,
-  adminState.permissionPrincipalId,
-  adminState.users,
-));
+const filteredUserPermissionRows = computed(() => route.section === 'users' && route.userId > 0
+  ? filterPermissionRows(adminState.userPermissionRows, searchQuery.value)
+  : adminState.userPermissionRows);
+const permissionPrincipalCopy = computed(() => describePermissionPrincipal('guest', 0, adminState.users));
+const activeAdminUser = computed(() => adminState.users.find((user) => Number(user.id) === Number(route.userId)) ?? null);
 const automationJobs = computed(() => adminState.automationJobs);
 const dueAutomationCount = computed(() => automationJobs.value.filter((job) => job.is_due).length);
 const uploadAccept = computed(() => session.uploadPolicy.allowed_extensions.length === 0
@@ -223,8 +231,17 @@ function toggleSort(column) {
 
 function syncRouteFromHash() {
   if (isAdminShell.value) {
+    const userMatch = window.location.hash.match(/^#\/users\/(\d+)/);
+
+    if (userMatch) {
+      route.section = 'users';
+      route.userId = Number(userMatch[1]);
+      return;
+    }
+
     const section = window.location.hash.replace(/^#\//, '') || 'dashboard';
     route.section = ADMIN_SECTIONS.includes(section) ? section : 'dashboard';
+    route.userId = 0;
     if (!ADMIN_SECTIONS.includes(section)) {
       window.location.hash = '#/dashboard';
     }
@@ -383,12 +400,30 @@ function navigateToFolder(folderId) {
 }
 
 function setAdminSection(section) {
-  const nextHash = `#/${section}`;
+  const nextHash = section === 'users' ? '#/users' : `#/${section}`;
   if (window.location.hash === nextHash) {
     route.section = section;
+    route.userId = 0;
     loadAdminSection().catch((error) => showMessage(error instanceof Error ? error.message : 'Unable to load this section.'));
     return;
   }
+  window.location.hash = nextHash;
+}
+
+function openUserDetails(user) {
+  if (!user) {
+    return;
+  }
+
+  const nextHash = `#/users/${user.id}`;
+
+  if (window.location.hash === nextHash) {
+    route.section = 'users';
+    route.userId = Number(user.id);
+    loadAdminSection().catch((error) => showMessage(error instanceof Error ? error.message : 'Unable to load this user.'));
+    return;
+  }
+
   window.location.hash = nextHash;
 }
 
@@ -441,8 +476,32 @@ function handleEntryClick(item) {
   openPreview(item).catch((error) => showMessage(error instanceof Error ? error.message : 'Unable to open the preview.'));
 }
 
+function canEditItem(item) {
+  if (!item) {
+    return false;
+  }
+
+  return Boolean(item.can_edit);
+}
+
+function canDeleteItem(item) {
+  if (!item) {
+    return false;
+  }
+
+  return Boolean(item.can_delete);
+}
+
+function canShowItemActions(item) {
+  if (!item) {
+    return false;
+  }
+
+  return canEditItem(item) || canDeleteItem(item) || (item.type === 'file' && canManageShares.value);
+}
+
 function handleContextMenu(event, item) {
-  if (!folderState.can_manage || shell !== 'app') {
+  if (shell !== 'app' || !canShowItemActions(item)) {
     return;
   }
 
@@ -608,8 +667,8 @@ async function uploadFiles(files) {
 }
 
 async function createFolder() {
-  if (!folderState.can_manage) {
-    showMessage('Only administrators can create folders.');
+  if (!canCreateFoldersHere.value) {
+    showMessage('You do not have permission to create folders here.');
     return;
   }
 
@@ -624,6 +683,11 @@ async function createFolder() {
 
 async function renameSelected(item = selectedItem.value) {
   if (!item) {
+    return;
+  }
+
+  if (!canEditItem(item)) {
+    showMessage('You do not have permission to rename this item.');
     return;
   }
 
@@ -666,12 +730,17 @@ function buildFolderRows(folders) {
 }
 
 async function ensureMoveTargets() {
-  const payload = await api('admin.permissions.get', { params: { principal_type: 'guest', principal_id: 0 } });
-  return buildFolderRows(payload.folders);
+  const payload = await api('tree.folders');
+  return buildFolderRows(payload.folders).filter((folder) => folder.can_edit);
 }
 
 async function moveSelected(item = selectedItem.value) {
   if (!item) {
+    return;
+  }
+
+  if (!canEditItem(item)) {
+    showMessage('You do not have permission to move this item.');
     return;
   }
 
@@ -697,6 +766,11 @@ async function deleteSelected(item = selectedItem.value) {
     return;
   }
 
+  if (!canDeleteItem(item)) {
+    showMessage('You do not have permission to delete this item.');
+    return;
+  }
+
   if (!window.confirm(`Delete "${item.name}"? This cannot be undone.`)) {
     return;
   }
@@ -718,6 +792,54 @@ function resetShareState() {
   shareState.fileId = 0;
   shareState.loading = false;
   shareState.link = null;
+  shareForm.fileId = 0;
+  shareForm.expiresAtLocal = '';
+  shareForm.maxViews = '';
+}
+
+function toLocalDateTimeInput(value) {
+  if (!value) {
+    return '';
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+
+  const pad = (input) => String(input).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function fromLocalDateTimeInput(value) {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function applyShareForm(item, link = null) {
+  shareForm.fileId = item?.id ?? 0;
+  shareForm.expiresAtLocal = toLocalDateTimeInput(link?.expires_at ?? '');
+  shareForm.maxViews = link?.max_views ? String(link.max_views) : '';
+}
+
+function shareOptionsFor(item) {
+  if (!item || item.type !== 'file') {
+    return { expires_at: null, max_views: null };
+  }
+
+  const source = shareForm.fileId === item.id
+    ? shareForm
+    : { expiresAtLocal: '', maxViews: '' };
+  const maxViews = Number(source.maxViews);
+
+  return {
+    expires_at: fromLocalDateTimeInput(source.expiresAtLocal),
+    max_views: Number.isInteger(maxViews) && maxViews > 0 ? maxViews : null,
+  };
 }
 
 async function loadShareState(item = shareContextItem.value) {
@@ -736,6 +858,7 @@ async function loadShareState(item = shareContextItem.value) {
 
     if (shareState.fileId === item.id) {
       shareState.link = payload.share ?? null;
+      applyShareForm(item, payload.share ?? null);
     }
   } finally {
     if (shareState.fileId === item.id) {
@@ -763,11 +886,15 @@ async function createShareLink(item = shareContextItem.value, { open = false } =
   try {
     const payload = await api('files.share.create', {
       method: 'POST',
-      body: { file_id: item.id },
+      body: {
+        file_id: item.id,
+        ...shareOptionsFor(item),
+      },
     });
     shareState.fileId = item.id;
     shareState.loading = false;
     shareState.link = payload.share;
+    applyShareForm(item, payload.share);
 
     let copied = false;
     try {
@@ -792,21 +919,20 @@ async function openShareLink(item = shareContextItem.value) {
     return;
   }
 
-  if (shareState.fileId === item.id && shareState.link?.url) {
-    window.open(shareState.link.url, '_blank', 'noopener');
-    return;
-  }
-
   const popup = window.open('', '_blank', 'noopener');
 
   try {
     const payload = await api('files.share.create', {
       method: 'POST',
-      body: { file_id: item.id },
+      body: {
+        file_id: item.id,
+        ...shareOptionsFor(item),
+      },
     });
     shareState.fileId = item.id;
     shareState.loading = false;
     shareState.link = payload.share;
+    applyShareForm(item, payload.share);
     popup?.location.replace(payload.share.url);
   } catch (error) {
     popup?.close();
@@ -837,6 +963,7 @@ async function revokeShareLink(item = shareContextItem.value) {
     shareState.fileId = item.id;
     shareState.loading = false;
     shareState.link = null;
+    applyShareForm(item, null);
     showMessage('Share link disabled.');
   } catch (error) {
     showMessage(error instanceof Error ? error.message : 'Unable to disable the share link.');
@@ -862,57 +989,143 @@ function selectCurrentItem() {
 
 async function loadAdminUsers() {
   const payload = await api('admin.users.list');
-  adminState.users = payload.users;
+  adminState.users = (payload.users ?? []).map((user) => ({
+    ...user,
+    storage_quota_input: user.storage_quota_bytes === null ? '' : String(user.storage_quota_bytes),
+  }));
 }
 
-async function loadPermissions() {
-  if (adminState.permissionPrincipalType === 'user' && adminState.permissionPrincipalId === 0) {
-    adminState.permissionPrincipalId = principalUsers.value[0]?.id ?? 0;
+function createPermissionEntry() {
+  return {
+    can_view: false,
+    can_upload: false,
+    can_edit: false,
+    can_delete: false,
+    can_create_folders: false,
+  };
+}
+
+function normalizePermissionEntry(entry, field) {
+  if (field !== 'can_view' && entry[field]) {
+    entry.can_view = true;
   }
 
+  if (field === 'can_view' && !entry.can_view) {
+    entry.can_upload = false;
+    entry.can_edit = false;
+    entry.can_delete = false;
+    entry.can_create_folders = false;
+  }
+
+  return entry;
+}
+
+async function loadGuestPermissions() {
   const payload = await api('admin.permissions.get', {
     params: {
-      principal_type: adminState.permissionPrincipalType,
-      principal_id: adminState.permissionPrincipalType === 'guest' ? 0 : adminState.permissionPrincipalId,
+      principal_type: 'guest',
+      principal_id: 0,
     },
   });
 
   adminState.permissionRows = buildFolderRows(payload.folders);
   adminState.permissionEntries = Object.fromEntries(
-    adminState.permissionRows.map((row) => [row.id, { can_view: false, can_upload: false }]),
+    adminState.permissionRows.map((row) => [row.id, createPermissionEntry()]),
   );
 
   for (const permission of payload.permissions) {
     adminState.permissionEntries[permission.folder_id] = {
       can_view: Number(permission.can_view) === 1,
+      can_upload: false,
+      can_edit: false,
+      can_delete: false,
+      can_create_folders: false,
+    };
+  }
+}
+
+async function loadUserPermissions(userId = route.userId) {
+  if (!userId) {
+    adminState.userPermissionRows = [];
+    adminState.userPermissionEntries = {};
+    return;
+  }
+
+  const payload = await api('admin.permissions.get', {
+    params: {
+      principal_type: 'user',
+      principal_id: userId,
+    },
+  });
+
+  adminState.userPermissionRows = buildFolderRows(payload.folders);
+  adminState.userPermissionEntries = Object.fromEntries(
+    adminState.userPermissionRows.map((row) => [row.id, createPermissionEntry()]),
+  );
+
+  for (const permission of payload.permissions) {
+    adminState.userPermissionEntries[permission.folder_id] = {
+      can_view: Number(permission.can_view) === 1,
       can_upload: Number(permission.can_upload) === 1,
+      can_edit: Number(permission.can_edit) === 1,
+      can_delete: Number(permission.can_delete) === 1,
+      can_create_folders: Number(permission.can_create_folders) === 1,
     };
   }
 }
 
 function togglePermission(folderId, field) {
-  const entry = adminState.permissionEntries[folderId] ?? { can_view: false, can_upload: false };
+  const entry = adminState.permissionEntries[folderId] ?? createPermissionEntry();
   entry[field] = !entry[field];
-  if (field === 'can_upload' && entry.can_upload) {
-    entry.can_view = true;
-  }
-  adminState.permissionEntries[folderId] = entry;
+  adminState.permissionEntries[folderId] = normalizePermissionEntry(entry, field);
+}
+
+function toggleUserPermission(folderId, field) {
+  const entry = adminState.userPermissionEntries[folderId] ?? createPermissionEntry();
+  entry[field] = !entry[field];
+  adminState.userPermissionEntries[folderId] = normalizePermissionEntry(entry, field);
 }
 
 async function savePermissions() {
   await api('admin.permissions.save', {
     method: 'POST',
     body: {
-      principal_type: adminState.permissionPrincipalType,
-      principal_id: adminState.permissionPrincipalType === 'guest' ? 0 : adminState.permissionPrincipalId,
+      principal_type: 'guest',
+      principal_id: 0,
       entries: adminState.permissionRows.map((row) => ({
         folder_id: row.id,
         can_view: adminState.permissionEntries[row.id]?.can_view ?? false,
-        can_upload: adminState.permissionEntries[row.id]?.can_upload ?? false,
+        can_upload: false,
+        can_edit: false,
+        can_delete: false,
+        can_create_folders: false,
       })),
     },
   });
   showMessage('Permissions saved.');
+}
+
+async function saveUserPermissions() {
+  if (!activeAdminUser.value) {
+    return;
+  }
+
+  await api('admin.permissions.save', {
+    method: 'POST',
+    body: {
+      principal_type: 'user',
+      principal_id: activeAdminUser.value.id,
+      entries: adminState.userPermissionRows.map((row) => ({
+        folder_id: row.id,
+        can_view: adminState.userPermissionEntries[row.id]?.can_view ?? false,
+        can_upload: adminState.userPermissionEntries[row.id]?.can_upload ?? false,
+        can_edit: adminState.userPermissionEntries[row.id]?.can_edit ?? false,
+        can_delete: adminState.userPermissionEntries[row.id]?.can_delete ?? false,
+        can_create_folders: adminState.userPermissionEntries[row.id]?.can_create_folders ?? false,
+      })),
+    },
+  });
+  showMessage(`Permissions saved for ${activeAdminUser.value.username}.`);
 }
 
 async function loadAdminSection() {
@@ -929,12 +1142,19 @@ async function loadAdminSection() {
 
     if (route.section === 'users') {
       await loadAdminUsers();
+      if (route.userId > 0) {
+        if (!adminState.users.some((user) => Number(user.id) === Number(route.userId))) {
+          setAdminSection('users');
+          return;
+        }
+
+        await loadUserPermissions(route.userId);
+      }
       return;
     }
 
     if (route.section === 'permissions') {
-      await loadAdminUsers();
-      await loadPermissions();
+      await loadGuestPermissions();
       return;
     }
 
@@ -960,6 +1180,15 @@ async function createUser() {
 }
 
 async function saveUser(user) {
+  const quotaBytes = user.role === 'user' && user.storage_quota_input !== ''
+    ? Number(user.storage_quota_input)
+    : null;
+
+  if (quotaBytes !== null && (!Number.isInteger(quotaBytes) || quotaBytes < 1)) {
+    showMessage('Storage quota must be a whole number of bytes or left empty for unlimited.');
+    return;
+  }
+
   await api('admin.users.update', {
     method: 'POST',
     body: {
@@ -967,8 +1196,13 @@ async function saveUser(user) {
       role: user.role,
       status: user.status,
       force_password_reset: user.force_password_reset,
+      storage_quota_bytes: quotaBytes,
     },
   });
+  await loadAdminUsers();
+  if (route.userId > 0) {
+    await loadUserPermissions(route.userId);
+  }
   showMessage(`Saved ${user.username}.`);
 }
 
@@ -1179,12 +1413,12 @@ watch(() => route.folderId, async (folderId) => {
   }
 });
 
-watch(() => [adminState.permissionPrincipalType, adminState.permissionPrincipalId], async () => {
-  if (shell === 'admin' && route.section === 'permissions' && isAdmin.value && !isBooting.value) {
+watch(() => route.userId, async (userId) => {
+  if (shell === 'admin' && route.section === 'users' && userId > 0 && isAdmin.value && !isBooting.value) {
     try {
-      await loadPermissions();
+      await loadAdminSection();
     } catch (error) {
-      showMessage(error instanceof Error ? error.message : 'Unable to load permissions.');
+      showMessage(error instanceof Error ? error.message : 'Unable to load this user.');
     }
   }
 });
@@ -1248,7 +1482,7 @@ onBeforeUnmount(() => {
 
       <nav class="sidebar-nav">
         <button class="sidebar-link" type="button" @click="browseHome">My files</button>
-        <button class="sidebar-link" type="button" :disabled="shell === 'admin' || !folderState.can_manage" @click="createFolder">New folder</button>
+        <button class="sidebar-link" type="button" :disabled="shell === 'admin' || !canCreateFoldersHere" @click="createFolder">New folder</button>
         <button class="sidebar-link" type="button" :disabled="shell === 'admin' || !canUploadHere" @click="triggerUpload">New file</button>
         <button class="sidebar-link" type="button" @click="openSettings">Settings</button>
         <button class="sidebar-link" type="button" :disabled="!session.user" @click="logout">Logout</button>
@@ -1426,7 +1660,7 @@ onBeforeUnmount(() => {
           </article>
         </section>
 
-        <section v-else-if="route.section === 'users'" class="admin-grid">
+        <section v-else-if="route.section === 'users' && route.userId === 0" class="admin-grid">
           <article class="panel">
             <p class="panel-kicker">Create User</p>
             <h2>Add a new account</h2>
@@ -1459,7 +1693,7 @@ onBeforeUnmount(() => {
             <p class="panel-kicker">Overview</p>
             <h2>{{ adminState.users.length }} account{{ adminState.users.length === 1 ? '' : 's' }}</h2>
             <p>{{ filteredUsers.length }} visible in the current filter.</p>
-            <p class="panel-meta">Search is scoped to usernames in this tab.</p>
+            <p class="panel-meta">Open a user to edit quota and folder-specific rights.</p>
           </article>
 
           <article class="panel panel-table panel-wide">
@@ -1475,6 +1709,7 @@ onBeforeUnmount(() => {
                   <th>Username</th>
                   <th>Role</th>
                   <th>Status</th>
+                  <th>Storage used</th>
                   <th>Last login</th>
                   <th></th>
                 </tr>
@@ -1485,23 +1720,12 @@ onBeforeUnmount(() => {
                     <strong>{{ user.username }}</strong>
                     <small v-if="user.is_immutable">Immutable</small>
                   </td>
-                  <td>
-                    <select v-model="user.role" :disabled="!canEditUser(user)">
-                      <option value="user">User</option>
-                      <option value="admin">Admin</option>
-                      <option value="super_admin">Super-Admin</option>
-                    </select>
-                  </td>
-                  <td>
-                    <select v-model="user.status" :disabled="!canEditUser(user)">
-                      <option value="active">Active</option>
-                      <option value="suspended">Suspended</option>
-                    </select>
-                  </td>
+                  <td>{{ user.role }}</td>
+                  <td>{{ user.status }}</td>
+                  <td>{{ user.storage_used_label }} / {{ user.storage_quota_label }}</td>
                   <td>{{ user.last_login_at || 'Never' }}</td>
                   <td class="table-actions">
-                    <button type="button" :disabled="!canEditUser(user)" @click="saveUser(user)">Save</button>
-                    <button type="button" :disabled="!canEditUser(user)" @click="resetPassword(user)">Reset password</button>
+                    <button type="button" :disabled="!canEditUser(user)" @click="openUserDetails(user)">Open</button>
                   </td>
                 </tr>
               </tbody>
@@ -1513,31 +1737,141 @@ onBeforeUnmount(() => {
           </article>
         </section>
 
+        <section v-else-if="route.section === 'users'" class="admin-grid">
+          <article v-if="activeAdminUser" class="panel panel-wide">
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">User Detail</p>
+                <h2>{{ activeAdminUser.username }}</h2>
+                <p class="panel-meta">Edit account settings, quotas, and folder-level rights for this user.</p>
+              </div>
+              <div class="table-actions">
+                <button type="button" @click="setAdminSection('users')">Back to users</button>
+                <button type="button" :disabled="!canEditUser(activeAdminUser)" @click="saveUser(activeAdminUser)">Save account</button>
+                <button type="button" :disabled="!canEditUser(activeAdminUser)" @click="saveUserPermissions">Save permissions</button>
+              </div>
+            </div>
+          </article>
+
+          <article v-if="activeAdminUser" class="panel">
+            <p class="panel-kicker">Account</p>
+            <h2>Profile and access</h2>
+            <label>
+              <span>Role</span>
+              <select v-model="activeAdminUser.role" :disabled="!canEditUser(activeAdminUser)">
+                <option value="user">User</option>
+                <option value="admin">Admin</option>
+                <option value="super_admin">Super-Admin</option>
+              </select>
+            </label>
+            <label>
+              <span>Status</span>
+              <select v-model="activeAdminUser.status" :disabled="!canEditUser(activeAdminUser)">
+                <option value="active">Active</option>
+                <option value="suspended">Suspended</option>
+              </select>
+            </label>
+            <label class="checkbox-row">
+              <input v-model="activeAdminUser.force_password_reset" type="checkbox" :disabled="!canEditUser(activeAdminUser)">
+              <span>Require password reset at next login</span>
+            </label>
+            <div class="quick-actions">
+              <button type="button" :disabled="!canEditUser(activeAdminUser)" @click="resetPassword(activeAdminUser)">Reset password</button>
+            </div>
+          </article>
+
+          <article v-if="activeAdminUser" class="panel">
+            <p class="panel-kicker">Storage Quota</p>
+            <h2>User storage allowance</h2>
+            <p>Current usage: {{ activeAdminUser.storage_used_label }}</p>
+            <label>
+              <span>Quota in bytes</span>
+              <input
+                v-model="activeAdminUser.storage_quota_input"
+                type="number"
+                min="1"
+                step="1"
+                :disabled="!canEditUser(activeAdminUser) || activeAdminUser.role !== 'user'"
+                placeholder="Leave empty for unlimited"
+              >
+              <small class="panel-meta">Leave empty for unlimited. Quotas apply only to standard users.</small>
+            </label>
+          </article>
+
+          <article v-if="activeAdminUser" class="panel panel-table panel-wide">
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">Folder Matrix</p>
+                <h2>Permissions for {{ activeAdminUser.username }}</h2>
+              </div>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Folder</th>
+                  <th>View</th>
+                  <th>Upload</th>
+                  <th>Edit</th>
+                  <th>Delete</th>
+                  <th>Create folders</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in filteredUserPermissionRows" :key="row.id">
+                  <td :style="{ paddingLeft: `${1 + row.depth * 1.2}rem` }">{{ row.path }}</td>
+                  <td>
+                    <input
+                      type="checkbox"
+                      :checked="adminState.userPermissionEntries[row.id]?.can_view"
+                      @change="toggleUserPermission(row.id, 'can_view')"
+                    >
+                  </td>
+                  <td>
+                    <input
+                      type="checkbox"
+                      :checked="adminState.userPermissionEntries[row.id]?.can_upload"
+                      @change="toggleUserPermission(row.id, 'can_upload')"
+                    >
+                  </td>
+                  <td>
+                    <input
+                      type="checkbox"
+                      :checked="adminState.userPermissionEntries[row.id]?.can_edit"
+                      @change="toggleUserPermission(row.id, 'can_edit')"
+                    >
+                  </td>
+                  <td>
+                    <input
+                      type="checkbox"
+                      :checked="adminState.userPermissionEntries[row.id]?.can_delete"
+                      @change="toggleUserPermission(row.id, 'can_delete')"
+                    >
+                  </td>
+                  <td>
+                    <input
+                      type="checkbox"
+                      :checked="adminState.userPermissionEntries[row.id]?.can_create_folders"
+                      @change="toggleUserPermission(row.id, 'can_create_folders')"
+                    >
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </article>
+        </section>
+
         <section v-else-if="route.section === 'permissions'" class="admin-grid">
           <article class="panel panel-form">
-            <p class="panel-kicker">Who Gets Access?</p>
+            <p class="panel-kicker">Guest Publishing</p>
             <h2>{{ permissionPrincipalCopy.title }}</h2>
             <p>{{ permissionPrincipalCopy.body }}</p>
-            <label>
-              <span>Permission target</span>
-              <select v-model="adminState.permissionPrincipalType">
-                <option value="guest">Published folders (Guests)</option>
-                <option value="user">Specific user</option>
-              </select>
-            </label>
-            <label v-if="adminState.permissionPrincipalType === 'user'">
-              <span>User</span>
-              <select v-model="adminState.permissionPrincipalId">
-                <option v-for="user in principalUsers" :key="user.id" :value="user.id">{{ user.username }}</option>
-              </select>
-            </label>
             <button type="button" @click="savePermissions">Save permissions</button>
           </article>
 
           <article class="panel">
-            <p class="panel-kicker">What Can They Do?</p>
-            <h2>View and upload</h2>
-            <p>View controls which folders appear. Upload automatically includes view. Folder creation, rename, move, and delete stay admin-only in this release.</p>
+            <p class="panel-kicker">Guest Access</p>
+            <h2>Published folders only</h2>
+            <p>Guests only receive browse access. User-specific upload, edit, delete, and create-folder rights are configured from each user detail page.</p>
             <p class="panel-meta">{{ filteredPermissionRows.length }} folder rows visible.</p>
           </article>
 
@@ -1553,7 +1887,6 @@ onBeforeUnmount(() => {
                 <tr>
                   <th>Folder</th>
                   <th>View</th>
-                  <th>Upload</th>
                 </tr>
               </thead>
               <tbody>
@@ -1564,14 +1897,6 @@ onBeforeUnmount(() => {
                       type="checkbox"
                       :checked="adminState.permissionEntries[row.id]?.can_view"
                       @change="togglePermission(row.id, 'can_view')"
-                    >
-                  </td>
-                  <td>
-                    <input
-                      type="checkbox"
-                      :checked="adminState.permissionEntries[row.id]?.can_upload"
-                      :disabled="adminState.permissionPrincipalType === 'guest'"
-                      @change="togglePermission(row.id, 'can_upload')"
                     >
                   </td>
                 </tr>
@@ -1783,6 +2108,24 @@ onBeforeUnmount(() => {
               <div><dt>Updated</dt><dd>{{ previewItem.updated_relative }}</dd></div>
               <div><dt>Checksum</dt><dd>{{ previewItem.checksum }}</dd></div>
             </dl>
+            <div v-if="canManageShares && previewItem.type === 'file'" class="share-panel">
+              <strong>Public share</strong>
+              <p v-if="shareState.fileId === previewItem.id && shareState.link" class="share-panel__url">{{ shareState.link.url }}</p>
+              <p v-else>No public share link is active for this file yet.</p>
+              <label>
+                <span>Expires at</span>
+                <input v-model="shareForm.expiresAtLocal" type="datetime-local">
+              </label>
+              <label>
+                <span>Max page opens</span>
+                <input v-model="shareForm.maxViews" type="number" min="1" step="1" placeholder="Unlimited">
+              </label>
+              <small class="panel-meta">
+                <template v-if="shareState.fileId === previewItem.id && shareState.link">
+                  Views: {{ shareState.link.view_count }}<span v-if="shareState.link.remaining_views !== null"> · Remaining: {{ shareState.link.remaining_views }}</span>
+                </template>
+              </small>
+            </div>
           </aside>
         </div>
       </section>
@@ -1813,22 +2156,35 @@ onBeforeUnmount(() => {
         <p v-if="shareState.loading && shareState.fileId === infoItem.id">Checking share link...</p>
         <p v-else-if="shareState.fileId === infoItem.id && shareState.link" class="share-panel__url">{{ shareState.link.url }}</p>
         <p v-else>No public share link is active for this file yet.</p>
+        <label>
+          <span>Expires at</span>
+          <input v-model="shareForm.expiresAtLocal" type="datetime-local">
+        </label>
+        <label>
+          <span>Max page opens</span>
+          <input v-model="shareForm.maxViews" type="number" min="1" step="1" placeholder="Unlimited">
+        </label>
+        <small class="panel-meta">
+          <template v-if="shareState.fileId === infoItem.id && shareState.link">
+            Views: {{ shareState.link.view_count }}<span v-if="shareState.link.remaining_views !== null"> · Remaining: {{ shareState.link.remaining_views }}</span>
+          </template>
+        </small>
       </div>
-      <div v-if="shell === 'app' && folderState.can_manage" class="drawer-actions">
-        <button v-if="infoItem.type === 'file'" type="button" @click="createShareLink(infoItem)">Share link</button>
-        <button v-if="infoItem.type === 'file'" type="button" @click="openShareLink(infoItem)">Open share</button>
-        <button v-if="infoItem.type === 'file' && shareState.fileId === infoItem.id && shareState.link" type="button" @click="revokeShareLink(infoItem)">Disable share</button>
-        <button type="button" @click="renameSelected(infoItem)">Rename</button>
-        <button type="button" @click="moveSelected(infoItem)">Move</button>
-        <button type="button" class="danger" @click="deleteSelected(infoItem)">Delete</button>
+      <div v-if="shell === 'app' && canShowItemActions(infoItem)" class="drawer-actions">
+        <button v-if="canManageShares && infoItem.type === 'file'" type="button" @click="createShareLink(infoItem)">Share link</button>
+        <button v-if="canManageShares && infoItem.type === 'file'" type="button" @click="openShareLink(infoItem)">Open share</button>
+        <button v-if="canManageShares && infoItem.type === 'file' && shareState.fileId === infoItem.id && shareState.link" type="button" @click="revokeShareLink(infoItem)">Disable share</button>
+        <button v-if="canEditItem(infoItem)" type="button" @click="renameSelected(infoItem)">Rename</button>
+        <button v-if="canEditItem(infoItem)" type="button" @click="moveSelected(infoItem)">Move</button>
+        <button v-if="canDeleteItem(infoItem)" type="button" class="danger" @click="deleteSelected(infoItem)">Delete</button>
       </div>
     </aside>
 
     <div v-if="contextMenu" class="context-menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }">
-      <button v-if="contextMenu.item.type === 'file'" type="button" @click="createShareLink(contextMenu.item)">Share link</button>
-      <button type="button" @click="renameSelected(contextMenu.item)">Rename</button>
-      <button type="button" @click="moveSelected(contextMenu.item)">Move</button>
-      <button type="button" class="danger" @click="deleteSelected(contextMenu.item)">Delete</button>
+      <button v-if="canManageShares && contextMenu.item.type === 'file'" type="button" @click="createShareLink(contextMenu.item)">Share link</button>
+      <button v-if="canEditItem(contextMenu.item)" type="button" @click="renameSelected(contextMenu.item)">Rename</button>
+      <button v-if="canEditItem(contextMenu.item)" type="button" @click="moveSelected(contextMenu.item)">Move</button>
+      <button v-if="canDeleteItem(contextMenu.item)" type="button" class="danger" @click="deleteSelected(contextMenu.item)">Delete</button>
     </div>
 
     <input ref="fileInput" type="file" hidden multiple :accept="uploadAccept || undefined" @change="handleFilePicker">

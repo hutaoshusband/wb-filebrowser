@@ -252,6 +252,20 @@ XML;
             $pdo->exec($statement);
         }
 
+        self::ensureTableColumns($pdo, 'users', [
+            'storage_quota_bytes INTEGER NULL',
+        ]);
+        self::ensureTableColumns($pdo, 'file_shares', [
+            'expires_at TEXT NULL',
+            'max_views INTEGER NULL',
+            'view_count INTEGER NOT NULL DEFAULT 0',
+        ]);
+        self::ensureTableColumns($pdo, 'folder_permissions', [
+            'can_edit INTEGER NOT NULL DEFAULT 0',
+            'can_delete INTEGER NOT NULL DEFAULT 0',
+            'can_create_folders INTEGER NOT NULL DEFAULT 0',
+        ]);
+
         Settings::seedDefaults($pdo);
         $statement = $pdo->prepare(
             'INSERT INTO settings (key, value, updated_at)
@@ -277,6 +291,7 @@ XML;
                 status TEXT NOT NULL CHECK (status IN (\'active\', \'suspended\')),
                 force_password_reset INTEGER NOT NULL DEFAULT 0,
                 is_immutable INTEGER NOT NULL DEFAULT 0,
+                storage_quota_bytes INTEGER NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 last_login_at TEXT
@@ -313,6 +328,9 @@ XML;
                 file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
                 token TEXT NOT NULL UNIQUE,
                 created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+                expires_at TEXT NULL,
+                max_views INTEGER NULL,
+                view_count INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 revoked_at TEXT NULL
@@ -324,6 +342,9 @@ XML;
                 principal_id INTEGER NOT NULL DEFAULT 0,
                 can_view INTEGER NOT NULL DEFAULT 0,
                 can_upload INTEGER NOT NULL DEFAULT 0,
+                can_edit INTEGER NOT NULL DEFAULT 0,
+                can_delete INTEGER NOT NULL DEFAULT 0,
+                can_create_folders INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 UNIQUE (folder_id, principal_type, principal_id)
@@ -334,6 +355,14 @@ XML;
                 ip_address TEXT NOT NULL,
                 success INTEGER NOT NULL DEFAULT 0,
                 attempted_at TEXT NOT NULL
+            )',
+            'CREATE TABLE IF NOT EXISTS rate_limits (
+                bucket_key TEXT PRIMARY KEY,
+                scope TEXT NOT NULL,
+                bucket_identifier TEXT NOT NULL,
+                hits INTEGER NOT NULL DEFAULT 0,
+                window_started_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             )',
             'CREATE TABLE IF NOT EXISTS automation_jobs (
                 job_key TEXT PRIMARY KEY,
@@ -352,7 +381,31 @@ XML;
             'CREATE UNIQUE INDEX IF NOT EXISTS idx_file_shares_active_file ON file_shares(file_id) WHERE revoked_at IS NULL',
             'CREATE INDEX IF NOT EXISTS idx_permissions_principal ON folder_permissions(principal_type, principal_id)',
             'CREATE INDEX IF NOT EXISTS idx_login_attempts_lookup ON login_attempts(username, ip_address, attempted_at)',
+            'CREATE INDEX IF NOT EXISTS idx_rate_limits_updated_at ON rate_limits(updated_at)',
             'CREATE INDEX IF NOT EXISTS idx_automation_jobs_next_run ON automation_jobs(next_run_at)',
         ];
+    }
+
+    /**
+     * @param array<int, string> $columns
+     */
+    private static function ensureTableColumns(PDO $pdo, string $table, array $columns): void
+    {
+        $existing = $pdo->query('PRAGMA table_info(' . $table . ')')->fetchAll(PDO::FETCH_ASSOC);
+        $columnMap = [];
+
+        foreach ($existing as $column) {
+            $columnMap[(string) ($column['name'] ?? '')] = true;
+        }
+
+        foreach ($columns as $definition) {
+            $name = strtolower((string) strtok(trim($definition), ' '));
+
+            if ($name === '' || isset($columnMap[$name])) {
+                continue;
+            }
+
+            $pdo->exec('ALTER TABLE ' . $table . ' ADD COLUMN ' . $definition);
+        }
     }
 }

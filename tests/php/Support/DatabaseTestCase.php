@@ -34,7 +34,7 @@ abstract class DatabaseTestCase extends TestCase
     protected function superAdmin(): array
     {
         $statement = Database::connection()->prepare(
-            'SELECT id, username, role, status, force_password_reset, is_immutable, created_at, updated_at, last_login_at
+            'SELECT id, username, role, status, force_password_reset, is_immutable, storage_quota_bytes, created_at, updated_at, last_login_at
              FROM users WHERE id = :id LIMIT 1'
         );
         $statement->execute([':id' => $this->installResult['super_admin_id']]);
@@ -46,8 +46,8 @@ abstract class DatabaseTestCase extends TestCase
     {
         $now = wb_now();
         $statement = Database::connection()->prepare(
-            'INSERT INTO users (username, password_hash, role, status, force_password_reset, is_immutable, created_at, updated_at)
-             VALUES (:username, :password_hash, :role, :status, 0, 0, :created_at, :updated_at)'
+            'INSERT INTO users (username, password_hash, role, status, force_password_reset, is_immutable, storage_quota_bytes, created_at, updated_at)
+             VALUES (:username, :password_hash, :role, :status, 0, 0, NULL, :created_at, :updated_at)'
         );
         $statement->execute([
             ':username' => $username,
@@ -59,12 +59,35 @@ abstract class DatabaseTestCase extends TestCase
         ]);
         $id = (int) Database::connection()->lastInsertId();
         $fetch = Database::connection()->prepare(
-            'SELECT id, username, role, status, force_password_reset, is_immutable, created_at, updated_at, last_login_at
+            'SELECT id, username, role, status, force_password_reset, is_immutable, storage_quota_bytes, created_at, updated_at, last_login_at
              FROM users WHERE id = :id LIMIT 1'
         );
         $fetch->execute([':id' => $id]);
 
         return $fetch->fetch() ?: [];
+    }
+
+    protected function reloadUser(int $id): array
+    {
+        $fetch = Database::connection()->prepare(
+            'SELECT id, username, role, status, force_password_reset, is_immutable, storage_quota_bytes, created_at, updated_at, last_login_at
+             FROM users WHERE id = :id LIMIT 1'
+        );
+        $fetch->execute([':id' => $id]);
+
+        return $fetch->fetch() ?: [];
+    }
+
+    protected function setUserStorageQuota(int $userId, ?int $quotaBytes): void
+    {
+        $statement = Database::connection()->prepare(
+            'UPDATE users SET storage_quota_bytes = :storage_quota_bytes, updated_at = :updated_at WHERE id = :id'
+        );
+        $statement->execute([
+            ':storage_quota_bytes' => $quotaBytes,
+            ':updated_at' => wb_now(),
+            ':id' => $userId,
+        ]);
     }
 
     protected function createFolder(string $name, ?int $parentId = null, ?array $actor = null): array

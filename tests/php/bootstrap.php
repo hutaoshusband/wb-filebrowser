@@ -28,5 +28,6 @@ require_once $root . '/app/Security.php';
 require_once $root . '/app/Auth.php';
 require_once $root . '/app/Permissions.php';
 require_once $root . '/app/FileManager.php';
+require_once $root . '/app/FileShares.php';
 require_once $root . '/app/AutomationRunner.php';
 require_once $root . '/tests/php/Support/DatabaseTestCase.php';

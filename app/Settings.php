@@ -273,6 +273,7 @@ final class Settings
     {
         return [
             'app_version' => Installer::VERSION,
+            'app_secret' => wb_random_token(32),
             'public_access' => '0',
             'diagnostic_exposed' => '0',
             'diagnostic_checked_at' => '',

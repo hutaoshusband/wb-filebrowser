@@ -31,21 +31,18 @@ final class Permissions
                 'ancestors' => $ids,
                 'content' => $ids,
                 'upload' => $ids,
+                'edit' => $ids,
+                'delete' => $ids,
+                'create' => $ids,
             ];
         }
 
         if ($user === null && !self::publicAccessEnabled($pdo)) {
-            return [
-                'all' => false,
-                'ancestors' => [],
-                'content' => [],
-                'upload' => [],
-            ];
+            return self::emptyScope();
         }
 
         $principalType = $user === null ? 'guest' : 'user';
         $principalId = $user === null ? 0 : (int) $user['id'];
-
         $folders = $pdo->query('SELECT id, parent_id FROM folders')->fetchAll();
         $folderMap = [];
         $childrenMap = [];
@@ -60,36 +57,61 @@ final class Permissions
             $childrenMap[$parentId ?? 0][] = $id;
         }
 
-        $permissionStatement = $pdo->prepare(
-            'SELECT folder_id, can_view, can_upload
+        $statement = $pdo->prepare(
+            'SELECT folder_id, can_view, can_upload, can_edit, can_delete, can_create_folders
              FROM folder_permissions
              WHERE principal_type = :principal_type AND principal_id = :principal_id'
         );
-        $permissionStatement->execute([
+        $statement->execute([
             ':principal_type' => $principalType,
             ':principal_id' => $principalId,
         ]);
 
         $viewSeeds = [];
         $uploadSeeds = [];
+        $editSeeds = [];
+        $deleteSeeds = [];
+        $createSeeds = [];
 
-        foreach ($permissionStatement->fetchAll() as $permission) {
+        foreach ($statement->fetchAll() as $permission) {
             $folderId = (int) $permission['folder_id'];
+            $canUpload = $user !== null && (int) $permission['can_upload'] === 1;
+            $canEdit = $user !== null && (int) $permission['can_edit'] === 1;
+            $canDelete = $user !== null && (int) $permission['can_delete'] === 1;
+            $canCreate = $user !== null && (int) $permission['can_create_folders'] === 1;
 
-            if ((int) $permission['can_view'] === 1) {
+            if ((int) $permission['can_view'] === 1 || $canUpload || $canEdit || $canDelete || $canCreate) {
                 $viewSeeds[] = $folderId;
             }
 
-            if ($user !== null && (int) $permission['can_upload'] === 1) {
+            if ($canUpload) {
                 $uploadSeeds[] = $folderId;
+            }
+
+            if ($canEdit) {
+                $editSeeds[] = $folderId;
+            }
+
+            if ($canDelete) {
+                $deleteSeeds[] = $folderId;
+            }
+
+            if ($canCreate) {
+                $createSeeds[] = $folderId;
             }
         }
 
         $content = self::expandDescendants($viewSeeds, $childrenMap);
         $upload = self::expandDescendants($uploadSeeds, $childrenMap);
-        $ancestors = self::expandAncestors(array_unique(array_merge($content, $upload)), $folderMap);
+        $edit = self::expandDescendants($editSeeds, $childrenMap);
+        $delete = self::expandDescendants($deleteSeeds, $childrenMap);
+        $create = self::expandDescendants($createSeeds, $childrenMap);
+        $ancestors = self::expandAncestors(
+            array_unique(array_merge($content, $upload, $edit, $delete, $create)),
+            $folderMap
+        );
 
-        if ($content !== [] || $upload !== []) {
+        if ($content !== [] || $upload !== [] || $edit !== [] || $delete !== [] || $create !== []) {
             $ancestors[] = Database::rootFolderId();
         }
 
@@ -100,32 +122,52 @@ final class Permissions
             'ancestors' => $dedupe($ancestors),
             'content' => $dedupe($content),
             'upload' => $dedupe($upload),
+            'edit' => $dedupe($edit),
+            'delete' => $dedupe($delete),
+            'create' => $dedupe($create),
         ];
     }
 
-    public static function canOpenFolder(int $folderId, ?array $user, ?PDO $pdo = null): bool
+    public static function canOpenFolder(int $folderId, ?array $user, ?PDO $pdo = null, ?array $scope = null): bool
     {
-        $scope = self::scope($user, $pdo);
+        $scope ??= self::scope($user, $pdo);
 
         return $scope['all'] || in_array($folderId, $scope['ancestors'], true);
     }
 
-    public static function canViewFolderContents(int $folderId, ?array $user, ?PDO $pdo = null): bool
+    public static function canViewFolderContents(int $folderId, ?array $user, ?PDO $pdo = null, ?array $scope = null): bool
     {
-        $scope = self::scope($user, $pdo);
+        $scope ??= self::scope($user, $pdo);
 
         return $scope['all'] || in_array($folderId, $scope['content'], true);
     }
 
-    public static function canUploadToFolder(int $folderId, ?array $user, ?PDO $pdo = null): bool
+    public static function canUploadToFolder(int $folderId, ?array $user, ?PDO $pdo = null, ?array $scope = null): bool
     {
-        if ($user !== null && in_array($user['role'], ['super_admin', 'admin'], true)) {
-            return true;
-        }
+        $scope ??= self::scope($user, $pdo);
 
-        $scope = self::scope($user, $pdo);
+        return $scope['all'] || in_array($folderId, $scope['upload'], true);
+    }
 
-        return in_array($folderId, $scope['upload'], true);
+    public static function canEditFolder(int $folderId, ?array $user, ?PDO $pdo = null, ?array $scope = null): bool
+    {
+        $scope ??= self::scope($user, $pdo);
+
+        return $scope['all'] || in_array($folderId, $scope['edit'], true);
+    }
+
+    public static function canDeleteFolder(int $folderId, ?array $user, ?PDO $pdo = null, ?array $scope = null): bool
+    {
+        $scope ??= self::scope($user, $pdo);
+
+        return $scope['all'] || in_array($folderId, $scope['delete'], true);
+    }
+
+    public static function canCreateFoldersIn(int $folderId, ?array $user, ?PDO $pdo = null, ?array $scope = null): bool
+    {
+        $scope ??= self::scope($user, $pdo);
+
+        return $scope['all'] || in_array($folderId, $scope['create'], true);
     }
 
     public static function canManageStructure(?array $user): bool
@@ -141,7 +183,7 @@ final class Permissions
         $pdo ??= Database::connection();
         self::assertPrincipalAccess($actor, $principalType, $principalId, $pdo);
         $statement = $pdo->prepare(
-            'SELECT folder_id, can_view, can_upload
+            'SELECT folder_id, can_view, can_upload, can_edit, can_delete, can_create_folders
              FROM folder_permissions
              WHERE principal_type = :principal_type AND principal_id = :principal_id'
         );
@@ -180,8 +222,29 @@ final class Permissions
             ]);
 
             $insertStatement = $pdo->prepare(
-                'INSERT INTO folder_permissions (folder_id, principal_type, principal_id, can_view, can_upload, created_at, updated_at)
-                 VALUES (:folder_id, :principal_type, :principal_id, :can_view, :can_upload, :created_at, :updated_at)'
+                'INSERT INTO folder_permissions (
+                    folder_id,
+                    principal_type,
+                    principal_id,
+                    can_view,
+                    can_upload,
+                    can_edit,
+                    can_delete,
+                    can_create_folders,
+                    created_at,
+                    updated_at
+                 ) VALUES (
+                    :folder_id,
+                    :principal_type,
+                    :principal_id,
+                    :can_view,
+                    :can_upload,
+                    :can_edit,
+                    :can_delete,
+                    :can_create_folders,
+                    :created_at,
+                    :updated_at
+                 )'
             );
 
             foreach ($entries as $entry) {
@@ -189,10 +252,13 @@ final class Permissions
                     continue;
                 }
 
-                $canView = wb_parse_bool($entry['can_view'] ?? false);
-                $canUpload = wb_parse_bool($entry['can_upload'] ?? false);
+                $canUpload = $principalType === 'user' && wb_parse_bool($entry['can_upload'] ?? false);
+                $canEdit = $principalType === 'user' && wb_parse_bool($entry['can_edit'] ?? false);
+                $canDelete = $principalType === 'user' && wb_parse_bool($entry['can_delete'] ?? false);
+                $canCreateFolders = $principalType === 'user' && wb_parse_bool($entry['can_create_folders'] ?? false);
+                $canView = wb_parse_bool($entry['can_view'] ?? false) || $canUpload || $canEdit || $canDelete || $canCreateFolders;
 
-                if (!$canView && !$canUpload) {
+                if (!$canView && !$canUpload && !$canEdit && !$canDelete && !$canCreateFolders) {
                     continue;
                 }
 
@@ -202,6 +268,9 @@ final class Permissions
                     ':principal_id' => $principalType === 'guest' ? 0 : $principalId,
                     ':can_view' => $canView ? 1 : 0,
                     ':can_upload' => $canUpload ? 1 : 0,
+                    ':can_edit' => $canEdit ? 1 : 0,
+                    ':can_delete' => $canDelete ? 1 : 0,
+                    ':can_create_folders' => $canCreateFolders ? 1 : 0,
                     ':created_at' => wb_now(),
                     ':updated_at' => wb_now(),
                 ]);
@@ -215,6 +284,19 @@ final class Permissions
 
             throw $exception;
         }
+    }
+
+    private static function emptyScope(): array
+    {
+        return [
+            'all' => false,
+            'ancestors' => [],
+            'content' => [],
+            'upload' => [],
+            'edit' => [],
+            'delete' => [],
+            'create' => [],
+        ];
     }
 
     private static function expandDescendants(array $seedIds, array $childrenMap): array

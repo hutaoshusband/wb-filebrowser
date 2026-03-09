@@ -46,8 +46,9 @@ function wb_bootstrap_page(string $surface): array
     }
 
     if ($surface === 'install' && $installed) {
+        Security::sendPageHeaders();
         http_response_code(403);
-        echo '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Already installed</title><style>body{font-family:Segoe UI,sans-serif;background:#111827;color:#f8fafc;display:grid;place-items:center;min-height:100vh;margin:0}main{max-width:32rem;padding:2rem;background:#1f2937;border:1px solid #374151;border-radius:1rem}a{color:#facc15}</style></head><body><main><h1>wb-filebrowser is already installed</h1><p>The installer is locked. Use the app or admin panel instead.</p><p><a href="' . wb_h(wb_url('/')) . '">Open the file browser</a></p></main></body></html>';
+        echo '<!doctype html><html lang="en"><head>' . wb_page_head('Already installed | wb-filebrowser') . '</head><body class="install-shell"><main class="install-layout"><section class="install-card"><div class="install-header"><p class="install-kicker">Installer locked</p><h1>wb-filebrowser is already installed</h1><p>The installer is locked. Use the app or admin panel instead.</p></div><div class="quick-actions"><a class="header-button primary-button" href="' . wb_h(wb_url('/')) . '">Open the file browser</a><a class="header-button" href="' . wb_h(wb_url('/admin/#/dashboard')) . '">Open admin</a></div></section></main></body></html>';
         exit;
     }
 
