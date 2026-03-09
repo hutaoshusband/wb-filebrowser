@@ -32,4 +32,5 @@ require_once $root . '/app/FileShares.php';
 require_once $root . '/app/AuditLog.php';
 require_once $root . '/app/IpBanService.php';
 require_once $root . '/app/AutomationRunner.php';
+require_once $root . '/app/FileShares.php';
 require_once $root . '/tests/php/Support/DatabaseTestCase.php';

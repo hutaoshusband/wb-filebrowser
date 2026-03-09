@@ -99,6 +99,7 @@ button{cursor:pointer}
 .settings-pane{display:grid;gap:16px}
 .security-toggle-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px 16px}
 .security-ban-form{grid-template-columns:repeat(auto-fit,minmax(220px,1fr));align-items:start}
+.security-ban-form > button{align-self:center}
 .panel code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;color:#ffe29b;background:rgba(255,255,255,.05);padding:2px 6px;border-radius:8px}
 .health-stack{display:grid;gap:14px}
 .health-card{padding:16px;border-radius:16px;border:1px solid rgba(255,255,255,.06);background:rgba(255,255,255,.03)}
