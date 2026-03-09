@@ -26,6 +26,7 @@ final class FileShareTest extends DatabaseTestCase
         $this->assertSame('notes.txt', $payload['file']['name']);
         $this->assertSame("shared notes\nsecond line", $payload['text_preview']);
         $this->assertSame(3, $share['max_views']);
+        $this->assertFalse($share['requires_password']);
         $this->assertSame(1, $payload['share']['view_count']);
         $this->assertSame(2, $payload['share']['remaining_views']);
         $this->assertStringContainsString('grant=', $payload['file']['preview_url']);
@@ -109,5 +110,50 @@ final class FileShareTest extends DatabaseTestCase
         $this->assertSame('jar', $payload['file']['fallback_variant']);
         $this->assertSame('Java archive', $payload['file']['fallback_label']);
         $this->assertStringContainsString('/media/file-fallbacks/jar.svg', $payload['file']['fallback_icon_url']);
+    }
+
+    public function testPasswordProtectedSharesRequireUnlockAndInvalidateOldSessions(): void
+    {
+        $file = $this->createFile('vault.txt', 'classified');
+        $share = FileShares::create($this->superAdmin(), (int) $file['id'], [
+            'password' => 'Secret 123',
+        ]);
+        $context = FileShares::publicContext($share['token']);
+
+        $this->assertTrue($share['requires_password']);
+        $this->assertFalse($context['is_unlocked']);
+        $this->assertTrue($context['share']['requires_password']);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('Share password is required.');
+        FileShares::viewPayload($share['token']);
+    }
+
+    public function testSharePasswordUnlockAndRemovalFlow(): void
+    {
+        $file = $this->createFile('vault.txt', 'classified');
+        $share = FileShares::create($this->superAdmin(), (int) $file['id'], [
+            'password' => 'Secret 123',
+        ]);
+
+        $this->assertFalse(FileShares::unlock($share['token'], 'wrong password'));
+        $this->assertTrue(FileShares::unlock($share['token'], 'Secret 123'));
+        $this->assertTrue(FileShares::publicContext($share['token'])['is_unlocked']);
+        $this->assertSame('vault.txt', FileShares::viewPayload($share['token'])['file']['name']);
+
+        $updated = FileShares::create($this->superAdmin(), (int) $file['id'], [
+            'password' => 'Second Secret',
+        ]);
+        $this->assertTrue($updated['requires_password']);
+        $this->assertFalse(FileShares::publicContext($share['token'])['is_unlocked']);
+        $this->assertFalse(FileShares::unlock($share['token'], 'Secret 123'));
+        $this->assertTrue(FileShares::unlock($share['token'], 'Second Secret'));
+
+        $cleared = FileShares::create($this->superAdmin(), (int) $file['id'], [
+            'clear_password' => true,
+        ]);
+        $this->assertFalse($cleared['requires_password']);
+        $this->assertFalse(FileShares::publicContext($share['token'])['share']['requires_password']);
+        $this->assertSame('vault.txt', FileShares::viewPayload($share['token'])['file']['name']);
     }
 }

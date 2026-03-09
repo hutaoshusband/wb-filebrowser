@@ -259,6 +259,8 @@ XML;
             'expires_at TEXT NULL',
             'max_views INTEGER NULL',
             'view_count INTEGER NOT NULL DEFAULT 0',
+            'password_hash TEXT NULL',
+            'password_version INTEGER NOT NULL DEFAULT 0',
         ]);
         self::ensureTableColumns($pdo, 'folder_permissions', [
             'can_edit INTEGER NOT NULL DEFAULT 0',
@@ -331,6 +333,8 @@ XML;
                 expires_at TEXT NULL,
                 max_views INTEGER NULL,
                 view_count INTEGER NOT NULL DEFAULT 0,
+                password_hash TEXT NULL,
+                password_version INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 revoked_at TEXT NULL

@@ -7,8 +7,8 @@ require __DIR__ . '/app/bootstrap.php';
 $bootstrap = wb_bootstrap_page('app');
 try {
     WbFileBrowser\IpBanService::assertCurrentIpAllowed();
-} catch (RuntimeException) {
-    wb_forbidden_page('Access blocked', 'This IP address has been blocked by an administrator.');
+} catch (WbFileBrowser\BlockedAccessException $exception) {
+    wb_blocked_page($exception->payload());
 }
 WbFileBrowser\Security::sendPageHeaders();
 ?>

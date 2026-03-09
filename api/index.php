@@ -5,6 +5,7 @@ declare(strict_types=1);
 use WbFileBrowser\Auth;
 use WbFileBrowser\AutomationRunner;
 use WbFileBrowser\AuditLog;
+use WbFileBrowser\BlockedAccessException;
 use WbFileBrowser\Database;
 use WbFileBrowser\FileManager;
 use WbFileBrowser\FileShares;
@@ -24,13 +25,13 @@ Security::sendApiHeaders();
 if ($installed) {
     try {
         IpBanService::assertCurrentIpAllowed();
-    } catch (RuntimeException $exception) {
+    } catch (BlockedAccessException $exception) {
         if (in_array($action, ['files.stream', 'share.stream'], true)) {
             http_response_code(403);
             exit;
         }
 
-        wb_error_response($exception->getMessage(), 403);
+        wb_blocked_response($exception, 403);
     }
 }
 
@@ -243,6 +244,8 @@ try {
                 'share' => FileShares::create($user, (int) ($requestData['file_id'] ?? 0), [
                     'expires_at' => $requestData['expires_at'] ?? null,
                     'max_views' => $requestData['max_views'] ?? null,
+                    'password' => $requestData['password'] ?? null,
+                    'clear_password' => $requestData['clear_password'] ?? false,
                 ]),
             ], 201);
 
@@ -324,8 +327,11 @@ try {
                 }
 
                 FileShares::stream((string) ($_GET['token'] ?? ''), (string) ($_GET['disposition'] ?? 'inline'));
+            } catch (BlockedAccessException) {
+                http_response_code(403);
+                exit;
             } catch (\RuntimeException $exception) {
-                http_response_code(404);
+                http_response_code($exception->getMessage() === 'Share password is required.' ? 403 : 404);
                 exit;
             }
 
@@ -720,12 +726,19 @@ try {
         default:
             wb_error_response('Unknown API action.', 404);
     }
+} catch (BlockedAccessException $exception) {
+    if (in_array($action, ['files.stream', 'share.stream'], true)) {
+        http_response_code(403);
+        exit;
+    }
+
+    wb_blocked_response($exception, 403);
 } catch (\InvalidArgumentException $exception) {
     wb_error_response($exception->getMessage(), 422);
 } catch (\RuntimeException $exception) {
     $status = match ($exception->getMessage()) {
         'Authentication is required.' => 401,
-        'Administrator access is required.', 'Super-Admin access is required.', 'This IP address has been banned.' => 403,
+        'Administrator access is required.', 'Super-Admin access is required.', 'Share password is required.' => 403,
         default => 400,
     };
     wb_error_response($exception->getMessage(), $status);

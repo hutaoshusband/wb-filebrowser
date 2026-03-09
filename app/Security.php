@@ -118,26 +118,27 @@ final class Security
 
     /**
      * @param array<int, array{scope: string, identifier: string|int, limit: int, window: int}> $buckets
+     * @param array{source?: string, message?: string}|null $blockedContext
      */
-    public static function assertRateLimitAvailable(array $buckets, string $message, ?PDO $pdo = null): void
+    public static function assertRateLimitAvailable(array $buckets, string $message, ?PDO $pdo = null, ?array $blockedContext = null): void
     {
         $pdo ??= Database::connection();
         self::pruneRateLimitRows($pdo);
-        $now = time();
+        $blocked = self::rateLimitBlockInfo($buckets, $pdo);
 
-        foreach ($buckets as $bucket) {
-            $state = self::loadRateLimitState(
-                $pdo,
-                (string) $bucket['scope'],
-                (string) $bucket['identifier'],
-                (int) $bucket['window'],
-                $now
-            );
-
-            if ($state['hits'] >= (int) $bucket['limit']) {
-                throw new RuntimeException($message);
-            }
+        if ($blocked === null) {
+            return;
         }
+
+        if ($blockedContext !== null) {
+            throw BlockedAccessException::temporary(
+                (string) ($blockedContext['source'] ?? 'rate_limit'),
+                (int) $blocked['retry_after_seconds'],
+                (string) ($blockedContext['message'] ?? 'You have been blocked.')
+            );
+        }
+
+        throw new RuntimeException($message);
     }
 
     /**
@@ -215,6 +216,44 @@ final class Security
                 ':bucket_key' => self::rateLimitBucketKey((string) $bucket['scope'], (string) $bucket['identifier']),
             ]);
         }
+    }
+
+    /**
+     * @param array<int, array{scope: string, identifier: string|int, limit: int, window: int}> $buckets
+     * @return array{retry_after_seconds: int, blocked_until: string}|null
+     */
+    public static function rateLimitBlockInfo(array $buckets, ?PDO $pdo = null): ?array
+    {
+        $pdo ??= Database::connection();
+        self::pruneRateLimitRows($pdo);
+        $now = time();
+        $activeBlock = null;
+
+        foreach ($buckets as $bucket) {
+            $window = (int) $bucket['window'];
+            $state = self::loadRateLimitState(
+                $pdo,
+                (string) $bucket['scope'],
+                (string) $bucket['identifier'],
+                $window,
+                $now
+            );
+
+            if ($state['hits'] < (int) $bucket['limit']) {
+                continue;
+            }
+
+            $retryAfterSeconds = max(1, $window - max(0, $now - $state['window_started_at_unix']));
+
+            if ($activeBlock === null || $retryAfterSeconds > $activeBlock['retry_after_seconds']) {
+                $activeBlock = [
+                    'retry_after_seconds' => $retryAfterSeconds,
+                    'blocked_until' => gmdate('c', $now + $retryAfterSeconds),
+                ];
+            }
+        }
+
+        return $activeBlock;
     }
 
     public static function signPayload(array $payload): string
@@ -361,7 +400,7 @@ final class Security
     }
 
     /**
-     * @return array{hits: int}
+     * @return array{hits: int, window_started_at_unix: int}
      */
     private static function loadRateLimitState(PDO $pdo, string $scope, string $identifier, int $window, int $now): array
     {
@@ -377,16 +416,19 @@ final class Security
         $row = $statement->fetch();
 
         if (!is_array($row)) {
-            return ['hits' => 0];
+            return ['hits' => 0, 'window_started_at_unix' => 0];
         }
 
         $windowStartedAt = strtotime((string) $row['window_started_at']) ?: 0;
 
         if ($windowStartedAt <= 0 || ($now - $windowStartedAt) >= $window) {
-            return ['hits' => 0];
+            return ['hits' => 0, 'window_started_at_unix' => 0];
         }
 
-        return ['hits' => (int) $row['hits']];
+        return [
+            'hits' => (int) $row['hits'],
+            'window_started_at_unix' => $windowStartedAt,
+        ];
     }
 
     private static function pruneRateLimitRows(PDO $pdo): void

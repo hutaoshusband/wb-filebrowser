@@ -5,6 +5,7 @@ import { validateUploadCandidate } from './lib/uploadPolicy.js';
 
 const ADMIN_SECTIONS = ['dashboard', 'users', 'permissions', 'settings', 'audit', 'security'];
 const SETTING_TABS = ['access', 'uploads', 'automation'];
+const BLOCKED_STORAGE_KEY = 'wb-filebrowser:blocked-state';
 
 function createDefaultUploadPolicy() {
   return {
@@ -126,6 +127,7 @@ const shareForm = reactive({
   fileId: 0,
   expiresAtLocal: '',
   maxViews: '',
+  password: '',
 });
 
 const authForm = reactive({ username: '', password: '' });
@@ -148,9 +150,19 @@ const uploadProgress = ref(null);
 const dragDepth = ref(0);
 const isBooting = ref(true);
 const fileInput = ref(null);
+const blockedCountdown = ref('');
+
+const blockedState = reactive({
+  active: false,
+  source: '',
+  blockedUntil: '',
+  blockedPermanently: false,
+  retryAfterSeconds: null,
+});
 
 let searchTimer = 0;
 let automationTimer = 0;
+let blockedTimer = 0;
 
 const isAdmin = computed(() => ['admin', 'super_admin'].includes(session.user?.role ?? ''));
 const isSuperAdmin = computed(() => session.user?.role === 'super_admin');
@@ -227,6 +239,9 @@ async function api(action, options = {}) {
   const payload = await response.json();
 
   if (!response.ok || !payload.ok) {
+    if (payload?.blocked) {
+      applyBlockedState(payload.blocked);
+    }
     throw new Error(payload.message ?? 'Request failed.');
   }
 
@@ -297,6 +312,10 @@ async function refreshSession() {
 }
 
 function showMessage(message) {
+  if (blockedState.active) {
+    return;
+  }
+
   statusMessage.value = message;
   window.clearTimeout(showMessage.timer);
   showMessage.timer = window.setTimeout(() => {
@@ -575,29 +594,33 @@ function closePreview() {
 }
 
 async function submitLogin() {
-  const payload = await api('auth.login', {
-    method: 'POST',
-    body: {
-      username: authForm.username,
-      password: authForm.password,
-    },
-  });
+  try {
+    const payload = await api('auth.login', {
+      method: 'POST',
+      body: {
+        username: authForm.username,
+        password: authForm.password,
+      },
+    });
 
-  session.user = payload.user;
-  session.csrfToken = payload.csrf_token ?? session.csrfToken;
-  authForm.password = '';
-  await refreshSession();
-  syncRouteFromHash();
-  startAutomationPulse();
+    session.user = payload.user;
+    session.csrfToken = payload.csrf_token ?? session.csrfToken;
+    authForm.password = '';
+    await refreshSession();
+    syncRouteFromHash();
+    startAutomationPulse();
 
-  if (isAdminShell.value && isAdmin.value) {
-    await tickAutomation({ silent: true });
-  }
+    if (isAdminShell.value && isAdmin.value) {
+      await tickAutomation({ silent: true });
+    }
 
-  await refreshCurrentView();
+    await refreshCurrentView();
 
-  if (isAdminShell.value && !isAdmin.value) {
-    showMessage('This account can use the file browser, but it does not have admin rights.');
+    if (isAdminShell.value && !isAdmin.value) {
+      showMessage('This account can use the file browser, but it does not have admin rights.');
+    }
+  } catch (error) {
+    showMessage(error instanceof Error ? error.message : 'Unable to sign in.');
   }
 }
 
@@ -840,6 +863,7 @@ function resetShareState() {
   shareForm.fileId = 0;
   shareForm.expiresAtLocal = '';
   shareForm.maxViews = '';
+  shareForm.password = '';
 }
 
 function toLocalDateTimeInput(value) {
@@ -869,6 +893,7 @@ function applyShareForm(item, link = null) {
   shareForm.fileId = item?.id ?? 0;
   shareForm.expiresAtLocal = toLocalDateTimeInput(link?.expires_at ?? '');
   shareForm.maxViews = link?.max_views ? String(link.max_views) : '';
+  shareForm.password = '';
 }
 
 function shareOptionsFor(item) {
@@ -878,12 +903,16 @@ function shareOptionsFor(item) {
 
   const source = shareForm.fileId === item.id
     ? shareForm
-    : { expiresAtLocal: '', maxViews: '' };
+    : { expiresAtLocal: '', maxViews: '', password: '' };
   const maxViews = Number(source.maxViews);
+  const password = typeof source.password === 'string' && source.password.trim() !== ''
+    ? source.password
+    : null;
 
   return {
     expires_at: fromLocalDateTimeInput(source.expiresAtLocal),
     max_views: Number.isInteger(maxViews) && maxViews > 0 ? maxViews : null,
+    password,
   };
 }
 
@@ -982,6 +1011,41 @@ async function openShareLink(item = shareContextItem.value) {
   } catch (error) {
     popup?.close();
     showMessage(error instanceof Error ? error.message : 'Unable to open the shared view.');
+  }
+}
+
+async function removeSharePassword(item = shareContextItem.value) {
+  if (!item || item.type !== 'file') {
+    showMessage('Choose a file first.');
+    return;
+  }
+
+  if (!shareState.link?.requires_password || shareState.fileId !== item.id) {
+    showMessage('This share link does not have a password.');
+    return;
+  }
+
+  if (!window.confirm(`Remove the share password for "${item.name}"?`)) {
+    return;
+  }
+
+  try {
+    const payload = await api('files.share.create', {
+      method: 'POST',
+      body: {
+        file_id: item.id,
+        ...shareOptionsFor(item),
+        password: null,
+        clear_password: true,
+      },
+    });
+    shareState.fileId = item.id;
+    shareState.loading = false;
+    shareState.link = payload.share;
+    applyShareForm(item, payload.share);
+    showMessage('Share password removed.');
+  } catch (error) {
+    showMessage(error instanceof Error ? error.message : 'Unable to update the share password.');
   }
 }
 
@@ -1505,6 +1569,117 @@ function banStatusLabel(ban) {
   return ban.revoked_reason === 'expired' ? 'Expired' : 'Manually lifted';
 }
 
+function banExpiryLabel(ban) {
+  return ban?.expires_at ? formatDateLabel(ban.expires_at) : 'Permanently';
+}
+
+function stopBlockedTimer() {
+  if (blockedTimer) {
+    window.clearInterval(blockedTimer);
+    blockedTimer = 0;
+  }
+}
+
+function persistBlockedState() {
+  if (blockedState.active) {
+    window.sessionStorage.setItem(BLOCKED_STORAGE_KEY, JSON.stringify({
+      source: blockedState.source,
+      blocked_until: blockedState.blockedUntil,
+      blocked_permanently: blockedState.blockedPermanently,
+      retry_after_seconds: blockedState.retryAfterSeconds,
+    }));
+    return;
+  }
+
+  window.sessionStorage.removeItem(BLOCKED_STORAGE_KEY);
+}
+
+function updateBlockedCountdown() {
+  if (!blockedState.active) {
+    blockedCountdown.value = '';
+    return;
+  }
+
+  if (blockedState.blockedPermanently) {
+    blockedCountdown.value = 'Permanently';
+    return;
+  }
+
+  const target = Date.parse(blockedState.blockedUntil || '');
+
+  if (Number.isNaN(target)) {
+    blockedCountdown.value = 'Temporarily';
+    return;
+  }
+
+  const remaining = Math.max(0, Math.ceil((target - Date.now()) / 1000));
+  const hours = Math.floor(remaining / 3600);
+  const minutes = Math.floor((remaining % 3600) / 60);
+  const seconds = remaining % 60;
+  const pad = (value) => String(value).padStart(2, '0');
+  blockedCountdown.value = hours > 0
+    ? `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`
+    : `${pad(minutes)}:${pad(seconds)}`;
+
+  if (remaining <= 0) {
+    clearBlockedState();
+  }
+}
+
+function applyBlockedState(blocked = {}) {
+  blockedState.active = true;
+  blockedState.source = blocked.source ?? '';
+  blockedState.blockedUntil = blocked.blocked_until ?? '';
+  blockedState.blockedPermanently = Boolean(blocked.blocked_permanently);
+  blockedState.retryAfterSeconds = blocked.retry_after_seconds ?? null;
+  updateBlockedCountdown();
+  stopBlockedTimer();
+
+  if (!blockedState.blockedPermanently && blockedState.blockedUntil) {
+    blockedTimer = window.setInterval(updateBlockedCountdown, 1000);
+  }
+
+  persistBlockedState();
+}
+
+function clearBlockedState() {
+  blockedState.active = false;
+  blockedState.source = '';
+  blockedState.blockedUntil = '';
+  blockedState.blockedPermanently = false;
+  blockedState.retryAfterSeconds = null;
+  blockedCountdown.value = '';
+  stopBlockedTimer();
+  persistBlockedState();
+}
+
+function restoreBlockedState() {
+  const raw = window.sessionStorage.getItem(BLOCKED_STORAGE_KEY);
+
+  if (!raw) {
+    return;
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+
+    if (parsed?.blocked_permanently) {
+      applyBlockedState(parsed);
+      return;
+    }
+
+    const blockedUntil = Date.parse(parsed?.blocked_until ?? '');
+
+    if (!Number.isNaN(blockedUntil) && blockedUntil > Date.now()) {
+      applyBlockedState(parsed);
+      return;
+    }
+  } catch (_) {
+  }
+
+  window.sessionStorage.removeItem(BLOCKED_STORAGE_KEY);
+}
+
 function uploadLimitLabel(policy = session.uploadPolicy) {
   if (!policy || policy.has_app_limit === false || !Number.isFinite(policy.max_file_size_bytes)) {
     return 'No app limit';
@@ -1604,6 +1779,7 @@ onMounted(async () => {
   window.addEventListener('dragover', onDragOver);
   window.addEventListener('dragleave', onDragLeave);
   window.addEventListener('drop', onDrop);
+  restoreBlockedState();
 
   try {
     await refreshSession();
@@ -1630,11 +1806,24 @@ onBeforeUnmount(() => {
   window.removeEventListener('dragleave', onDragLeave);
   window.removeEventListener('drop', onDrop);
   stopAutomationPulse();
+  stopBlockedTimer();
 });
 </script>
 
 <template>
-  <div class="wb-shell" :class="`shell-${shell}`">
+  <div v-if="blockedState.active" class="install-shell blocked-shell">
+    <main class="install-layout">
+      <section class="install-card blocked-card">
+        <div class="install-header blocked-card__header">
+          <p class="install-kicker">Blocked</p>
+          <h1>You have been blocked</h1>
+          <p class="blocked-card__status">{{ blockedCountdown || 'Calculating...' }}</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div v-else class="wb-shell" :class="`shell-${shell}`">
     <aside class="wb-sidebar">
       <button class="sidebar-brand sidebar-brand--icon" type="button" @click="browseHome">
         <img :src="basePath + '/media/logo.svg'" alt="wb-filebrowser" class="brand-mark brand-mark--large">
@@ -2349,7 +2538,7 @@ onBeforeUnmount(() => {
                   <td><strong>{{ ban.ip_address }}</strong></td>
                   <td>{{ ban.reason }}</td>
                   <td>{{ formatDateLabel(ban.created_at) }}</td>
-                  <td>{{ formatDateLabel(ban.expires_at) }}</td>
+                  <td>{{ banExpiryLabel(ban) }}</td>
                   <td>{{ ban.created_by_username || 'Unknown' }}</td>
                   <td class="table-actions">
                     <button type="button" :disabled="!adminState.canManageSettings" @click="unbanIp(ban)">Unban</button>
@@ -2494,6 +2683,9 @@ onBeforeUnmount(() => {
               <strong>Public share</strong>
               <p v-if="shareState.fileId === previewItem.id && shareState.link" class="share-panel__url">{{ shareState.link.url }}</p>
               <p v-else>No public share link is active for this file yet.</p>
+              <p class="share-panel__hint">
+                {{ shareState.fileId === previewItem.id && shareState.link?.requires_password ? 'Password protected' : 'No password required' }}
+              </p>
               <label>
                 <span>Expires at</span>
                 <input v-model="shareForm.expiresAtLocal" class="share-panel__input" type="datetime-local">
@@ -2502,11 +2694,28 @@ onBeforeUnmount(() => {
                 <span>Max page opens</span>
                 <input v-model="shareForm.maxViews" class="share-panel__input" type="number" min="1" step="1" placeholder="Unlimited">
               </label>
+              <label>
+                <span>Share password</span>
+                <input
+                  v-model="shareForm.password"
+                  class="share-panel__input"
+                  type="password"
+                  autocomplete="new-password"
+                  placeholder="Leave blank to keep the current password"
+                >
+              </label>
               <small class="panel-meta">
                 <template v-if="shareState.fileId === previewItem.id && shareState.link">
                   Views: {{ shareState.link.view_count }}<span v-if="shareState.link.remaining_views !== null"> · Remaining: {{ shareState.link.remaining_views }}</span>
                 </template>
               </small>
+              <button
+                v-if="shareState.fileId === previewItem.id && shareState.link?.requires_password"
+                type="button"
+                @click="removeSharePassword(previewItem)"
+              >
+                Remove password
+              </button>
             </div>
           </aside>
         </div>
@@ -2538,6 +2747,9 @@ onBeforeUnmount(() => {
         <p v-if="shareState.loading && shareState.fileId === infoItem.id">Checking share link...</p>
         <p v-else-if="shareState.fileId === infoItem.id && shareState.link" class="share-panel__url">{{ shareState.link.url }}</p>
         <p v-else>No public share link is active for this file yet.</p>
+        <p class="share-panel__hint">
+          {{ shareState.fileId === infoItem.id && shareState.link?.requires_password ? 'Password protected' : 'No password required' }}
+        </p>
         <label>
           <span>Expires at</span>
           <input v-model="shareForm.expiresAtLocal" class="share-panel__input" type="datetime-local">
@@ -2546,11 +2758,28 @@ onBeforeUnmount(() => {
           <span>Max page opens</span>
           <input v-model="shareForm.maxViews" class="share-panel__input" type="number" min="1" step="1" placeholder="Unlimited">
         </label>
+        <label>
+          <span>Share password</span>
+          <input
+            v-model="shareForm.password"
+            class="share-panel__input"
+            type="password"
+            autocomplete="new-password"
+            placeholder="Leave blank to keep the current password"
+          >
+        </label>
         <small class="panel-meta">
           <template v-if="shareState.fileId === infoItem.id && shareState.link">
             Views: {{ shareState.link.view_count }}<span v-if="shareState.link.remaining_views !== null"> · Remaining: {{ shareState.link.remaining_views }}</span>
           </template>
         </small>
+        <button
+          v-if="shareState.fileId === infoItem.id && shareState.link?.requires_password"
+          type="button"
+          @click="removeSharePassword(infoItem)"
+        >
+          Remove password
+        </button>
       </div>
       <div v-if="shell === 'app' && canShowItemActions(infoItem)" class="drawer-actions">
         <button v-if="canManageShares && infoItem.type === 'file'" type="button" @click="createShareLink(infoItem)">Share link</button>

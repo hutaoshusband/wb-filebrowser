@@ -178,7 +178,14 @@ final class IpBanService
         $ban = self::activeBanForIp(Security::clientIp(), $pdo);
 
         if ($ban !== null) {
-            throw new RuntimeException('This IP address has been banned.');
+            $expiresAt = $ban['expires_at'] === null ? null : (string) $ban['expires_at'];
+
+            if ($expiresAt === null || $expiresAt === '') {
+                throw BlockedAccessException::permanent('ip_ban');
+            }
+
+            $retryAfterSeconds = max(1, (strtotime($expiresAt) ?: time()) - time());
+            throw new BlockedAccessException('ip_ban', $expiresAt, false, $retryAfterSeconds);
         }
     }
 

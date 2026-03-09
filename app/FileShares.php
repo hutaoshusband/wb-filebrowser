@@ -43,18 +43,24 @@ final class FileShares
         $options = self::normalizeOptions($options);
         $existing = self::activeShareRow($fileId, $pdo);
         $now = wb_now();
+        $passwordAuditEvent = null;
 
         if ($existing !== null) {
+            [$passwordHash, $passwordVersion, $passwordAuditEvent] = self::updatedPasswordState($existing, $options);
             $update = $pdo->prepare(
                 'UPDATE file_shares
                  SET expires_at = :expires_at,
                      max_views = :max_views,
+                     password_hash = :password_hash,
+                     password_version = :password_version,
                      updated_at = :updated_at
                  WHERE id = :id'
             );
             $update->execute([
                 ':expires_at' => $options['expires_at'],
                 ':max_views' => $options['max_views'],
+                ':password_hash' => $passwordHash,
+                ':password_version' => $passwordVersion,
                 ':updated_at' => $now,
                 ':id' => $existing['id'],
             ]);
@@ -76,11 +82,17 @@ final class FileShares
                     'expires_at' => $serialized['expires_at'],
                     'max_views' => $serialized['max_views'],
                     'share_url' => $serialized['url'],
+                    'requires_password' => $serialized['requires_password'],
                 ],
             ], $pdo);
+            self::recordPasswordAuditEvent($passwordAuditEvent, $user, $file, $serialized, $pdo);
 
             return $serialized;
         }
+
+        $passwordHash = $options['update_password'] ? $options['password_hash'] : null;
+        $passwordVersion = $options['update_password'] ? 1 : 0;
+        $passwordAuditEvent = $options['update_password'] ? 'share.password.set' : null;
 
         $statement = $pdo->prepare(
             'INSERT INTO file_shares (
@@ -90,6 +102,8 @@ final class FileShares
                 expires_at,
                 max_views,
                 view_count,
+                password_hash,
+                password_version,
                 created_at,
                 updated_at,
                 revoked_at
@@ -100,6 +114,8 @@ final class FileShares
                 :expires_at,
                 :max_views,
                 0,
+                :password_hash,
+                :password_version,
                 :created_at,
                 :updated_at,
                 NULL
@@ -113,6 +129,8 @@ final class FileShares
                 ':created_by' => (int) $user['id'],
                 ':expires_at' => $options['expires_at'],
                 ':max_views' => $options['max_views'],
+                ':password_hash' => $passwordHash,
+                ':password_version' => $passwordVersion,
                 ':created_at' => $now,
                 ':updated_at' => $now,
             ]);
@@ -144,8 +162,10 @@ final class FileShares
                 'expires_at' => $serialized['expires_at'],
                 'max_views' => $serialized['max_views'],
                 'share_url' => $serialized['url'],
+                'requires_password' => $serialized['requires_password'],
             ],
         ], $pdo);
+        self::recordPasswordAuditEvent($passwordAuditEvent, $user, $file, $serialized, $pdo);
 
         return $serialized;
     }
@@ -180,6 +200,39 @@ final class FileShares
         ], $pdo);
     }
 
+    public static function publicContext(string $token, ?PDO $pdo = null): array
+    {
+        $pdo ??= Database::connection();
+        self::cleanupInactiveShares($pdo);
+        $share = self::resolveActiveShare($token, $pdo);
+
+        return [
+            'share' => self::serializeResolvedShare($share),
+            'file' => self::serializeSharedFile($share),
+            'is_unlocked' => self::isShareUnlocked($share),
+        ];
+    }
+
+    public static function unlock(string $token, string $password, ?PDO $pdo = null): bool
+    {
+        $pdo ??= Database::connection();
+        self::cleanupInactiveShares($pdo);
+        $share = self::resolveActiveShare($token, $pdo);
+        $passwordHash = (string) ($share['password_hash'] ?? '');
+
+        if ($passwordHash === '') {
+            return true;
+        }
+
+        if (!password_verify($password, $passwordHash)) {
+            return false;
+        }
+
+        self::markShareUnlocked($share);
+
+        return true;
+    }
+
     public static function viewPayload(string $token, ?PDO $pdo = null): array
     {
         $pdo ??= Database::connection();
@@ -188,6 +241,7 @@ final class FileShares
 
         try {
             $share = self::resolveActiveShare($token, $pdo);
+            self::assertShareUnlocked($share);
             $share = self::incrementViewCount($share, $pdo);
             $file = self::serializeSharedFile($share);
             $previewMode = (string) $file['preview_mode'];
@@ -233,6 +287,7 @@ final class FileShares
         $pdo ??= Database::connection();
         self::cleanupInactiveShares($pdo);
         $share = self::resolveActiveShare($token, $pdo);
+        self::assertShareUnlocked($share);
         $dispositionType = $disposition === 'attachment' ? 'attachment' : 'inline';
 
         if ($dispositionType === 'attachment') {
@@ -261,7 +316,8 @@ final class FileShares
         }
 
         $pdo ??= Database::connection();
-        $share = self::resolveShareByToken((string) ($payload['token'] ?? ''), $pdo);
+        $share = self::resolveActiveShare((string) ($payload['token'] ?? ''), $pdo);
+        self::assertShareUnlocked($share);
         $disposition = (string) ($payload['disposition'] ?? 'inline');
 
         if ($disposition === 'attachment') {
@@ -320,6 +376,8 @@ final class FileShares
                 file_shares.expires_at,
                 file_shares.max_views,
                 file_shares.view_count,
+                file_shares.password_hash,
+                file_shares.password_version,
                 file_shares.revoked_at,
                 file_shares.created_at AS share_created_at,
                 file_shares.updated_at AS share_updated_at,
@@ -343,43 +401,6 @@ final class FileShares
             ':token' => $token,
             ':now' => $now,
         ]);
-        $share = $statement->fetch();
-
-        if (!is_array($share)) {
-            throw new RuntimeException('Shared file not found.');
-        }
-
-        return $share;
-    }
-
-    private static function resolveShareByToken(string $token, PDO $pdo): array
-    {
-        self::assertToken($token);
-        $statement = $pdo->prepare(
-            'SELECT
-                file_shares.id,
-                file_shares.file_id,
-                file_shares.token,
-                file_shares.expires_at,
-                file_shares.max_views,
-                file_shares.view_count,
-                file_shares.revoked_at,
-                file_shares.created_at AS share_created_at,
-                file_shares.updated_at AS share_updated_at,
-                files.folder_id,
-                files.original_name,
-                files.disk_name,
-                files.disk_extension,
-                files.mime_type,
-                files.size,
-                files.checksum,
-                files.updated_at
-             FROM file_shares
-             INNER JOIN files ON files.id = file_shares.file_id
-             WHERE file_shares.token = :token
-             LIMIT 1'
-        );
-        $statement->execute([':token' => $token]);
         $share = $statement->fetch();
 
         if (!is_array($share)) {
@@ -458,6 +479,7 @@ final class FileShares
             'view_count' => $viewCount,
             'remaining_views' => $maxViews === null ? null : max(0, $maxViews - $viewCount),
             'revoked_at' => $share['revoked_at'] === null ? null : (string) $share['revoked_at'],
+            'requires_password' => ((string) ($share['password_hash'] ?? '')) !== '',
         ];
     }
 
@@ -478,6 +500,7 @@ final class FileShares
             'max_views' => $maxViews,
             'view_count' => $viewCount,
             'remaining_views' => $maxViews === null ? null : max(0, $maxViews - $viewCount),
+            'requires_password' => ((string) ($share['password_hash'] ?? '')) !== '',
         ];
     }
 
@@ -523,6 +546,54 @@ final class FileShares
         ];
     }
 
+    /**
+     * @return array{0: ?string, 1: int, 2: ?string}
+     */
+    private static function updatedPasswordState(array $existing, array $options): array
+    {
+        $currentHash = $existing['password_hash'] === null ? null : (string) $existing['password_hash'];
+        $currentVersion = (int) ($existing['password_version'] ?? 0);
+
+        if ($options['update_password']) {
+            return [
+                (string) $options['password_hash'],
+                $currentVersion + 1,
+                $currentHash === null || $currentHash === '' ? 'share.password.set' : 'share.password.change',
+            ];
+        }
+
+        if ($options['clear_password'] && $currentHash !== null && $currentHash !== '') {
+            return [null, $currentVersion + 1, 'share.password.remove'];
+        }
+
+        return [$currentHash, $currentVersion, null];
+    }
+
+    private static function recordPasswordAuditEvent(?string $eventType, array $user, array $file, array $share, PDO $pdo): void
+    {
+        if ($eventType === null) {
+            return;
+        }
+
+        $summary = match ($eventType) {
+            'share.password.change' => 'Changed share password for ' . $file['original_name'],
+            'share.password.remove' => 'Removed share password for ' . $file['original_name'],
+            default => 'Enabled share password for ' . $file['original_name'],
+        };
+
+        AuditLog::record($eventType, 'admin_actions', [
+            'actor_user' => $user,
+            'target_type' => 'file',
+            'target_id' => (int) $file['id'],
+            'target_label' => (string) $file['original_name'],
+            'summary' => $summary,
+            'metadata' => [
+                'share_url' => $share['url'],
+                'requires_password' => $share['requires_password'],
+            ],
+        ], $pdo);
+    }
+
     private static function streamGrant(string $token, string $disposition): string
     {
         return Security::signPayload([
@@ -537,8 +608,15 @@ final class FileShares
     {
         $expiresAt = trim((string) ($options['expires_at'] ?? ''));
         $maxViewsInput = $options['max_views'] ?? null;
+        $passwordInput = (string) ($options['password'] ?? '');
+        $clearPassword = wb_parse_bool($options['clear_password'] ?? false);
         $normalizedExpiresAt = null;
         $normalizedMaxViews = null;
+        $updatePassword = trim($passwordInput) !== '';
+
+        if ($updatePassword && $clearPassword) {
+            throw new RuntimeException('Choose either a new share password or remove the current one.');
+        }
 
         if ($expiresAt !== '') {
             $timestamp = strtotime($expiresAt);
@@ -560,9 +638,16 @@ final class FileShares
             $normalizedMaxViews = $maxViews;
         }
 
+        if ($updatePassword && mb_strlen($passwordInput) > 255) {
+            throw new RuntimeException('Share password must be 255 characters or fewer.');
+        }
+
         return [
             'expires_at' => $normalizedExpiresAt,
             'max_views' => $normalizedMaxViews,
+            'password_hash' => $updatePassword ? Security::hashPassword($passwordInput) : null,
+            'update_password' => $updatePassword,
+            'clear_password' => $clearPassword,
         ];
     }
 
@@ -617,5 +702,38 @@ final class FileShares
         return wb_storage_path(
             'uploads/' . substr($diskName, 0, 2) . '/' . substr($diskName, 2, 2) . '/' . $diskName . '.' . $diskExtension
         );
+    }
+
+    private static function assertShareUnlocked(array $share): void
+    {
+        if (!self::isShareUnlocked($share)) {
+            throw new RuntimeException('Share password is required.');
+        }
+    }
+
+    private static function isShareUnlocked(array $share): bool
+    {
+        $passwordHash = trim((string) ($share['password_hash'] ?? ''));
+
+        if ($passwordHash === '') {
+            return true;
+        }
+
+        Security::startSession();
+        $token = (string) ($share['token'] ?? '');
+        $storedVersion = $_SESSION['share_unlocks'][$token] ?? null;
+
+        return (int) $storedVersion === (int) ($share['password_version'] ?? 0);
+    }
+
+    private static function markShareUnlocked(array $share): void
+    {
+        Security::startSession();
+
+        if (!isset($_SESSION['share_unlocks']) || !is_array($_SESSION['share_unlocks'])) {
+            $_SESSION['share_unlocks'] = [];
+        }
+
+        $_SESSION['share_unlocks'][(string) $share['token']] = (int) ($share['password_version'] ?? 0);
     }
 }

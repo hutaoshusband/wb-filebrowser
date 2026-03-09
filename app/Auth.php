@@ -42,7 +42,12 @@ final class Auth
         $username = wb_normalize_name($username);
         $ip = Security::clientIp();
         $rateLimitBuckets = self::loginRateLimitBuckets($username, $ip);
-        Security::assertRateLimitAvailable($rateLimitBuckets, 'Too many failed login attempts. Please wait a few minutes and try again.', $pdo);
+        Security::assertRateLimitAvailable(
+            $rateLimitBuckets,
+            'Too many failed login attempts. Please wait a few minutes and try again.',
+            $pdo,
+            ['source' => 'auth_login']
+        );
 
         $statement = $pdo->prepare('SELECT * FROM users WHERE username = :username LIMIT 1');
         $statement->execute([':username' => $username]);
@@ -58,6 +63,23 @@ final class Auth
                 'summary' => 'Failed login for ' . $username,
             ], $pdo);
             Security::consumeRateLimit($rateLimitBuckets, $pdo);
+
+            if (Security::rateLimitBlockInfo($rateLimitBuckets, $pdo) !== null) {
+                AuditLog::record('auth.login.lockout', 'security_actions', [
+                    'actor_username' => $username,
+                    'ip_address' => $ip,
+                    'target_type' => 'auth',
+                    'target_label' => $username,
+                    'summary' => 'Blocked login attempts for ' . $username,
+                ], $pdo);
+                Security::assertRateLimitAvailable(
+                    $rateLimitBuckets,
+                    'Too many failed login attempts. Please wait a few minutes and try again.',
+                    $pdo,
+                    ['source' => 'auth_login']
+                );
+            }
+
             throw new RuntimeException('Invalid username or password.');
         }
 

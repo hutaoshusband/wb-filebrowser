@@ -235,6 +235,7 @@ button{cursor:pointer}
 .share-panel label{display:grid;gap:6px}
 .share-panel label span{color:var(--text-soft)}
 .share-panel p{color:var(--text-soft);line-height:1.5}
+.share-panel__hint{font-size:.92rem}
 .share-panel__url{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--accent)!important;word-break:break-all}
 .share-panel__input{width:100%;padding:12px 14px;border-radius:14px;border:1px solid rgba(255,255,255,.08);background:linear-gradient(180deg,rgba(17,27,46,.96),rgba(8,14,24,.98));color:var(--text);outline:0;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 10px 22px rgba(0,0,0,.16);color-scheme:dark;appearance:none}
 .share-panel__input::placeholder{color:var(--text-soft);opacity:.82}
@@ -253,6 +254,14 @@ button{cursor:pointer}
 .share-actions,.share-sidebar__actions{display:flex;gap:10px;flex-wrap:wrap}
 .share-view{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(280px,.65fr);gap:18px;align-items:start}
 .share-view__frame{min-height:560px;max-height:calc(100vh - 250px)}
+.share-password-card{width:min(420px,calc(100% - 48px));padding:28px 24px;border-radius:26px;border:1px solid rgba(255,255,255,.08);background:linear-gradient(180deg,rgba(20,30,49,.96),rgba(8,14,24,.98));box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 24px 48px rgba(0,0,0,.28);display:grid;gap:16px}
+.share-password-card h2,.share-password-card p{margin:0}
+.share-password-card__field{display:grid;gap:8px}
+.share-password-card__field span{color:var(--text-soft)}
+.share-password-card__field input{width:100%;padding:14px 16px;border-radius:16px;border:1px solid rgba(255,255,255,.08);background:linear-gradient(180deg,rgba(17,27,46,.96),rgba(8,14,24,.98));color:var(--text);outline:0;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 10px 22px rgba(0,0,0,.16)}
+.share-password-card__field input:focus{border-color:rgba(250,204,21,.35);box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 0 0 1px rgba(250,204,21,.14),0 12px 28px rgba(0,0,0,.22)}
+.share-password-card__error{color:#fecaca}
+.share-lock-note{color:var(--text-soft);line-height:1.55}
 .share-sidebar{display:grid;gap:18px;align-self:start;align-content:start;padding:20px;background:linear-gradient(180deg,rgba(15,23,38,.96),rgba(8,14,24,.98));border:1px solid rgba(255,255,255,.06);border-radius:18px;box-shadow:inset 0 1px 0 rgba(255,255,255,.04)}
 .share-direct-link{display:grid;gap:12px;margin-top:8px;align-items:start}
 .share-direct-link__label{color:var(--text);font-size:1.85rem;line-height:1.05}
@@ -279,6 +288,9 @@ button{cursor:pointer}
 .install-pill-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px}
 .install-pill{padding:8px 12px;border-radius:999px;background:rgba(250,204,21,.08);border:1px solid rgba(250,204,21,.18);color:var(--text);font-size:.88rem}
 .install-card{width:min(760px,100%);padding:30px;display:grid;gap:24px}
+.blocked-card{width:min(520px,100%);place-items:center;text-align:center}
+.blocked-card__header{justify-items:center}
+.blocked-card__status{font-size:clamp(2rem,6vw,3.4rem);line-height:1;font-weight:700;color:var(--text)}
 .install-checklist{display:grid;gap:10px}
 .install-check{padding:14px 16px;border-radius:16px;border:1px solid rgba(255,255,255,.06);display:flex;justify-content:space-between;gap:18px;align-items:flex-start;flex-wrap:wrap}
 .install-check div{display:grid;gap:4px}

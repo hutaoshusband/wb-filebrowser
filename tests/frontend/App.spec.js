@@ -49,6 +49,13 @@ function jsonResponse(payload) {
   };
 }
 
+function errorResponse(payload) {
+  return {
+    ok: false,
+    json: async () => ({ ok: false, ...payload }),
+  };
+}
+
 function browserFile(overrides = {}) {
   return {
     id: 7,
@@ -359,14 +366,14 @@ async function mountAdminApp({ hash = '#/dashboard', handlers = {} } = {}) {
   return { wrapper, ...fetchState };
 }
 
-async function mountBrowserApp({ hash = '', handlers = {} } = {}) {
+async function mountBrowserApp({ hash = '', handlers = {}, bootstrapUser = adminUser() } = {}) {
   window.location.hash = hash;
   document.body.dataset.shell = 'app';
   window.WB_BOOTSTRAP = {
     surface: 'app',
     base_path: '',
     csrf_token: 'csrf-token',
-    user: adminUser(),
+    user: bootstrapUser,
     app_version: '1.0.0-alpha',
   };
   const fetchState = installFetchStub({
@@ -382,6 +389,7 @@ async function mountBrowserApp({ hash = '', handlers = {} } = {}) {
 afterEach(() => {
   vi.restoreAllMocks();
   localStorage.clear();
+  sessionStorage.clear();
   delete window.WB_BOOTSTRAP;
   delete window.__WB_REDIRECT__;
   delete document.body.dataset.shell;
@@ -508,6 +516,7 @@ describe('Admin app shell', () => {
 
     expect(wrapper.text()).toContain('Audit logging and protection');
     expect(wrapper.text()).toContain('Blocked IP addresses');
+    expect(wrapper.text()).toContain('Permanently');
 
     const securityCheckboxes = wrapper.findAll('.settings-pane input[type="checkbox"]');
     await securityCheckboxes[0].setValue(true);
@@ -564,6 +573,7 @@ describe('Admin app shell', () => {
             view_count: 0,
             remaining_views: null,
             revoked_at: null,
+            requires_password: false,
           },
         }),
         'files.share.get': () => jsonResponse({ share: null }),
@@ -622,6 +632,7 @@ describe('Admin app shell', () => {
             view_count: 0,
             remaining_views: 5,
             revoked_at: null,
+            requires_password: true,
           },
         }),
         'files.share.get': () => jsonResponse({ share: null }),
@@ -632,9 +643,10 @@ describe('Admin app shell', () => {
     await flushPromises();
 
     const shareInputs = wrapper.findAll('.share-panel__input');
-    expect(shareInputs).toHaveLength(2);
+    expect(shareInputs).toHaveLength(3);
     await shareInputs[0].setValue('2026-03-10T10:30');
     await shareInputs[1].setValue('5');
+    await shareInputs[2].setValue('Secret 123');
 
     const shareButton = wrapper.findAll('button').find((button) => button.text() === 'Share link');
     await shareButton.trigger('click');
@@ -644,6 +656,88 @@ describe('Admin app shell', () => {
 
     expect(body.max_views).toBe(5);
     expect(body.expires_at).toContain('2026-03-10T');
+    expect(body.password).toBe('Secret 123');
+  });
+
+  it('removes an existing share password with an explicit action', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'files.share.get': () => jsonResponse({
+          share: {
+            file_id: 7,
+            token: 'feedfacefeedfacefeedfacefeedface',
+            url: 'http://localhost/share/?token=feedfacefeedfacefeedfacefeedface',
+            download_url: 'http://localhost/api/index.php?action=share.stream&token=feedfacefeedfacefeedfacefeedface&disposition=attachment',
+            created_at: '2026-03-09T00:00:00Z',
+            updated_at: '2026-03-09T00:00:00Z',
+            expires_at: null,
+            max_views: null,
+            view_count: 0,
+            remaining_views: null,
+            revoked_at: null,
+            requires_password: true,
+          },
+        }),
+        'files.share.create': () => jsonResponse({
+          share: {
+            file_id: 7,
+            token: 'feedfacefeedfacefeedfacefeedface',
+            url: 'http://localhost/share/?token=feedfacefeedfacefeedfacefeedface',
+            download_url: 'http://localhost/api/index.php?action=share.stream&token=feedfacefeedfacefeedfacefeedface&disposition=attachment',
+            created_at: '2026-03-09T00:00:00Z',
+            updated_at: '2026-03-09T00:00:00Z',
+            expires_at: null,
+            max_views: null,
+            view_count: 0,
+            remaining_views: null,
+            revoked_at: null,
+            requires_password: false,
+          },
+        }),
+      },
+    });
+
+    await wrapper.find('tbody tr').trigger('click');
+    await flushPromises();
+
+    const removeButton = wrapper.findAll('button').find((button) => button.text() === 'Remove password');
+    await removeButton.trigger('click');
+    await flushPromises();
+
+    const shareCall = calls.filter((call) => call.action === 'files.share.create').at(-1);
+    const body = JSON.parse(shareCall.init.body);
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(body.clear_password).toBe(true);
+    expect(body.password).toBeNull();
+  });
+
+  it('renders the full-page blocked state for blocked API responses', async () => {
+    const blockedUntil = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+    const { wrapper } = await mountBrowserApp({
+      bootstrapUser: null,
+      handlers: {
+        'auth.session': () => jsonResponse(sessionPayload(null)),
+        'auth.login': () => errorResponse({
+          message: 'You have been blocked.',
+          blocked: {
+            source: 'auth_login',
+            blocked_until: blockedUntil,
+            blocked_permanently: false,
+            retry_after_seconds: 300,
+          },
+        }),
+      },
+    });
+
+    await wrapper.find('input[type="text"]').setValue('superadmin');
+    await wrapper.find('input[type="password"]').setValue('wrong-password');
+    await wrapper.find('.auth-form').trigger('submit');
+    await flushPromises();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('You have been blocked');
+    expect(wrapper.text()).not.toContain('Sign in to continue');
   });
 
   it('shows a username-aware upload toast for a single file', async () => {

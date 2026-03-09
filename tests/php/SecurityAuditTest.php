@@ -6,6 +6,7 @@ namespace WbFileBrowser\Tests;
 
 use RuntimeException;
 use WbFileBrowser\Auth;
+use WbFileBrowser\BlockedAccessException;
 use WbFileBrowser\Database;
 use WbFileBrowser\FileManager;
 use WbFileBrowser\FileShares;
@@ -115,6 +116,34 @@ final class SecurityAuditTest extends DatabaseTestCase
         $this->assertContains('share.download', $events);
     }
 
+    public function testPasswordProtectedShareDoesNotLogViewsBeforeUnlock(): void
+    {
+        $this->enableAudit([
+            'log_file_views' => true,
+            'log_file_downloads' => true,
+            'log_security_actions' => true,
+        ]);
+
+        $file = $this->createFile('vault.txt', 'classified');
+        $share = FileShares::create($this->superAdmin(), (int) $file['id'], [
+            'password' => 'Secret 123',
+        ]);
+
+        try {
+            FileShares::viewPayload($share['token']);
+            self::fail('Expected locked share to reject direct viewing.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('Share password is required.', $exception->getMessage());
+        }
+
+        $this->assertSame(0, $this->countAuditEvents('share.view'));
+        $this->assertFalse(FileShares::unlock($share['token'], 'nope'));
+        $this->assertSame(0, $this->countAuditEvents('share.view'));
+        $this->assertTrue(FileShares::unlock($share['token'], 'Secret 123'));
+        FileShares::viewPayload($share['token']);
+        $this->assertSame(1, $this->countAuditEvents('share.view'));
+    }
+
     public function testIpBansCanBeCheckedExpiredAndLifted(): void
     {
         $this->enableAudit([
@@ -129,8 +158,9 @@ final class SecurityAuditTest extends DatabaseTestCase
         try {
             IpBanService::assertCurrentIpAllowed();
             self::fail('Expected the banned IP to be rejected.');
-        } catch (RuntimeException $exception) {
-            $this->assertSame('This IP address has been banned.', $exception->getMessage());
+        } catch (BlockedAccessException $exception) {
+            $this->assertSame('ip_ban', $exception->payload()['source']);
+            $this->assertTrue($exception->payload()['blocked_permanently']);
         } finally {
             $_SERVER['REMOTE_ADDR'] = $previousIp ?? '127.0.0.1';
         }

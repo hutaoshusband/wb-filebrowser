@@ -25,6 +25,7 @@ require_once $root . '/app/Settings.php';
 require_once $root . '/app/Installer.php';
 require_once $root . '/app/Database.php';
 require_once $root . '/app/Security.php';
+require_once $root . '/app/BlockedAccessException.php';
 require_once $root . '/app/Auth.php';
 require_once $root . '/app/Permissions.php';
 require_once $root . '/app/FileManager.php';

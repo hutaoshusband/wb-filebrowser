@@ -141,6 +141,15 @@ function wb_error_response(string $message, int $status = 400, array $extra = []
     ], $status);
 }
 
+function wb_blocked_response(WbFileBrowser\BlockedAccessException $exception, int $status = 403): never
+{
+    wb_json_response([
+        'ok' => false,
+        'message' => $exception->getMessage(),
+        'blocked' => $exception->payload(),
+    ], $status);
+}
+
 function wb_redirect(string $path): never
 {
     header('Location: ' . $path);
@@ -152,6 +161,44 @@ function wb_forbidden_page(string $title = 'Access blocked', string $message = '
     WbFileBrowser\Security::sendPageHeaders();
     http_response_code(403);
     echo '<!doctype html><html lang="en"><head>' . wb_page_head($title . ' | wb-filebrowser') . '</head><body class="install-shell"><main class="install-layout"><section class="install-card"><div class="install-header"><p class="install-kicker">Forbidden</p><h1>' . wb_h($title) . '</h1><p>' . wb_h($message) . '</p></div><div class="quick-actions"><a class="header-button primary-button" href="' . wb_h(wb_url('/')) . '">Open the file browser</a></div></section></main></body></html>';
+    exit;
+}
+
+function wb_countdown_label(int $remainingSeconds): string
+{
+    $remaining = max(0, $remainingSeconds);
+    $hours = (int) floor($remaining / 3600);
+    $minutes = (int) floor(($remaining % 3600) / 60);
+    $seconds = $remaining % 60;
+
+    if ($hours > 0) {
+        return sprintf('%02d:%02d:%02d', $hours, $minutes, $seconds);
+    }
+
+    return sprintf('%02d:%02d', $minutes, $seconds);
+}
+
+/**
+ * @param array<string, mixed> $blocked
+ */
+function wb_blocked_page(array $blocked): never
+{
+    $headers = WbFileBrowser\Security::pageHeaders();
+    $headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
+
+    foreach ($headers as $headerName => $headerValue) {
+        header($headerName . ': ' . $headerValue);
+    }
+
+    http_response_code(403);
+    $blockedUntil = is_string($blocked['blocked_until'] ?? null) ? (string) $blocked['blocked_until'] : '';
+    $blockedPermanently = !empty($blocked['blocked_permanently']);
+    $blockedUntilTimestamp = $blockedUntil === '' ? 0 : (strtotime($blockedUntil) ?: 0);
+    $statusLabel = $blockedPermanently
+        ? 'Permanently'
+        : ($blockedUntilTimestamp > 0 ? wb_countdown_label($blockedUntilTimestamp - time()) : 'Temporarily');
+
+    echo '<!doctype html><html lang="en"><head>' . wb_page_head('You have been blocked | wb-filebrowser') . '</head><body class="install-shell"><main class="install-layout"><section class="install-card blocked-card"><div class="install-header blocked-card__header"><p class="install-kicker">Blocked</p><h1>You have been blocked</h1><p class="blocked-card__status"' . ($blockedUntilTimestamp > 0 ? ' data-blocked-until-ts="' . $blockedUntilTimestamp . '"' : '') . '>' . wb_h($statusLabel) . '</p></div></section></main><script src="' . wb_h(wb_url('/media/blocked-countdown.js')) . '"></script></body></html>';
     exit;
 }
 

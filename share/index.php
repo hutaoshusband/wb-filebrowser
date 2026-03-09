@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 require __DIR__ . '/../app/bootstrap.php';
 
+use WbFileBrowser\AuditLog;
+use WbFileBrowser\BlockedAccessException;
 use WbFileBrowser\FileShares;
 use WbFileBrowser\Security;
 
@@ -19,11 +21,22 @@ foreach ($shareHeaders as $headerName => $headerValue) {
 $bootstrap = wb_bootstrap_page('share');
 try {
     \WbFileBrowser\IpBanService::assertCurrentIpAllowed();
-} catch (RuntimeException) {
-    wb_forbidden_page('Access blocked', 'This IP address has been blocked by an administrator.');
+} catch (BlockedAccessException $exception) {
+    wb_blocked_page($exception->payload());
 }
 $token = trim((string) ($_GET['token'] ?? ''));
 $payload = null;
+$shareContext = null;
+$passwordError = '';
+$blockedFlash = $_SESSION['share_blocked_flash'] ?? null;
+
+if (is_array($blockedFlash)) {
+    unset($_SESSION['share_blocked_flash']);
+
+    if (($blockedFlash['token'] ?? null) === $token && is_array($blockedFlash['blocked'] ?? null)) {
+        wb_blocked_page($blockedFlash['blocked']);
+    }
+}
 
 try {
     if ($token !== '') {
@@ -41,19 +54,86 @@ try {
                 'window' => 5 * 60,
             ],
         ];
-        Security::assertRateLimitAvailable($shareRateLimitBuckets, 'Shared file unavailable right now.');
+        Security::assertRateLimitAvailable(
+            $shareRateLimitBuckets,
+            'Shared file unavailable right now.',
+            null,
+            ['source' => 'share_view']
+        );
         Security::consumeRateLimit($shareRateLimitBuckets);
+
+        $shareContext = FileShares::publicContext($token);
+
+        if (!empty($shareContext['share']['requires_password']) && empty($shareContext['is_unlocked'])) {
+            if (wb_request_method() === 'POST') {
+                Security::assertCsrfToken(is_string($_POST['csrf_token'] ?? null) ? (string) $_POST['csrf_token'] : null);
+                $passwordRateLimitBuckets = [
+                    [
+                        'scope' => 'share-password-token-ip',
+                        'identifier' => $token . '|' . Security::clientIp(),
+                        'limit' => 5,
+                        'window' => 15 * 60,
+                    ],
+                ];
+                Security::assertRateLimitAvailable(
+                    $passwordRateLimitBuckets,
+                    'Shared file unavailable right now.',
+                    null,
+                    ['source' => 'share_password']
+                );
+
+                if (FileShares::unlock($token, (string) ($_POST['share_password'] ?? ''))) {
+                    Security::clearRateLimit($passwordRateLimitBuckets);
+                    header('Location: ' . ($shareContext['share']['url'] ?? wb_url('/share/?token=' . $token)), true, 303);
+                    exit;
+                }
+
+                Security::consumeRateLimit($passwordRateLimitBuckets);
+
+                if (Security::rateLimitBlockInfo($passwordRateLimitBuckets) !== null) {
+                    AuditLog::record('share.password.lockout', 'security_actions', [
+                        'target_type' => 'share',
+                        'target_label' => (string) ($shareContext['file']['name'] ?? 'Shared file'),
+                        'summary' => 'Blocked password attempts for shared file ' . (string) ($shareContext['file']['name'] ?? 'Shared file'),
+                        'metadata' => [
+                            'token' => $token,
+                        ],
+                    ]);
+                    Security::assertRateLimitAvailable(
+                        $passwordRateLimitBuckets,
+                        'Shared file unavailable right now.',
+                        null,
+                        ['source' => 'share_password']
+                    );
+                }
+
+                $passwordError = 'Incorrect password.';
+            }
+        } else {
+            $payload = FileShares::viewPayload($token);
+        }
+    }
+} catch (BlockedAccessException $exception) {
+    if (wb_request_method() === 'POST') {
+        $_SESSION['share_blocked_flash'] = [
+            'token' => $token,
+            'blocked' => $exception->payload(),
+        ];
+        header('Location: ' . wb_url('/share/?token=' . $token), true, 303);
+        exit;
     }
 
-    $payload = FileShares::viewPayload($token);
+    wb_blocked_page($exception->payload());
 } catch (RuntimeException $exception) {
-    http_response_code($exception->getMessage() === 'Shared file unavailable right now.' ? 429 : 404);
+    http_response_code(404);
 }
+
+$pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
 ?>
 <!doctype html>
 <html lang="en">
 <head>
-    <?= wb_page_head(($payload === null ? 'Shared file unavailable' : $payload['file']['name']) . ' | wb-filebrowser') ?>
+    <?= wb_page_head((($pageFile['name'] ?? 'Shared file unavailable')) . ' | wb-filebrowser') ?>
     <meta name="robots" content="noindex,nofollow,noarchive">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
     <style>
@@ -111,10 +191,56 @@ try {
 <body class="share-shell">
     <main class="share-layout">
         <section class="share-card">
-            <?php if ($payload === null): ?>
+            <?php if ($payload === null && $shareContext === null): ?>
                 <p class="install-kicker">Shared file</p>
                 <h1>This share link is unavailable.</h1>
                 <p>The link may be invalid, expired, or disabled by an administrator.</p>
+            <?php elseif ($payload === null): ?>
+                <?php
+                $file = $shareContext['file'];
+                $share = $shareContext['share'];
+                ?>
+                <header class="share-header">
+                    <div>
+                        <p class="install-kicker">Shared file</p>
+                        <h1><?= wb_h($file['name']) ?></h1>
+                        <p><?= wb_h($file['mime_type']) ?></p>
+                    </div>
+                </header>
+
+                <div class="share-view">
+                    <div class="preview-frame share-view__frame">
+                        <form class="share-password-card" method="post" autocomplete="off">
+                            <p class="install-kicker">Protected access</p>
+                            <h2>Enter password</h2>
+                            <p class="share-lock-note">This shared file is locked.</p>
+                            <input type="hidden" name="csrf_token" value="<?= wb_h(Security::csrfToken()) ?>">
+                            <label class="share-password-card__field">
+                                <span>Password</span>
+                                <input
+                                    type="password"
+                                    name="share_password"
+                                    autocomplete="current-password"
+                                    required
+                                    autofocus
+                                >
+                            </label>
+                            <?php if ($passwordError !== ''): ?>
+                                <p class="share-password-card__error"><?= wb_h($passwordError) ?></p>
+                            <?php endif; ?>
+                            <button class="header-button primary-button" type="submit">Unlock share</button>
+                        </form>
+                    </div>
+
+                    <aside class="preview-sidebar share-sidebar">
+                        <dl>
+                            <div><dt>Name</dt><dd><?= wb_h($file['name']) ?></dd></div>
+                            <div><dt>Size</dt><dd><?= wb_h($file['size_label']) ?></dd></div>
+                            <div><dt>Updated</dt><dd><?= wb_h($file['updated_relative']) ?></dd></div>
+                            <div><dt>Shared</dt><dd><?= wb_h(wb_relative_time($share['created_at'])) ?></dd></div>
+                        </dl>
+                    </aside>
+                </div>
             <?php else: ?>
                 <?php
                 $file = $payload['file'];
