@@ -6,6 +6,7 @@ namespace WbFileBrowser\Tests;
 
 use RuntimeException;
 use WbFileBrowser\Auth;
+use WbFileBrowser\AuditLog;
 use WbFileBrowser\BlockedAccessException;
 use WbFileBrowser\Database;
 use WbFileBrowser\FileManager;
@@ -184,6 +185,56 @@ final class SecurityAuditTest extends DatabaseTestCase
         $this->assertContains('security.ip_ban.expire', $this->auditEventTypes());
     }
 
+    public function testAuditCleanupDeleteAllDoesNotRetainASelfAuditEntry(): void
+    {
+        $this->enableAudit([
+            'log_admin_actions' => true,
+        ]);
+
+        $this->insertAuditRow('file.view', 'file_views', gmdate('c', time() - 86400));
+        $this->insertAuditRow('file.download', 'file_downloads', gmdate('c', time() - 3600));
+
+        $result = AuditLog::cleanup('all');
+
+        $this->assertSame(2, $result['deleted_count']);
+        $this->assertSame(0, $result['remaining_count']);
+        $this->assertSame([], $this->auditEventTypes());
+    }
+
+    public function testAuditCleanupSupportsOlderThanAndKeepLastDaysModes(): void
+    {
+        $this->enableAudit([
+            'log_admin_actions' => false,
+        ]);
+
+        $this->insertAuditRow('old.entry', 'file_views', gmdate('c', time() - (50 * 86400)));
+        $this->insertAuditRow('mid.entry', 'file_views', gmdate('c', time() - (40 * 86400)));
+        $this->insertAuditRow('new.entry', 'file_views', gmdate('c', time() - (34 * 86400)));
+
+        $keepLast = AuditLog::cleanup('keep_last_days', 7);
+
+        $this->assertSame(1, $keepLast['deleted_count']);
+        $this->assertSame(2, $keepLast['remaining_count']);
+        $this->assertSame(['mid.entry', 'new.entry'], $this->auditEventTypes());
+    }
+
+    public function testAuditCleanupOlderThanDaysUsesWallClockCutoffAndCanLogTheAction(): void
+    {
+        $this->enableAudit([
+            'log_admin_actions' => true,
+        ]);
+
+        $this->insertAuditRow('old.entry', 'file_views', gmdate('c', time() - (50 * 86400)));
+        $this->insertAuditRow('mid.entry', 'file_views', gmdate('c', time() - (40 * 86400)));
+        $this->insertAuditRow('new.entry', 'file_views', gmdate('c', time() - (34 * 86400)));
+
+        $result = AuditLog::cleanup('older_than_days', 7);
+
+        $this->assertSame(3, $result['deleted_count']);
+        $this->assertSame(1, $result['remaining_count']);
+        $this->assertSame(1, $this->countAuditEvents('admin.audit.cleanup'));
+    }
+
     /**
      * @param array<string, mixed> $overrides
      */
@@ -210,6 +261,44 @@ final class SecurityAuditTest extends DatabaseTestCase
         $statement->execute([':event_type' => $eventType]);
 
         return (int) $statement->fetchColumn();
+    }
+
+    private function insertAuditRow(string $eventType, string $category, string $createdAt): void
+    {
+        $statement = Database::connection()->prepare(
+            'INSERT INTO audit_logs (
+                event_type,
+                category,
+                actor_user_id,
+                actor_username,
+                ip_address,
+                target_type,
+                target_id,
+                target_label,
+                metadata_json,
+                created_at
+             ) VALUES (
+                :event_type,
+                :category,
+                NULL,
+                NULL,
+                :ip_address,
+                :target_type,
+                NULL,
+                :target_label,
+                :metadata_json,
+                :created_at
+             )'
+        );
+        $statement->execute([
+            ':event_type' => $eventType,
+            ':category' => $category,
+            ':ip_address' => '127.0.0.1',
+            ':target_type' => 'file',
+            ':target_label' => 'Synthetic entry',
+            ':metadata_json' => '{}',
+            ':created_at' => $createdAt,
+        ]);
     }
 
     private function runIsolatedPhp(string $code): void

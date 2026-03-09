@@ -47,6 +47,8 @@ final class Settings
             'maintenance_enabled' => $normalized['access']['maintenance_enabled'] ? '1' : '0',
             'maintenance_scope' => $normalized['access']['maintenance_scope'],
             'maintenance_message' => $normalized['access']['maintenance_message'],
+            'share_terms_enabled' => $normalized['access']['share_terms_enabled'] ? '1' : '0',
+            'share_terms_message' => $normalized['access']['share_terms_message'],
             'uploads_max_file_size_mb' => (string) $normalized['uploads']['max_file_size_mb'],
             'uploads_allowed_extensions' => self::implodeExtensions($normalized['uploads']['allowed_extensions']),
             'uploads_stale_upload_ttl_hours' => (string) $normalized['uploads']['stale_upload_ttl_hours'],
@@ -86,6 +88,14 @@ final class Settings
                     2000,
                     false,
                     MaintenanceMode::defaultMessage()
+                ),
+                'share_terms_enabled' => wb_parse_bool(Database::setting('share_terms_enabled', '0')),
+                'share_terms_message' => self::parseText(
+                    Database::setting('share_terms_message', self::defaultShareTermsMessage()),
+                    'Share terms message',
+                    4000,
+                    false,
+                    self::defaultShareTermsMessage()
                 ),
             ],
             'uploads' => [
@@ -139,21 +149,53 @@ final class Settings
         ];
     }
 
+    /**
+     * @return array{enabled: bool, message: string, version: int}
+     */
+    public static function shareTermsPolicy(?PDO $pdo = null): array
+    {
+        $pdo ??= Database::connection();
+
+        return [
+            'enabled' => wb_parse_bool(Database::setting('share_terms_enabled', '0')),
+            'message' => self::parseText(
+                Database::setting('share_terms_message', self::defaultShareTermsMessage()),
+                'Share terms message',
+                4000,
+                false,
+                self::defaultShareTermsMessage()
+            ),
+            'version' => max(1, self::parseInteger(Database::setting('share_terms_version', '1'), 'Share terms version', 1, PHP_INT_MAX)),
+        ];
+    }
+
     public static function saveAdminSettings(array $payload, ?PDO $pdo = null): array
     {
         $pdo ??= Database::connection();
         $normalized = self::normalizePayload($payload, self::grouped($pdo));
+        $currentShareTerms = self::shareTermsPolicy($pdo);
         $statement = $pdo->prepare(
             'INSERT INTO settings (key, value, updated_at)
              VALUES (:key, :value, :updated_at)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
         );
+        $shareTermsVersion = $currentShareTerms['version'];
+
+        if (
+            $currentShareTerms['enabled'] !== $normalized['access']['share_terms_enabled']
+            || $currentShareTerms['message'] !== $normalized['access']['share_terms_message']
+        ) {
+            $shareTermsVersion++;
+        }
 
         $updates = [
             'public_access' => $normalized['access']['public_access'] ? '1' : '0',
             'maintenance_enabled' => $normalized['access']['maintenance_enabled'] ? '1' : '0',
             'maintenance_scope' => $normalized['access']['maintenance_scope'],
             'maintenance_message' => $normalized['access']['maintenance_message'],
+            'share_terms_enabled' => $normalized['access']['share_terms_enabled'] ? '1' : '0',
+            'share_terms_message' => $normalized['access']['share_terms_message'],
+            'share_terms_version' => (string) $shareTermsVersion,
             'uploads_max_file_size_mb' => (string) $normalized['uploads']['max_file_size_mb'],
             'uploads_allowed_extensions' => self::implodeExtensions($normalized['uploads']['allowed_extensions']),
             'uploads_stale_upload_ttl_hours' => (string) $normalized['uploads']['stale_upload_ttl_hours'],
@@ -261,7 +303,7 @@ final class Settings
         $accessInput = self::normalizeGroupInput(
             $payload,
             'access',
-            ['public_access', 'maintenance_enabled', 'maintenance_scope', 'maintenance_message'],
+            ['public_access', 'maintenance_enabled', 'maintenance_scope', 'maintenance_message', 'share_terms_enabled', 'share_terms_message'],
             $base['access']
         );
         $uploadInput = self::normalizeGroupInput(
@@ -312,6 +354,14 @@ final class Settings
                     2000,
                     false,
                     MaintenanceMode::defaultMessage()
+                ),
+                'share_terms_enabled' => wb_parse_bool($accessInput['share_terms_enabled'] ?? $base['access']['share_terms_enabled']),
+                'share_terms_message' => self::parseText(
+                    $accessInput['share_terms_message'] ?? $base['access']['share_terms_message'],
+                    'Share terms message',
+                    4000,
+                    false,
+                    self::defaultShareTermsMessage()
                 ),
             ],
             'uploads' => [
@@ -385,6 +435,8 @@ final class Settings
                 'maintenance_enabled' => false,
                 'maintenance_scope' => MaintenanceMode::SCOPE_APP_ONLY,
                 'maintenance_message' => MaintenanceMode::defaultMessage(),
+                'share_terms_enabled' => false,
+                'share_terms_message' => self::defaultShareTermsMessage(),
             ],
             'uploads' => [
                 'max_file_size_mb' => 0,
@@ -426,6 +478,9 @@ final class Settings
             'maintenance_enabled' => '0',
             'maintenance_scope' => MaintenanceMode::SCOPE_APP_ONLY,
             'maintenance_message' => MaintenanceMode::defaultMessage(),
+            'share_terms_enabled' => '0',
+            'share_terms_message' => self::defaultShareTermsMessage(),
+            'share_terms_version' => '1',
             'diagnostic_exposed' => '0',
             'diagnostic_checked_at' => '',
             'diagnostic_message' => 'Storage shield checks will start after setup.',
@@ -480,6 +535,11 @@ final class Settings
         }
 
         return array_merge($fallback, $groupInput);
+    }
+
+    public static function defaultShareTermsMessage(): string
+    {
+        return 'By opening or downloading this shared file, you confirm that you are authorized to access it and will handle it according to the applicable terms and confidentiality requirements.';
     }
 
     /**

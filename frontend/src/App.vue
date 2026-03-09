@@ -43,6 +43,8 @@ function createDefaultSettings() {
       maintenance_enabled: false,
       maintenance_scope: 'app_only',
       maintenance_message: createDefaultMaintenance().message,
+      share_terms_enabled: false,
+      share_terms_message: 'By opening or downloading this shared file, you confirm that you are authorized to access it and will handle it according to the applicable terms and confidentiality requirements.',
     },
     uploads: {
       max_file_size_mb: 0,
@@ -137,6 +139,9 @@ const adminState = reactive({
   auditTotalItems: 0,
   auditCategory: '',
   auditCategories: [],
+  auditCleanupMode: 'older_than_days',
+  auditCleanupDays: 30,
+  auditCleanupBusy: false,
   activeBans: [],
   banHistory: [],
   securityBusy: false,
@@ -218,6 +223,8 @@ const filteredUsers = computed(() => filterUsers(adminState.users, searchQuery.v
 const filteredPermissionRows = computed(() => route.section === 'permissions'
   ? filterPermissionRows(adminState.permissionRows, searchQuery.value)
   : adminState.permissionRows);
+const auditCleanupRequiresDays = computed(() => adminState.auditCleanupMode !== 'all');
+const canRunAuditCleanup = computed(() => isSuperAdmin.value);
 const filteredUserPermissionRows = computed(() => route.section === 'users' && route.userId > 0
   ? filterPermissionRows(adminState.userPermissionRows, searchQuery.value)
   : adminState.userPermissionRows);
@@ -1341,6 +1348,51 @@ async function loadAuditLogs(page = adminState.auditPage) {
   adminState.auditTotalItems = payload.total_items ?? 0;
   adminState.auditCategory = payload.category ?? adminState.auditCategory;
   adminState.auditCategories = payload.categories ?? [];
+}
+
+function auditCleanupConfirmation() {
+  if (adminState.auditCleanupMode === 'all') {
+    return 'Delete all audit logs? This cannot be undone.';
+  }
+
+  if (adminState.auditCleanupMode === 'keep_last_days') {
+    return `Keep only the last ${adminState.auditCleanupDays} days of audit logs? Older entries will be deleted.`;
+  }
+
+  return `Delete audit logs older than ${adminState.auditCleanupDays} days?`;
+}
+
+async function runAuditCleanup() {
+  if (!canRunAuditCleanup.value) {
+    return;
+  }
+
+  const days = Number(adminState.auditCleanupDays);
+
+  if (auditCleanupRequiresDays.value && (!Number.isInteger(days) || days < 1 || days > 3650)) {
+    showMessage('Cleanup days must be a whole number between 1 and 3650.');
+    return;
+  }
+
+  if (!window.confirm(auditCleanupConfirmation())) {
+    return;
+  }
+
+  adminState.auditCleanupBusy = true;
+
+  try {
+    const payload = await api('admin.audit.cleanup', {
+      method: 'POST',
+      body: {
+        mode: adminState.auditCleanupMode,
+        ...(auditCleanupRequiresDays.value ? { days } : {}),
+      },
+    });
+    await loadAuditLogs(1);
+    showMessage(`Deleted ${payload.deleted_count ?? 0} audit log${payload.deleted_count === 1 ? '' : 's'}.`);
+  } finally {
+    adminState.auditCleanupBusy = false;
+  }
 }
 
 async function loadSecurityState() {
@@ -2559,6 +2611,19 @@ onBeforeUnmount(() => {
                   placeholder="Tell users that updates or backups are currently in progress."
                 />
               </label>
+              <label class="checkbox-row">
+                <input v-model="adminState.settings.access.share_terms_enabled" type="checkbox" :disabled="!adminState.canManageSettings">
+                <span>Require guests to accept shared file terms</span>
+              </label>
+              <label>
+                <span>Shared file terms</span>
+                <textarea
+                  v-model="adminState.settings.access.share_terms_message"
+                  rows="5"
+                  :disabled="!adminState.canManageSettings || !adminState.settings.access.share_terms_enabled"
+                  placeholder="Explain the conditions guests must accept before shared files open or download."
+                />
+              </label>
               <p class="panel-meta">Guests only see folders you publish in the Permissions tab.</p>
             </div>
 
@@ -2659,6 +2724,38 @@ onBeforeUnmount(() => {
               </select>
             </label>
             <p class="panel-meta">Use the search bar above for text filters.</p>
+          </article>
+
+          <article class="panel panel-form audit-cleanup">
+            <p class="panel-kicker">Audit Cleanup</p>
+            <h2>Delete stored events</h2>
+            <label>
+              <span>Cleanup mode</span>
+              <select v-model="adminState.auditCleanupMode" :disabled="adminState.auditCleanupBusy || !canRunAuditCleanup">
+                <option value="older_than_days">Delete logs older than X days</option>
+                <option value="keep_last_days">Keep only last X days</option>
+                <option value="all">Delete all logs</option>
+              </select>
+            </label>
+            <label v-if="auditCleanupRequiresDays">
+              <span>Days</span>
+              <input
+                v-model.number="adminState.auditCleanupDays"
+                type="number"
+                min="1"
+                max="3650"
+                :disabled="adminState.auditCleanupBusy || !canRunAuditCleanup"
+              >
+            </label>
+            <p class="panel-meta">Cleanup actions are immediate. Use the built-in retention setting for automatic pruning.</p>
+            <button
+              class="danger"
+              type="button"
+              :disabled="adminState.auditCleanupBusy || !canRunAuditCleanup"
+              @click="runAuditCleanup"
+            >
+              Run cleanup
+            </button>
           </article>
 
           <article class="panel panel-table panel-wide">

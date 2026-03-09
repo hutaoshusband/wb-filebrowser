@@ -33,6 +33,7 @@ $token = trim((string) ($_GET['token'] ?? ''));
 $payload = null;
 $shareContext = null;
 $passwordError = '';
+$termsError = '';
 $blockedFlash = $_SESSION['share_blocked_flash'] ?? null;
 
 if (is_array($blockedFlash)) {
@@ -113,6 +114,18 @@ try {
                 }
 
                 $passwordError = 'Incorrect password.';
+            }
+        } elseif (!empty($shareContext['requires_terms_acceptance'])) {
+            if (wb_request_method() === 'POST') {
+                Security::assertCsrfToken(is_string($_POST['csrf_token'] ?? null) ? (string) $_POST['csrf_token'] : null);
+
+                if (wb_parse_bool($_POST['accept_terms'] ?? false)) {
+                    FileShares::acceptTerms();
+                    header('Location: ' . ($shareContext['share']['url'] ?? wb_url('/share/?token=' . $token)), true, 303);
+                    exit;
+                }
+
+                $termsError = 'Please accept the shared file terms to continue.';
             }
         } else {
             $payload = FileShares::viewPayload($token);
@@ -215,26 +228,43 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
 
                 <div class="share-view">
                     <div class="preview-frame share-view__frame">
-                        <form class="share-password-card" method="post" autocomplete="off">
-                            <p class="install-kicker">Protected access</p>
-                            <h2>Enter password</h2>
-                            <p class="share-lock-note">This shared file is locked.</p>
-                            <input type="hidden" name="csrf_token" value="<?= wb_h(Security::csrfToken()) ?>">
-                            <label class="share-password-card__field">
-                                <span>Password</span>
-                                <input
-                                    type="password"
-                                    name="share_password"
-                                    autocomplete="current-password"
-                                    required
-                                    autofocus
-                                >
-                            </label>
-                            <?php if ($passwordError !== ''): ?>
-                                <p class="share-password-card__error"><?= wb_h($passwordError) ?></p>
-                            <?php endif; ?>
-                            <button class="header-button primary-button" type="submit">Unlock share</button>
-                        </form>
+                        <?php if (!empty($shareContext['share']['requires_password']) && empty($shareContext['is_unlocked'])): ?>
+                            <form class="share-password-card" method="post" autocomplete="off">
+                                <p class="install-kicker">Protected access</p>
+                                <h2>Enter password</h2>
+                                <p class="share-lock-note">This shared file is locked.</p>
+                                <input type="hidden" name="csrf_token" value="<?= wb_h(Security::csrfToken()) ?>">
+                                <label class="share-password-card__field">
+                                    <span>Password</span>
+                                    <input
+                                        type="password"
+                                        name="share_password"
+                                        autocomplete="current-password"
+                                        required
+                                        autofocus
+                                    >
+                                </label>
+                                <?php if ($passwordError !== ''): ?>
+                                    <p class="share-password-card__error"><?= wb_h($passwordError) ?></p>
+                                <?php endif; ?>
+                                <button class="header-button primary-button" type="submit">Unlock share</button>
+                            </form>
+                        <?php else: ?>
+                            <form class="share-password-card share-terms-card" method="post" autocomplete="off">
+                                <p class="install-kicker">Shared file terms</p>
+                                <h2>Accept to continue</h2>
+                                <p class="share-lock-note share-terms-card__copy"><?= nl2br(wb_h((string) ($shareContext['terms_message'] ?? ''))) ?></p>
+                                <input type="hidden" name="csrf_token" value="<?= wb_h(Security::csrfToken()) ?>">
+                                <label class="checkbox-row share-terms-card__checkbox">
+                                    <input type="checkbox" name="accept_terms" value="1" required>
+                                    <span>I accept these conditions for opening or downloading this shared file.</span>
+                                </label>
+                                <?php if ($termsError !== ''): ?>
+                                    <p class="share-password-card__error"><?= wb_h($termsError) ?></p>
+                                <?php endif; ?>
+                                <button class="header-button primary-button" type="submit">Continue to file</button>
+                            </form>
+                        <?php endif; ?>
                     </div>
 
                     <aside class="preview-sidebar share-sidebar">

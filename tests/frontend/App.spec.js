@@ -199,6 +199,8 @@ function installFetchStub(overrides = {}) {
           maintenance_enabled: false,
           maintenance_scope: 'app_only',
           maintenance_message: 'The file browser is temporarily unavailable while maintenance is in progress. Please try again later.',
+          share_terms_enabled: false,
+          share_terms_message: 'By opening or downloading this shared file, you confirm that you are authorized to access it and will handle it according to the applicable terms and confidentiality requirements.',
         },
         uploads: { max_file_size_mb: 256, allowed_extensions: '', stale_upload_ttl_hours: 24 },
         automation: {
@@ -249,6 +251,8 @@ function installFetchStub(overrides = {}) {
           maintenance_enabled: true,
           maintenance_scope: 'app_and_share',
           maintenance_message: 'Updates in progress',
+          share_terms_enabled: true,
+          share_terms_message: 'Accept the published terms before opening or downloading shared files.',
         },
         uploads: { max_file_size_mb: 64, allowed_extensions: 'png, pdf', stale_upload_ttl_hours: 8 },
         automation: {
@@ -317,6 +321,8 @@ function installFetchStub(overrides = {}) {
           maintenance_enabled: false,
           maintenance_scope: 'app_only',
           maintenance_message: 'The file browser is temporarily unavailable while maintenance is in progress. Please try again later.',
+          share_terms_enabled: false,
+          share_terms_message: 'By opening or downloading this shared file, you confirm that you are authorized to access it and will handle it according to the applicable terms and confidentiality requirements.',
         },
         uploads: { max_file_size_mb: 256, allowed_extensions: '', stale_upload_ttl_hours: 24 },
         automation: {
@@ -406,14 +412,14 @@ function installFetchStub(overrides = {}) {
   return { calls };
 }
 
-async function mountAdminApp({ hash = '#/dashboard', handlers = {} } = {}) {
+async function mountAdminApp({ hash = '#/dashboard', handlers = {}, bootstrapUser = adminUser() } = {}) {
   window.location.hash = hash;
   document.body.dataset.shell = 'admin';
   window.WB_BOOTSTRAP = {
     surface: 'admin',
     base_path: '',
     csrf_token: 'csrf-token',
-    user: adminUser(),
+    user: bootstrapUser,
     app_version: '1.0.0-alpha',
   };
   const fetchState = installFetchStub(handlers);
@@ -569,6 +575,26 @@ describe('Admin app shell', () => {
     expect(body.automation.folder_size_interval_minutes).toBe(720);
   });
 
+  it('submits share terms settings from the access tab', async () => {
+    const { wrapper, calls } = await mountAdminApp({ hash: '#/settings' });
+
+    expect(wrapper.text()).toContain('Shared file terms');
+
+    const accessCheckboxes = wrapper.findAll('.settings-pane input[type="checkbox"]');
+    await accessCheckboxes[2].setValue(true);
+
+    const accessTextareas = wrapper.findAll('.settings-pane textarea');
+    await accessTextareas[1].setValue('Accept the published terms before opening or downloading shared files.');
+
+    await wrapper.find('.primary-button').trigger('click');
+
+    const saveCall = calls.filter((call) => call.action === 'admin.settings.save').at(-1);
+    const body = JSON.parse(saveCall.init.body);
+
+    expect(body.access.share_terms_enabled).toBe(true);
+    expect(body.access.share_terms_message).toBe('Accept the published terms before opening or downloading shared files.');
+  });
+
   it('loads audit logs, applies category filters, and paginates', async () => {
     const { wrapper, calls } = await mountAdminApp({ hash: '#/audit' });
 
@@ -591,6 +617,81 @@ describe('Admin app shell', () => {
     expect(lastAuditCall.action).toBe('admin.audit.list');
     expect(lastAuditCall.init.method ?? 'GET').toBe('GET');
     expect(wrapper.text()).toContain('Viewed file brochure.pdf');
+  });
+
+  it('submits audit cleanup actions and reloads the first audit page', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const auditPages = [];
+    let cleanupBody = null;
+    const { wrapper } = await mountAdminApp({
+      hash: '#/audit',
+      bootstrapUser: adminUser('super_admin'),
+      handlers: {
+        'auth.session': () => jsonResponse(sessionPayload(adminUser('super_admin'))),
+        'admin.audit.list': (input) => {
+          const url = new URL(String(input));
+          const page = Number(url.searchParams.get('page') || '1');
+          auditPages.push(page);
+
+          return jsonResponse({
+            entries: [
+              {
+                id: page,
+                event_type: 'file.view',
+                category: 'file_views',
+                category_label: 'File views',
+                actor_user_id: 1,
+                actor_username: 'admin',
+                ip_address: '127.0.0.1',
+                target_type: 'file',
+                target_id: 7,
+                target_label: 'Home / brochure.pdf',
+                summary: `Viewed file brochure.pdf (page ${page})`,
+                metadata: {},
+                created_at: '2026-03-09T00:00:00Z',
+              },
+            ],
+            page,
+            page_size: 25,
+            total_items: 26,
+            total_pages: 2,
+            query: url.searchParams.get('query') || '',
+            category: url.searchParams.get('category') || '',
+            categories: [
+              { key: 'file_views', label: 'File views' },
+              { key: 'admin_actions', label: 'Admin actions' },
+            ],
+          });
+        },
+        'admin.audit.cleanup': (_input, init) => {
+          cleanupBody = JSON.parse(init.body);
+          return jsonResponse({
+            deleted_count: 5,
+            remaining_count: 21,
+          });
+        },
+      },
+    });
+
+    const nextButton = wrapper.findAll('button').find((button) => button.text() === 'Next');
+    await nextButton.trigger('click');
+    await flushPromises();
+    await flushPromises();
+
+    expect(auditPages.at(-1)).toBe(2);
+    expect(wrapper.text()).toContain('Audit Cleanup');
+
+    await wrapper.find('.audit-cleanup select').setValue('older_than_days');
+    await wrapper.find('.audit-cleanup input[type="number"]').setValue('7');
+
+    const cleanupButton = wrapper.findAll('button').find((button) => button.text() === 'Run cleanup');
+    await cleanupButton.trigger('click');
+    await flushPromises();
+    await flushPromises();
+
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(cleanupBody).toMatchObject({ mode: 'older_than_days', days: 7 });
+    expect(auditPages.at(-1)).toBe(1);
   });
 
   it('renders the security surface, saves audit settings, and submits ban actions', async () => {

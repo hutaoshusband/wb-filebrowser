@@ -6,6 +6,7 @@ namespace WbFileBrowser\Tests;
 
 use RuntimeException;
 use WbFileBrowser\FileShares;
+use WbFileBrowser\Settings;
 use WbFileBrowser\Tests\Support\DatabaseTestCase;
 
 final class FileShareTest extends DatabaseTestCase
@@ -155,5 +156,77 @@ final class FileShareTest extends DatabaseTestCase
         $this->assertFalse($cleared['requires_password']);
         $this->assertFalse(FileShares::publicContext($share['token'])['share']['requires_password']);
         $this->assertSame('vault.txt', FileShares::viewPayload($share['token'])['file']['name']);
+    }
+
+    public function testShareTermsRequireAcceptanceAndInvalidateAcceptedSessionOnChange(): void
+    {
+        Settings::saveAdminSettings([
+            'access' => [
+                'share_terms_enabled' => true,
+                'share_terms_message' => 'Accept the published terms before opening shared files.',
+            ],
+        ]);
+
+        $file = $this->createFile('policy.txt', 'confidential');
+        $share = FileShares::create($this->superAdmin(), (int) $file['id']);
+        $context = FileShares::publicContext($share['token']);
+
+        $this->assertTrue($context['requires_terms_acceptance']);
+        $this->assertFalse($context['is_terms_accepted']);
+        $this->assertSame('Accept the published terms before opening shared files.', $context['terms_message']);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('Share terms are required.');
+        FileShares::viewPayload($share['token']);
+    }
+
+    public function testShareTermsAcceptanceAllowsViewingUntilTermsChange(): void
+    {
+        Settings::saveAdminSettings([
+            'access' => [
+                'share_terms_enabled' => true,
+                'share_terms_message' => 'Accept the published terms before opening shared files.',
+            ],
+        ]);
+
+        $file = $this->createFile('policy.txt', 'confidential');
+        $share = FileShares::create($this->superAdmin(), (int) $file['id']);
+
+        FileShares::acceptTerms();
+
+        $this->assertTrue(FileShares::publicContext($share['token'])['is_terms_accepted']);
+        $this->assertSame('policy.txt', FileShares::viewPayload($share['token'])['file']['name']);
+
+        Settings::saveAdminSettings([
+            'access' => [
+                'share_terms_enabled' => true,
+                'share_terms_message' => 'Updated shared file terms.',
+            ],
+        ]);
+
+        $updatedContext = FileShares::publicContext($share['token']);
+
+        $this->assertTrue($updatedContext['requires_terms_acceptance']);
+        $this->assertFalse($updatedContext['is_terms_accepted']);
+        $this->assertSame('Updated shared file terms.', $updatedContext['terms_message']);
+    }
+
+    public function testShareStreamRedirectUrlRequiresTermsAcceptance(): void
+    {
+        Settings::saveAdminSettings([
+            'access' => [
+                'share_terms_enabled' => true,
+                'share_terms_message' => 'Accept the published terms before opening shared files.',
+            ],
+        ]);
+
+        $file = $this->createFile('policy.txt', 'confidential');
+        $share = FileShares::create($this->superAdmin(), (int) $file['id']);
+
+        $this->assertStringContainsString('/share/?token=' . $share['token'], (string) FileShares::streamRedirectUrl($share['token']));
+
+        FileShares::acceptTerms();
+
+        $this->assertNull(FileShares::streamRedirectUrl($share['token']));
     }
 }

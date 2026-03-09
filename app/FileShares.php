@@ -205,12 +205,53 @@ final class FileShares
         $pdo ??= Database::connection();
         self::cleanupInactiveShares($pdo);
         $share = self::resolveActiveShare($token, $pdo);
+        $termsPolicy = Settings::shareTermsPolicy($pdo);
+        $isTermsAccepted = self::hasAcceptedShareTerms($termsPolicy);
 
         return [
             'share' => self::serializeResolvedShare($share),
             'file' => self::serializeSharedFile($share),
             'is_unlocked' => self::isShareUnlocked($share),
+            'terms_message' => $termsPolicy['message'],
+            'terms_version' => $termsPolicy['version'],
+            'is_terms_accepted' => $isTermsAccepted,
+            'requires_terms_acceptance' => $termsPolicy['enabled'] && !$isTermsAccepted,
         ];
+    }
+
+    public static function acceptTerms(?PDO $pdo = null): void
+    {
+        $pdo ??= Database::connection();
+        $termsPolicy = Settings::shareTermsPolicy($pdo);
+        Security::startSession();
+        $_SESSION['share_terms_acceptance'] = [
+            'version' => $termsPolicy['version'],
+            'accepted_at' => wb_now(),
+        ];
+    }
+
+    public static function streamRedirectUrl(string $token = '', string $grant = '', ?PDO $pdo = null): ?string
+    {
+        $pdo ??= Database::connection();
+        $effectiveToken = trim($token);
+
+        if ($effectiveToken === '' && trim($grant) !== '') {
+            $payload = Security::verifySignedPayload($grant);
+            $effectiveToken = (string) ($payload['token'] ?? '');
+        }
+
+        if ($effectiveToken === '') {
+            return null;
+        }
+
+        self::cleanupInactiveShares($pdo);
+        self::resolveActiveShare($effectiveToken, $pdo);
+
+        if (!self::requiresShareTermsAcceptance(Settings::shareTermsPolicy($pdo))) {
+            return null;
+        }
+
+        return self::shareUrls($effectiveToken)['view'];
     }
 
     public static function unlock(string $token, string $password, ?PDO $pdo = null): bool
@@ -242,6 +283,7 @@ final class FileShares
         try {
             $share = self::resolveActiveShare($token, $pdo);
             self::assertShareUnlocked($share);
+            self::assertShareTermsAccepted($pdo);
             $share = self::incrementViewCount($share, $pdo);
             $file = self::serializeSharedFile($share);
             $previewMode = (string) $file['preview_mode'];
@@ -288,6 +330,7 @@ final class FileShares
         self::cleanupInactiveShares($pdo);
         $share = self::resolveActiveShare($token, $pdo);
         self::assertShareUnlocked($share);
+        self::assertShareTermsAccepted($pdo);
         $dispositionType = $disposition === 'attachment' ? 'attachment' : 'inline';
 
         if ($dispositionType === 'attachment') {
@@ -318,6 +361,7 @@ final class FileShares
         $pdo ??= Database::connection();
         $share = self::resolveActiveShare((string) ($payload['token'] ?? ''), $pdo);
         self::assertShareUnlocked($share);
+        self::assertShareTermsAccepted($pdo);
         $disposition = (string) ($payload['disposition'] ?? 'inline');
 
         if ($disposition === 'attachment') {
@@ -711,6 +755,18 @@ final class FileShares
         }
     }
 
+    private static function assertShareTermsAccepted(?PDO $pdo = null): void
+    {
+        $pdo ??= Database::connection();
+        $termsPolicy = Settings::shareTermsPolicy($pdo);
+
+        if (!self::requiresShareTermsAcceptance($termsPolicy)) {
+            return;
+        }
+
+        throw new RuntimeException('Share terms are required.');
+    }
+
     private static function isShareUnlocked(array $share): bool
     {
         $passwordHash = trim((string) ($share['password_hash'] ?? ''));
@@ -735,5 +791,32 @@ final class FileShares
         }
 
         $_SESSION['share_unlocks'][(string) $share['token']] = (int) ($share['password_version'] ?? 0);
+    }
+
+    /**
+     * @param array{enabled: bool, message: string, version: int} $termsPolicy
+     */
+    private static function hasAcceptedShareTerms(array $termsPolicy): bool
+    {
+        if (!$termsPolicy['enabled']) {
+            return true;
+        }
+
+        Security::startSession();
+        $accepted = $_SESSION['share_terms_acceptance'] ?? null;
+
+        if (!is_array($accepted)) {
+            return false;
+        }
+
+        return (int) ($accepted['version'] ?? 0) === $termsPolicy['version'];
+    }
+
+    /**
+     * @param array{enabled: bool, message: string, version: int} $termsPolicy
+     */
+    private static function requiresShareTermsAcceptance(array $termsPolicy): bool
+    {
+        return $termsPolicy['enabled'] && !self::hasAcceptedShareTerms($termsPolicy);
     }
 }

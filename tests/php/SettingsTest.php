@@ -18,6 +18,8 @@ final class SettingsTest extends DatabaseTestCase
                 'maintenance_enabled' => true,
                 'maintenance_scope' => 'app_and_share',
                 'maintenance_message' => "Updates are running.\nPlease come back soon.",
+                'share_terms_enabled' => true,
+                'share_terms_message' => 'Accept the published terms before opening or downloading shared files.',
             ],
             'uploads' => [
                 'max_file_size_mb' => 128,
@@ -55,6 +57,11 @@ final class SettingsTest extends DatabaseTestCase
         $this->assertTrue($saved['access']['maintenance_enabled']);
         $this->assertSame('app_and_share', $payload['settings']['access']['maintenance_scope']);
         $this->assertSame("Updates are running.\nPlease come back soon.", $payload['settings']['access']['maintenance_message']);
+        $this->assertTrue($payload['settings']['access']['share_terms_enabled']);
+        $this->assertSame(
+            'Accept the published terms before opening or downloading shared files.',
+            $payload['settings']['access']['share_terms_message']
+        );
         $this->assertSame(128, $payload['settings']['uploads']['max_file_size_mb']);
         $this->assertSame('jpg, pdf', $payload['settings']['uploads']['allowed_extensions']);
         $this->assertSame(12, $payload['settings']['uploads']['stale_upload_ttl_hours']);

@@ -358,6 +358,16 @@ try {
             }
 
             try {
+                $redirectUrl = FileShares::streamRedirectUrl(
+                    (string) ($_GET['token'] ?? ''),
+                    (string) ($_GET['grant'] ?? '')
+                );
+
+                if ($redirectUrl !== null) {
+                    header('Location: ' . $redirectUrl, true, 303);
+                    exit;
+                }
+
                 $grant = (string) ($_GET['grant'] ?? '');
 
                 if ($grant !== '') {
@@ -652,6 +662,19 @@ try {
                     'query' => (string) ($_GET['query'] ?? ''),
                     'category' => (string) ($_GET['category'] ?? ''),
                 ]),
+            ]);
+
+        case 'admin.audit.cleanup':
+            $requireCsrf();
+            $actor = Auth::requireSuperAdmin();
+            $days = $requestData['days'] ?? null;
+            wb_json_response([
+                'ok' => true,
+                ...AuditLog::cleanup(
+                    (string) ($requestData['mode'] ?? ''),
+                    $days === null || $days === '' ? null : (int) $days,
+                    $actor
+                ),
             ]);
 
         case 'admin.security.get':

@@ -17,6 +17,7 @@ abstract class DatabaseTestCase extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        $this->resetSessionState();
         $this->resetStorage();
         Database::disconnect();
         Installer::ensureRuntimeDirectories();
@@ -27,6 +28,7 @@ abstract class DatabaseTestCase extends TestCase
     protected function tearDown(): void
     {
         Database::disconnect();
+        $this->resetSessionState();
         $this->resetStorage();
         parent::tearDown();
     }
@@ -183,6 +185,20 @@ abstract class DatabaseTestCase extends TestCase
     {
         if (is_dir(WB_STORAGE)) {
             $this->deleteDirectory(WB_STORAGE);
+        }
+    }
+
+    private function resetSessionState(): void
+    {
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            $_SESSION = [];
+            session_write_close();
+        }
+
+        $_SESSION = [];
+
+        if (session_name() !== '' && isset($_COOKIE[session_name()])) {
+            unset($_COOKIE[session_name()]);
         }
     }
 

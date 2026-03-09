@@ -198,6 +198,65 @@ final class AuditLog
     }
 
     /**
+     * @return array{deleted_count: int, remaining_count: int}
+     */
+    public static function cleanup(string $mode, ?int $days = null, ?array $actor = null, ?PDO $pdo = null): array
+    {
+        $pdo ??= Database::connection();
+        $normalizedMode = trim($mode);
+        $deletedCount = 0;
+
+        if ($normalizedMode === 'all') {
+            $deletedCount = (int) $pdo->query('SELECT COUNT(*) FROM audit_logs')->fetchColumn();
+            $pdo->exec('DELETE FROM audit_logs');
+
+            return [
+                'deleted_count' => $deletedCount,
+                'remaining_count' => 0,
+            ];
+        }
+
+        if ($normalizedMode !== 'older_than_days' && $normalizedMode !== 'keep_last_days') {
+            throw new \InvalidArgumentException('Unsupported audit cleanup mode.');
+        }
+
+        $daysValue = filter_var($days, FILTER_VALIDATE_INT);
+
+        if ($daysValue === false || $daysValue < 1 || $daysValue > 3650) {
+            throw new \InvalidArgumentException('Audit cleanup days must be between 1 and 3650.');
+        }
+
+        $cutoff = $normalizedMode === 'older_than_days'
+            ? gmdate('c', time() - ($daysValue * 86400))
+            : self::keepLastDaysCutoff($daysValue, $pdo);
+
+        if ($cutoff !== null) {
+            $delete = $pdo->prepare('DELETE FROM audit_logs WHERE created_at < :cutoff');
+            $delete->execute([':cutoff' => $cutoff]);
+            $deletedCount = $delete->rowCount();
+        }
+
+        self::record('admin.audit.cleanup', 'admin_actions', [
+            'actor_user' => $actor,
+            'target_type' => 'audit_logs',
+            'target_label' => 'Audit logs',
+            'summary' => $normalizedMode === 'keep_last_days'
+                ? 'Kept only the last ' . $daysValue . ' days of audit logs'
+                : 'Deleted audit logs older than ' . $daysValue . ' days',
+            'metadata' => [
+                'mode' => $normalizedMode,
+                'days' => $daysValue,
+                'deleted_count' => $deletedCount,
+            ],
+        ], $pdo);
+
+        return [
+            'deleted_count' => $deletedCount,
+            'remaining_count' => (int) $pdo->query('SELECT COUNT(*) FROM audit_logs')->fetchColumn(),
+        ];
+    }
+
+    /**
      * @param array<string, mixed> $metadata
      */
     private static function encodeMetadata(array $metadata): string
@@ -249,6 +308,23 @@ final class AuditLog
         }
 
         return trim($eventLabel . ': ' . $targetLabel);
+    }
+
+    private static function keepLastDaysCutoff(int $days, PDO $pdo): ?string
+    {
+        $newestCreatedAt = $pdo->query('SELECT MAX(created_at) FROM audit_logs')->fetchColumn();
+
+        if (!is_string($newestCreatedAt) || trim($newestCreatedAt) === '') {
+            return null;
+        }
+
+        $timestamp = strtotime($newestCreatedAt);
+
+        if ($timestamp === false) {
+            return null;
+        }
+
+        return gmdate('c', $timestamp - ($days * 86400));
     }
 
     private static function pruneIfDue(PDO $pdo, bool $force = false): void
