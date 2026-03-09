@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { describePermissionPrincipal, filterPermissionRows, filterUsers, getSearchConfig, jobTone } from './lib/admin.js';
+import { collectDroppedItems } from './lib/folderDrop.js';
 import { renderPdfThumbnail } from './lib/thumbnails.js';
 import { validateUploadCandidate } from './lib/uploadPolicy.js';
 
@@ -8,6 +9,7 @@ const ADMIN_SECTIONS = ['dashboard', 'users', 'permissions', 'settings', 'audit'
 const SETTING_TABS = ['access', 'display', 'uploads', 'automation'];
 const BLOCKED_STORAGE_KEY = 'wb-filebrowser:blocked-state';
 const THUMB_OBSERVER_KEY = Symbol('wb-thumb-observer');
+const DEFAULT_CHUNK_SIZE = 2097152;
 
 function createDefaultUploadPolicy() {
   return {
@@ -167,6 +169,7 @@ const searchQuery = ref('');
 const sortBy = ref('name');
 const sortDirection = ref('asc');
 const viewMode = ref(window.localStorage.getItem('wb-filebrowser:view-mode') ?? 'list');
+const mobileNavOpen = ref(false);
 const selectMode = ref(false);
 const selectedKey = ref('');
 const previewItem = ref(null);
@@ -175,7 +178,7 @@ const infoItem = ref(null);
 const helpOpen = ref(false);
 const contextMenu = ref(null);
 const statusMessage = ref('');
-const uploadProgress = ref(null);
+const uploadQueue = ref(null);
 const dragDepth = ref(0);
 const isBooting = ref(true);
 const fileInput = ref(null);
@@ -258,6 +261,20 @@ const shareContextItem = computed(() => {
   }
 
   return null;
+});
+const uploadQueueOverallPercent = computed(() => {
+  if (!uploadQueue.value || uploadQueue.value.totalBytes === 0) {
+    return 0;
+  }
+
+  return Math.min(100, Math.round((uploadQueue.value.uploadedBytes / uploadQueue.value.totalBytes) * 100));
+});
+const uploadQueueCurrentPercent = computed(() => {
+  if (!uploadQueue.value || uploadQueue.value.currentFileBytesTotal === 0) {
+    return 0;
+  }
+
+  return Math.min(100, Math.round((uploadQueue.value.currentFileBytesSent / uploadQueue.value.currentFileBytesTotal) * 100));
 });
 
 function apiUrl(action, params = {}) {
@@ -518,6 +535,7 @@ function debounceSearch() {
 }
 
 function navigateToFolder(folderId) {
+  closeMobileNav();
   const nextHash = `#/folder/${folderId}`;
   if (window.location.hash === nextHash) {
     route.folderId = folderId;
@@ -528,6 +546,7 @@ function navigateToFolder(folderId) {
 }
 
 function setAdminSection(section) {
+  closeMobileNav();
   const nextHash = section === 'users' ? '#/users' : `#/${section}`;
   if (window.location.hash === nextHash) {
     route.section = section;
@@ -543,6 +562,7 @@ function openUserDetails(user) {
     return;
   }
 
+  closeMobileNav();
   const nextHash = `#/users/${user.id}`;
 
   if (window.location.hash === nextHash) {
@@ -556,6 +576,7 @@ function openUserDetails(user) {
 }
 
 function browseHome() {
+  closeMobileNav();
   if (isAdminShell.value) {
     goToBrowserRoot();
     return;
@@ -573,11 +594,21 @@ function redirectTo(url) {
 }
 
 function goToBrowserRoot() {
+  closeMobileNav();
   redirectTo(`${basePath}/`);
 }
 
 function openAdminPanel() {
+  closeMobileNav();
   redirectTo(`${basePath}/admin/#/${isSuperAdmin.value ? 'dashboard' : 'users'}`);
+}
+
+function toggleMobileNav() {
+  mobileNavOpen.value = !mobileNavOpen.value;
+}
+
+function closeMobileNav() {
+  mobileNavOpen.value = false;
 }
 
 function selectEntry(item) {
@@ -666,7 +697,16 @@ function handleContextMenu(event, item) {
 
   event.preventDefault();
   selectEntry(item);
-  contextMenu.value = { x: event.clientX, y: event.clientY, item };
+  contextMenu.value = { kind: 'item', x: event.clientX, y: event.clientY, item };
+}
+
+function handleWorkspaceContextMenu(event) {
+  if (shell !== 'app' || event.target?.closest('[data-entry-surface="true"]')) {
+    return;
+  }
+
+  event.preventDefault();
+  contextMenu.value = { kind: 'workspace', x: event.clientX, y: event.clientY };
 }
 
 function previewMode(item) {
@@ -854,6 +894,7 @@ async function submitLogin() {
 }
 
 async function logout() {
+  closeMobileNav();
   await api('auth.logout', { method: 'POST', body: {} });
   session.user = null;
   searchQuery.value = '';
@@ -873,11 +914,14 @@ async function logout() {
 }
 
 function toggleViewMode() {
+  closeContextMenu();
   viewMode.value = viewMode.value === 'list' ? 'grid' : 'list';
   window.localStorage.setItem('wb-filebrowser:view-mode', viewMode.value);
 }
 
 function openSettings() {
+  closeContextMenu();
+  closeMobileNav();
   if (isAdminShell.value && isAdmin.value) {
     setAdminSection('settings');
     return;
@@ -890,6 +934,8 @@ function openSettings() {
 }
 
 function triggerUpload() {
+  closeContextMenu();
+  closeMobileNav();
   if (!canUploadHere.value) {
     showMessage('You do not have upload permission in this folder.');
     return;
@@ -901,23 +947,81 @@ function triggerUpload() {
 async function handleFilePicker(event) {
   const files = Array.from(event.target.files ?? []);
   if (files.length > 0) {
-    await uploadFiles(files);
+    await uploadQueuedItems(
+      files.map((file) => ({
+        file,
+        relativePathSegments: [],
+        relativePath: file.name,
+      })),
+    );
   }
   event.target.value = '';
 }
 
-async function uploadFiles(files) {
+function formatBytes(bytes) {
+  const value = Number(bytes);
+
+  if (!Number.isFinite(value) || value < 0) {
+    return '0 B';
+  }
+
+  if (value === 0) {
+    return '0 B';
+  }
+
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const power = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
+  const scaled = value / (1024 ** power);
+
+  return `${scaled >= 10 || power === 0 ? Math.round(scaled) : scaled.toFixed(1)} ${units[power]}`;
+}
+
+function createUploadQueueState(items) {
+  return {
+    totalFiles: items.length,
+    totalBytes: items.reduce((sum, item) => sum + item.file.size, 0),
+    completedFiles: 0,
+    uploadedBytes: 0,
+    currentFileName: '',
+    currentFilePath: '',
+    currentFileBytesSent: 0,
+    currentFileBytesTotal: 0,
+    currentFileChunksSent: 0,
+    currentFileChunksTotal: 0,
+  };
+}
+
+async function ensureDroppedDirectories(directories) {
+  const seen = new Set();
+
+  for (const directory of directories) {
+    if (!directory?.relativePath || seen.has(directory.relativePath)) {
+      continue;
+    }
+
+    seen.add(directory.relativePath);
+    await api('folders.ensure_path', {
+      method: 'POST',
+      body: {
+        parent_id: route.folderId,
+        path_segments: directory.relativePathSegments,
+      },
+    });
+  }
+}
+
+async function uploadQueuedItems(items, emptyDirectories = []) {
   if (!canUploadHere.value) {
     showMessage('You do not have upload permission in this folder.');
     return;
   }
 
-  const uploadedFileCount = files.length;
-  const uploadedFileName = files[0]?.name ?? 'file';
+  const uploadedFileCount = items.length;
+  const uploadedFileName = items[0]?.file.name ?? 'file';
   const uploadedBy = session.user?.username ?? 'unknown user';
 
-  for (const file of files) {
-    const uploadError = validateUploadCandidate(file, session.uploadPolicy);
+  for (const item of items) {
+    const uploadError = validateUploadCandidate(item.file, session.uploadPolicy);
 
     if (uploadError) {
       showMessage(uploadError);
@@ -925,45 +1029,105 @@ async function uploadFiles(files) {
     }
   }
 
-  for (const file of files) {
-    const totalChunks = Math.max(1, Math.ceil(file.size / 2097152));
-    uploadProgress.value = { name: file.name, sent: 0, total: totalChunks };
-    const initPayload = await api('upload.init', {
-      method: 'POST',
-      body: {
-        folder_id: route.folderId,
-        original_name: file.name,
-        size: file.size,
-        mime_type: file.type || 'application/octet-stream',
-        total_chunks: totalChunks,
-      },
-    });
-    const token = initPayload.data.upload_token;
-    const chunkSize = initPayload.data.chunk_size;
-
-    for (let index = 0; index < totalChunks; index += 1) {
-      const formData = new FormData();
-      formData.append('upload_token', token);
-      formData.append('chunk_index', String(index));
-      formData.append('chunk', file.slice(index * chunkSize, (index + 1) * chunkSize), `${file.name}.part`);
-      await api('upload.chunk', { method: 'POST', formData });
-      uploadProgress.value = { name: file.name, sent: index + 1, total: totalChunks };
-    }
-
-    await api('upload.complete', { method: 'POST', body: { upload_token: token } });
+  if (uploadedFileCount === 0 && emptyDirectories.length === 0) {
+    return;
   }
 
-  uploadProgress.value = null;
-  await refreshSession();
-  await loadFolder(route.folderId);
-  showMessage(
-    uploadedFileCount === 1
-      ? `Uploaded file by ${uploadedBy}: ${uploadedFileName}.`
-      : `Uploaded ${uploadedFileCount} files by ${uploadedBy}.`,
-  );
+  uploadQueue.value = createUploadQueueState(items);
+  let completedFiles = 0;
+  let completedBytes = 0;
+
+  try {
+    await ensureDroppedDirectories(emptyDirectories);
+
+    for (const item of items) {
+      const { file, relativePath, relativePathSegments } = item;
+      const totalChunks = Math.max(1, Math.ceil(file.size / DEFAULT_CHUNK_SIZE));
+      uploadQueue.value = {
+        ...uploadQueue.value,
+        completedFiles,
+        uploadedBytes: completedBytes,
+        currentFileName: file.name,
+        currentFilePath: relativePath,
+        currentFileBytesSent: 0,
+        currentFileBytesTotal: file.size,
+        currentFileChunksSent: 0,
+        currentFileChunksTotal: totalChunks,
+      };
+
+      const initPayload = await api('upload.init', {
+        method: 'POST',
+        body: {
+          folder_id: route.folderId,
+          original_name: file.name,
+          size: file.size,
+          mime_type: file.type || 'application/octet-stream',
+          total_chunks: totalChunks,
+          relative_path_segments: relativePathSegments,
+        },
+      });
+      const token = initPayload.data.upload_token;
+      const chunkSize = initPayload.data.chunk_size || DEFAULT_CHUNK_SIZE;
+
+      try {
+        for (let index = 0; index < totalChunks; index += 1) {
+          const formData = new FormData();
+          formData.append('upload_token', token);
+          formData.append('chunk_index', String(index));
+          formData.append('chunk', file.slice(index * chunkSize, (index + 1) * chunkSize), `${file.name}.part`);
+          await api('upload.chunk', { method: 'POST', formData });
+          const currentFileBytesSent = Math.min(file.size, (index + 1) * chunkSize);
+          uploadQueue.value = {
+            ...uploadQueue.value,
+            uploadedBytes: completedBytes + currentFileBytesSent,
+            currentFileBytesSent,
+            currentFileChunksSent: index + 1,
+          };
+        }
+
+        await api('upload.complete', { method: 'POST', body: { upload_token: token } });
+      } catch (error) {
+        try {
+          await api('upload.cancel', { method: 'POST', body: { upload_token: token } });
+        } catch (_) {
+          // Best-effort cleanup for incomplete uploads.
+        }
+
+        throw error;
+      }
+
+      completedFiles += 1;
+      completedBytes += file.size;
+      uploadQueue.value = {
+        ...uploadQueue.value,
+        completedFiles,
+        uploadedBytes: completedBytes,
+        currentFileBytesSent: file.size,
+        currentFileChunksSent: totalChunks,
+      };
+    }
+
+    await refreshSession();
+    await loadFolder(route.folderId);
+    showMessage(
+      uploadedFileCount === 0
+        ? (emptyDirectories.length === 1
+          ? `Created folder by ${uploadedBy}: ${emptyDirectories[0].relativePath}.`
+          : `Created ${emptyDirectories.length} folders by ${uploadedBy}.`)
+        : (uploadedFileCount === 1
+          ? `Uploaded file by ${uploadedBy}: ${uploadedFileName}.`
+          : `Uploaded ${uploadedFileCount} files by ${uploadedBy}.`),
+    );
+  } catch (error) {
+    const failedPath = uploadQueue.value?.currentFilePath || uploadedFileName;
+    showMessage(`${failedPath}: ${error instanceof Error ? error.message : 'Upload failed.'}`);
+  } finally {
+    uploadQueue.value = null;
+  }
 }
 
 async function createFolder() {
+  closeContextMenu();
   if (!canCreateFoldersHere.value) {
     showMessage('You do not have permission to create folders here.');
     return;
@@ -978,7 +1142,14 @@ async function createFolder() {
   await loadFolder(route.folderId);
 }
 
+async function refreshBrowserSection() {
+  closeContextMenu();
+  await refreshCurrentView();
+  showMessage('Folder refreshed.');
+}
+
 async function renameSelected(item = selectedItem.value) {
+  closeContextMenu();
   if (!item) {
     return;
   }
@@ -1032,6 +1203,7 @@ async function ensureMoveTargets() {
 }
 
 async function moveSelected(item = selectedItem.value) {
+  closeContextMenu();
   if (!item) {
     return;
   }
@@ -1059,6 +1231,7 @@ async function moveSelected(item = selectedItem.value) {
 }
 
 async function deleteSelected(item = selectedItem.value) {
+  closeContextMenu();
   if (!item) {
     return;
   }
@@ -1181,6 +1354,7 @@ async function writeShareLink(url) {
 }
 
 async function createShareLink(item = shareContextItem.value, { open = false } = {}) {
+  closeContextMenu();
   if (!item || item.type !== 'file') {
     showMessage('Choose a file first.');
     return;
@@ -1217,6 +1391,7 @@ async function createShareLink(item = shareContextItem.value, { open = false } =
 }
 
 async function openShareLink(item = shareContextItem.value) {
+  closeContextMenu();
   if (!item || item.type !== 'file') {
     showMessage('Choose a file first.');
     return;
@@ -1244,6 +1419,7 @@ async function openShareLink(item = shareContextItem.value) {
 }
 
 async function removeSharePassword(item = shareContextItem.value) {
+  closeContextMenu();
   if (!item || item.type !== 'file') {
     showMessage('Choose a file first.');
     return;
@@ -1279,6 +1455,7 @@ async function removeSharePassword(item = shareContextItem.value) {
 }
 
 async function revokeShareLink(item = shareContextItem.value) {
+  closeContextMenu();
   if (!item || item.type !== 'file') {
     showMessage('Choose a file first.');
     return;
@@ -1800,9 +1977,14 @@ async function onDrop(event) {
   }
   event.preventDefault();
   dragDepth.value = 0;
-  const files = Array.from(event.dataTransfer?.files ?? []);
-  if (files.length > 0) {
-    await uploadFiles(files);
+  const droppedItems = await collectDroppedItems(event.dataTransfer);
+
+  if (!droppedItems.usedEntryApi && (event.dataTransfer?.items?.length ?? 0) > 0) {
+    showMessage('Folder uploads need a compatible browser. Regular files will still upload normally.');
+  }
+
+  if (droppedItems.files.length > 0 || droppedItems.emptyDirectories.length > 0) {
+    await uploadQueuedItems(droppedItems.files, droppedItems.emptyDirectories);
   }
 }
 
@@ -1987,6 +2169,7 @@ watch(searchQuery, () => {
 });
 
 watch(() => route.section, async (section) => {
+  closeMobileNav();
   if (!isAdminShell.value) {
     return;
   }
@@ -2001,6 +2184,7 @@ watch(() => route.section, async (section) => {
 });
 
 watch(() => route.folderId, async (folderId) => {
+  closeMobileNav();
   if (isAdminShell.value || isBooting.value || needsLogin.value || searchActive.value) {
     return;
   }
@@ -2013,6 +2197,7 @@ watch(() => route.folderId, async (folderId) => {
 });
 
 watch(() => route.userId, async (userId) => {
+  closeMobileNav();
   if (shell === 'admin' && route.section === 'users' && userId > 0 && isAdmin.value && !isBooting.value) {
     try {
       await loadAdminSection();
@@ -2040,6 +2225,10 @@ watch(() => shareContextItem.value?.id ?? 0, async (fileId) => {
   }
 });
 
+watch(mobileNavOpen, (isOpen) => {
+  document.body.style.overflow = isOpen ? 'hidden' : '';
+});
+
 watch(() => session.maintenance.blocks_current_user, (blocked) => {
   if (!blocked) {
     return;
@@ -2049,6 +2238,7 @@ watch(() => session.maintenance.blocks_current_user, (blocked) => {
   infoItem.value = null;
   selectedKey.value = '';
   closeContextMenu();
+  closeMobileNav();
   resetShareState();
 });
 
@@ -2095,6 +2285,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('dragover', onDragOver);
   window.removeEventListener('dragleave', onDragLeave);
   window.removeEventListener('drop', onDrop);
+  document.body.style.overflow = '';
   stopAutomationPulse();
   stopBlockedTimer();
 });
@@ -2128,7 +2319,15 @@ onBeforeUnmount(() => {
     </main>
   </div>
 
-  <div v-else class="wb-shell" :class="`shell-${shell}`">
+  <div v-else class="wb-shell" :class="[`shell-${shell}`, { 'is-mobile-nav-open': mobileNavOpen }]">
+    <button
+      v-if="mobileNavOpen"
+      class="mobile-nav-backdrop"
+      type="button"
+      aria-label="Close navigation"
+      @click="closeMobileNav"
+    />
+
     <aside class="wb-sidebar">
       <button class="sidebar-brand sidebar-brand--icon" type="button" @click="browseHome">
         <img :src="basePath + '/media/logo.svg'" alt="wb-filebrowser" class="brand-mark brand-mark--large">
@@ -2161,6 +2360,14 @@ onBeforeUnmount(() => {
 
     <main class="wb-main">
       <header class="wb-header">
+        <button
+          class="icon-button mobile-nav-toggle"
+          type="button"
+          :aria-expanded="mobileNavOpen ? 'true' : 'false'"
+          @click="toggleMobileNav"
+        >
+          Menu
+        </button>
         <div class="header-search-group">
           <label class="search-shell" :class="{ 'is-disabled': !searchConfig.enabled }">
             <span class="search-icon">Search</span>
@@ -2205,9 +2412,32 @@ onBeforeUnmount(() => {
         {{ session.diagnostic.message }}
       </div>
       <div v-if="statusMessage" class="status-banner">{{ statusMessage }}</div>
-      <div v-if="uploadProgress" class="status-banner status-banner--upload">
-        Uploading {{ uploadProgress.name }} ({{ uploadProgress.sent }}/{{ uploadProgress.total }})
-      </div>
+      <section v-if="uploadQueue" class="upload-queue-card">
+        <div class="upload-queue-card__summary">
+          <div>
+            <p class="panel-kicker">Upload Queue</p>
+            <h2>Uploading {{ uploadQueue.completedFiles }} of {{ uploadQueue.totalFiles }} files</h2>
+            <p class="panel-meta">{{ formatBytes(uploadQueue.uploadedBytes) }} of {{ formatBytes(uploadQueue.totalBytes) }}</p>
+          </div>
+          <strong>{{ uploadQueueOverallPercent }}%</strong>
+        </div>
+        <div class="upload-meter" aria-hidden="true">
+          <span class="upload-meter__fill" :style="{ width: `${uploadQueueOverallPercent}%` }" />
+        </div>
+        <div class="upload-queue-card__detail">
+          <div>
+            <strong>{{ uploadQueue.currentFilePath || uploadQueue.currentFileName || 'Preparing upload...' }}</strong>
+            <p class="panel-meta">
+              {{ formatBytes(uploadQueue.currentFileBytesSent) }} of {{ formatBytes(uploadQueue.currentFileBytesTotal) }}
+              - Chunks {{ uploadQueue.currentFileChunksSent }}/{{ uploadQueue.currentFileChunksTotal }}
+            </p>
+          </div>
+          <span>{{ uploadQueueCurrentPercent }}%</span>
+        </div>
+        <div class="upload-meter upload-meter--file" aria-hidden="true">
+          <span class="upload-meter__fill" :style="{ width: `${uploadQueueCurrentPercent}%` }" />
+        </div>
+      </section>
 
       <section v-if="isBooting" class="empty-state">
         <h2>Loading wb-filebrowser...</h2>
@@ -2986,12 +3216,13 @@ onBeforeUnmount(() => {
 
 
 
-        <section v-if="viewMode === 'grid'" class="grid-board">
+        <section v-if="viewMode === 'grid'" class="grid-board browser-pane" @contextmenu="handleWorkspaceContextMenu">
           <button
             v-for="item in currentEntries"
             :key="rowKey(item)"
             class="grid-card"
             :class="{ selected: selectedKey === rowKey(item) }"
+            data-entry-surface="true"
             @click="handleEntryClick(item)"
             @contextmenu="handleContextMenu($event, item)"
           >
@@ -3012,7 +3243,7 @@ onBeforeUnmount(() => {
           </button>
         </section>
 
-        <section v-else class="table-wrap">
+        <section v-else class="table-wrap browser-pane" @contextmenu="handleWorkspaceContextMenu">
           <table class="file-table">
             <thead>
               <tr>
@@ -3026,6 +3257,7 @@ onBeforeUnmount(() => {
                 v-for="item in currentEntries"
                 :key="rowKey(item)"
                 :class="{ selected: selectedKey === rowKey(item) }"
+                data-entry-surface="true"
                 @click="handleEntryClick(item)"
                 @contextmenu="handleContextMenu($event, item)"
               >
@@ -3055,7 +3287,7 @@ onBeforeUnmount(() => {
         </header>
         <div class="preview-modal__body">
           <div class="preview-frame">
-            <img v-if="previewMode(previewItem) === 'image'" :src="previewItem.preview_url" :alt="previewItem.name">
+            <img v-if="previewMode(previewItem) === 'image'" class="preview-frame__image" :src="previewItem.preview_url" :alt="previewItem.name">
             <iframe v-else-if="previewMode(previewItem) === 'pdf'" :src="previewItem.preview_url" title="PDF preview"></iframe>
             <video v-else-if="previewMode(previewItem) === 'video'" :src="previewItem.preview_url" controls></video>
             <audio v-else-if="previewMode(previewItem) === 'audio'" :src="previewItem.preview_url" controls></audio>
@@ -3208,10 +3440,18 @@ onBeforeUnmount(() => {
     </aside>
 
     <div v-if="contextMenu" class="context-menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }">
-      <button v-if="canManageShares && contextMenu.item.type === 'file'" type="button" @click="createShareLink(contextMenu.item)">Share link</button>
-      <button v-if="canEditItem(contextMenu.item)" type="button" @click="renameSelected(contextMenu.item)">Rename</button>
-      <button v-if="canEditItem(contextMenu.item)" type="button" @click="moveSelected(contextMenu.item)">Move</button>
-      <button v-if="canDeleteItem(contextMenu.item)" type="button" class="danger" @click="deleteSelected(contextMenu.item)">Delete</button>
+      <template v-if="contextMenu.kind === 'item'">
+        <button v-if="canManageShares && contextMenu.item.type === 'file'" type="button" @click="createShareLink(contextMenu.item)">Share link</button>
+        <button v-if="canEditItem(contextMenu.item)" type="button" @click="renameSelected(contextMenu.item)">Rename</button>
+        <button v-if="canEditItem(contextMenu.item)" type="button" @click="moveSelected(contextMenu.item)">Move</button>
+        <button v-if="canDeleteItem(contextMenu.item)" type="button" class="danger" @click="deleteSelected(contextMenu.item)">Delete</button>
+      </template>
+      <template v-else>
+        <button type="button" :disabled="!canUploadHere" @click="triggerUpload">Upload</button>
+        <button type="button" :disabled="!canCreateFoldersHere" @click="createFolder">New folder</button>
+        <button type="button" @click="toggleViewMode">{{ viewMode === 'list' ? 'Grid view' : 'List view' }}</button>
+        <button type="button" @click="refreshBrowserSection">Refresh</button>
+      </template>
     </div>
 
     <input ref="fileInput" type="file" hidden multiple :accept="uploadAccept || undefined" @change="handleFilePicker">

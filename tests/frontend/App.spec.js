@@ -453,6 +453,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   localStorage.clear();
   sessionStorage.clear();
+  document.body.style.overflow = '';
   delete window.WB_BOOTSTRAP;
   delete window.__WB_REDIRECT__;
   delete document.body.dataset.shell;
@@ -1082,5 +1083,171 @@ describe('Admin app shell', () => {
     await flushPromises();
 
     expect(wrapper.text()).toContain('Uploaded 2 files by admin.');
+  });
+
+  it('toggles the mobile drawer shell state and closes it after navigation actions', async () => {
+    const { wrapper } = await mountBrowserApp();
+
+    expect(wrapper.find('.wb-shell').classes()).not.toContain('is-mobile-nav-open');
+
+    const mobileButton = wrapper.find('.mobile-nav-toggle');
+    await mobileButton.trigger('click');
+
+    expect(wrapper.find('.wb-shell').classes()).toContain('is-mobile-nav-open');
+    expect(document.body.style.overflow).toBe('hidden');
+
+    await wrapper.find('.sidebar-link').trigger('click');
+
+    expect(wrapper.find('.wb-shell').classes()).not.toContain('is-mobile-nav-open');
+    expect(document.body.style.overflow).toBe('');
+  });
+
+  it('opens an item context menu on right click in the browser file table', async () => {
+    const { wrapper } = await mountBrowserApp();
+
+    await wrapper.find('tbody tr').trigger('contextmenu', { clientX: 48, clientY: 52 });
+    await flushPromises();
+
+    const menu = wrapper.find('.context-menu');
+    expect(menu.exists()).toBe(true);
+    expect(menu.text()).toContain('Rename');
+    expect(menu.text()).toContain('Delete');
+  });
+
+  it('opens a workspace context menu on empty browser area right click', async () => {
+    const { wrapper } = await mountBrowserApp();
+
+    await wrapper.find('.table-wrap').trigger('contextmenu', { clientX: 24, clientY: 36 });
+    await flushPromises();
+
+    const menu = wrapper.find('.context-menu');
+    expect(menu.exists()).toBe(true);
+    expect(menu.text()).toContain('Upload');
+    expect(menu.text()).toContain('New folder');
+    expect(menu.text()).toContain('Refresh');
+  });
+
+  it('shows queue progress and sends relative path segments for dropped folder uploads', async () => {
+    let releaseChunk;
+    const chunkGate = new Promise((resolve) => {
+      releaseChunk = resolve;
+    });
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'folders.ensure_path': () => jsonResponse({
+          folder: { id: 9, type: 'folder', name: 'Empty', parent_id: 1, size_label: '-', updated_relative: 'just now' },
+        }),
+        'upload.init': () => jsonResponse({
+          data: {
+            upload_token: 'upload-token',
+            chunk_size: 2097152,
+          },
+        }),
+        'upload.chunk': async () => {
+          await chunkGate;
+          return jsonResponse({});
+        },
+        'upload.complete': () => jsonResponse({}),
+      },
+    });
+
+    const fileEntry = {
+      isFile: true,
+      isDirectory: false,
+      name: 'brief.txt',
+      file: (resolve) => {
+        resolve(new File(['brief'], 'brief.txt', { type: 'text/plain' }));
+      },
+    };
+    const emptyDirectory = {
+      isFile: false,
+      isDirectory: true,
+      name: 'Empty',
+      createReader: () => {
+        let done = false;
+        return {
+          readEntries(resolve) {
+            if (done) {
+              resolve([]);
+              return;
+            }
+            done = true;
+            resolve([]);
+          },
+        };
+      },
+    };
+    const rootDirectory = {
+      isFile: false,
+      isDirectory: true,
+      name: 'Projects',
+      createReader: () => {
+        let done = false;
+        return {
+          readEntries(resolve) {
+            if (done) {
+              resolve([]);
+              return;
+            }
+            done = true;
+            resolve([
+              {
+                isFile: false,
+                isDirectory: true,
+                name: '2026',
+                createReader: () => {
+                  let childDone = false;
+                  return {
+                    readEntries(childResolve) {
+                      if (childDone) {
+                        childResolve([]);
+                        return;
+                      }
+                      childDone = true;
+                      childResolve([fileEntry]);
+                    },
+                  };
+                },
+              },
+              emptyDirectory,
+            ]);
+          },
+        };
+      },
+    };
+
+    const dropEvent = new Event('drop');
+    Object.defineProperty(dropEvent, 'dataTransfer', {
+      value: {
+        items: [
+          {
+            kind: 'file',
+            webkitGetAsEntry: () => rootDirectory,
+          },
+        ],
+        files: [],
+      },
+    });
+    dropEvent.preventDefault = vi.fn();
+
+    window.dispatchEvent(dropEvent);
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Uploading 0 of 1 files');
+    expect(wrapper.text()).toContain('Projects/2026/brief.txt');
+
+    const ensurePathCall = calls.find((call) => call.action === 'folders.ensure_path');
+    expect(ensurePathCall).toBeTruthy();
+    expect(JSON.parse(ensurePathCall.init.body).path_segments).toEqual(['Projects', 'Empty']);
+
+    const initCall = calls.find((call) => call.action === 'upload.init');
+    expect(initCall).toBeTruthy();
+    expect(JSON.parse(initCall.init.body).relative_path_segments).toEqual(['Projects', '2026']);
+
+    releaseChunk();
+    await flushPromises();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Uploaded file by admin: brief.txt.');
   });
 });

@@ -159,6 +159,46 @@ final class FileManager
         return self::serializeFolder($folder, $user, $pdo, Permissions::scope($user, $pdo));
     }
 
+    /**
+     * @param array<int, string> $pathSegments
+     */
+    public static function ensureFolderPath(array $user, int $parentId, array $pathSegments): array
+    {
+        $pdo = Database::connection();
+        $parent = self::folderById($parentId, $pdo);
+
+        if ($parent === null) {
+            throw new RuntimeException('The parent folder was not found.');
+        }
+
+        $currentFolderId = $parentId;
+
+        foreach ($pathSegments as $segment) {
+            $name = wb_validate_entry_name((string) $segment, 'folder');
+            $existing = self::childFolderByName($currentFolderId, $name, $pdo);
+
+            if ($existing !== null) {
+                $currentFolderId = (int) $existing['id'];
+                continue;
+            }
+
+            if (!Permissions::canCreateFoldersIn($currentFolderId, $user, $pdo)) {
+                throw new RuntimeException('You do not have permission to create folders here.');
+            }
+
+            $created = self::createFolder($user, $currentFolderId, $name);
+            $currentFolderId = (int) $created['id'];
+        }
+
+        $resolved = self::folderById($currentFolderId, $pdo);
+
+        if ($resolved === null) {
+            throw new RuntimeException('The requested folder was not found.');
+        }
+
+        return self::serializeFolder($resolved, $user, $pdo, Permissions::scope($user, $pdo));
+    }
+
     public static function renameFolder(array $user, int $folderId, string $name): void
     {
         self::assertEditableFolder($user, $folderId);
@@ -450,7 +490,18 @@ final class FileManager
         throw new RuntimeException('File not found.');
     }
 
-    public static function uploadInit(array $user, int $folderId, string $originalName, int $size, string $mimeType, int $totalChunks): array
+    /**
+     * @param array<int, string> $relativePathSegments
+     */
+    public static function uploadInit(
+        array $user,
+        int $folderId,
+        string $originalName,
+        int $size,
+        string $mimeType,
+        int $totalChunks,
+        array $relativePathSegments = []
+    ): array
     {
         if (!Permissions::canUploadToFolder($folderId, $user)) {
             throw new RuntimeException('You do not have permission to upload to this folder.');
@@ -468,6 +519,11 @@ final class FileManager
         }
 
         self::assertWithinStorageQuota($user, $size);
+
+        if ($relativePathSegments !== []) {
+            $folder = self::ensureFolderPath($user, $folderId, $relativePathSegments);
+            $folderId = (int) $folder['id'];
+        }
 
         $token = wb_random_token(18);
         $directory = wb_storage_path('chunks/' . $token);
@@ -1095,6 +1151,20 @@ final class FileManager
         }
 
         return $payload;
+    }
+
+    private static function childFolderByName(int $parentId, string $name, PDO $pdo): ?array
+    {
+        $statement = $pdo->prepare(
+            'SELECT * FROM folders WHERE parent_id = :parent_id AND name = :name ORDER BY id ASC LIMIT 1'
+        );
+        $statement->execute([
+            ':parent_id' => $parentId,
+            ':name' => $name,
+        ]);
+        $folder = $statement->fetch();
+
+        return is_array($folder) ? $folder : null;
     }
 
     private static function assertWithinStorageQuota(array $user, int $incomingBytes, ?string $excludeToken = null, ?PDO $pdo = null): void

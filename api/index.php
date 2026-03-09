@@ -207,6 +207,19 @@ try {
                 ),
             ], 201);
 
+        case 'folders.ensure_path':
+            $requireCsrf();
+            $user = Auth::requireUser();
+            $pathSegments = $requestData['path_segments'] ?? [];
+            wb_json_response([
+                'ok' => true,
+                'folder' => FileManager::ensureFolderPath(
+                    $user,
+                    (int) ($requestData['parent_id'] ?? 0),
+                    is_array($pathSegments) ? array_values($pathSegments) : []
+                ),
+            ], 201);
+
         case 'folders.rename':
             $requireCsrf();
             $user = Auth::requireUser();
@@ -320,7 +333,10 @@ try {
                     (string) ($requestData['original_name'] ?? ''),
                     (int) ($requestData['size'] ?? 0),
                     (string) ($requestData['mime_type'] ?? 'application/octet-stream'),
-                    (int) ($requestData['total_chunks'] ?? 1)
+                    (int) ($requestData['total_chunks'] ?? 1),
+                    is_array($requestData['relative_path_segments'] ?? null)
+                        ? array_values($requestData['relative_path_segments'])
+                        : []
                 ),
             ], 201);
 

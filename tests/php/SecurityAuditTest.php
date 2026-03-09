@@ -303,14 +303,43 @@ final class SecurityAuditTest extends DatabaseTestCase
 
     private function runIsolatedPhp(string $code): void
     {
-        $bootstrapCode = sprintf(
-            'define("WB_ROOT", %s); define("WB_STORAGE", %s); define("WB_BASE_PATH", ""); $_SERVER["HTTP_HOST"] = "localhost"; $_SERVER["HTTPS"] = "off"; $_SERVER["REMOTE_ADDR"] = "127.0.0.1"; require %s; %s',
+        $scriptPath = tempnam(sys_get_temp_dir(), 'wb-isolated-');
+
+        if ($scriptPath === false) {
+            self::fail('Unable to create an isolated PHP script.');
+        }
+
+        $script = sprintf(
+            <<<'PHP'
+<?php
+declare(strict_types=1);
+
+define('WB_ROOT', %s);
+define('WB_STORAGE', %s);
+define('WB_BASE_PATH', '');
+
+$_SERVER['HTTP_HOST'] = 'localhost';
+$_SERVER['HTTPS'] = 'off';
+$_SERVER['REMOTE_ADDR'] = '127.0.0.1';
+
+require %s;
+
+%s
+PHP,
             var_export(WB_ROOT, true),
             var_export(WB_STORAGE, true),
             var_export(WB_ROOT . '/app/bootstrap.php', true),
             $code
         );
-        exec(escapeshellarg(PHP_BINARY) . ' -r ' . escapeshellarg($bootstrapCode), $output, $status);
+
+        file_put_contents($scriptPath, $script);
+
+        try {
+            exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($scriptPath), $output, $status);
+        } finally {
+            @unlink($scriptPath);
+        }
+
         $this->assertSame(0, $status, implode("\n", $output));
     }
 }

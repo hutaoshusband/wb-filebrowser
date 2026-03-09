@@ -158,17 +158,45 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
         /* Force the text preview to fill the frame and scroll inside it */
         .preview-frame:has(.share-text-preview) {
             place-items: stretch;
+            overflow: auto;
         }
         .share-text-preview {
-            min-height: 0;
-            overflow: hidden;
+            overflow: visible;
         }
         .share-text-preview pre {
             margin: 0;
             width: 100%;
-            min-height: 0;
-            overflow: auto;
+            min-height: 100%;
+            overflow-x: auto;
+            overflow-y: visible;
             background: #08111d;
+        }
+        .preview-frame:has(.share-text-preview),
+        .share-text-preview pre {
+            scrollbar-width: thin;
+            scrollbar-color: rgba(250, 204, 21, 0.88) rgba(7, 15, 28, 0.96);
+        }
+        .preview-frame:has(.share-text-preview)::-webkit-scrollbar,
+        .share-text-preview pre::-webkit-scrollbar {
+            width: 14px;
+            height: 14px;
+        }
+        .preview-frame:has(.share-text-preview)::-webkit-scrollbar-track,
+        .share-text-preview pre::-webkit-scrollbar-track {
+            background: linear-gradient(180deg, rgba(14, 24, 40, 0.98), rgba(6, 12, 22, 0.98));
+            border-radius: 999px;
+            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+        }
+        .preview-frame:has(.share-text-preview)::-webkit-scrollbar-thumb,
+        .share-text-preview pre::-webkit-scrollbar-thumb {
+            border: 3px solid rgba(7, 15, 28, 0.96);
+            border-radius: 999px;
+            background: linear-gradient(180deg, rgba(250, 204, 21, 0.95), rgba(121, 192, 255, 0.82));
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.34), 0 0 14px rgba(250, 204, 21, 0.16);
+        }
+        .preview-frame:has(.share-text-preview)::-webkit-scrollbar-thumb:hover,
+        .share-text-preview pre::-webkit-scrollbar-thumb:hover {
+            background: linear-gradient(180deg, rgba(253, 224, 71, 0.98), rgba(147, 197, 253, 0.9));
         }
         .share-text-preview pre code.hljs {
             background: transparent;
