@@ -625,6 +625,7 @@ describe('Admin app shell', () => {
 
     expect(wrapper.text()).toContain('Recorded activity');
     expect(calls.some((call) => call.action === 'admin.audit.list')).toBe(true);
+    expect(wrapper.find('.audit-pagination__status').text()).toBe('Page 1 of 2');
 
     const categorySelect = wrapper.find('select');
     await categorySelect.setValue('file_views');
@@ -641,6 +642,7 @@ describe('Admin app shell', () => {
     expect(lastAuditCall).toBeTruthy();
     expect(lastAuditCall.action).toBe('admin.audit.list');
     expect(lastAuditCall.init.method ?? 'GET').toBe('GET');
+    expect(wrapper.find('.audit-pagination__status').text()).toBe('Page 2 of 2');
     expect(wrapper.text()).toContain('Viewed file brochure.pdf');
   });
 
@@ -968,6 +970,19 @@ describe('Admin app shell', () => {
     expect(wrapper.text()).toContain('The file browser is temporarily unavailable');
     expect(wrapper.text()).toContain('Scheduled updates are running.');
     expect(wrapper.text()).not.toContain('Sign in to continue');
+  });
+
+  it('hides the sidebar storage card when the browser user is logged out', async () => {
+    const { wrapper } = await mountBrowserApp({
+      bootstrapUser: null,
+      handlers: {
+        'auth.session': () => jsonResponse(sessionPayload(null)),
+      },
+    });
+
+    expect(wrapper.text()).toContain('Sign in to continue');
+    expect(wrapper.find('.storage-meter').exists()).toBe(false);
+    expect(wrapper.find('.sidebar-meta').text()).toContain('1.0.0-alpha');
   });
 
   it('saves file descriptions from the info drawer', async () => {

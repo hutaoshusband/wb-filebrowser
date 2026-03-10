@@ -2346,7 +2346,7 @@ onBeforeUnmount(() => {
       </p>
 
       <div class="sidebar-footer">
-        <div class="storage-meter">
+        <div v-if="session.user" class="storage-meter">
           <div class="storage-meter__label">Storage Used</div>
           <strong>{{ session.storage.used_label }}</strong>
           <span>of {{ session.storage.total_label }} used</span>
@@ -3039,8 +3039,9 @@ onBeforeUnmount(() => {
                 <p class="panel-kicker">Event Stream</p>
                 <h2>Recorded activity</h2>
               </div>
-              <div class="table-actions">
+              <div class="table-actions audit-pagination">
                 <button type="button" :disabled="adminState.auditPage <= 1 || adminState.loading" @click="goToAuditPage(adminState.auditPage - 1)">Previous</button>
+                <span class="audit-pagination__status" aria-live="polite">Page {{ adminState.auditPage }} of {{ adminState.auditTotalPages }}</span>
                 <button type="button" :disabled="adminState.auditPage >= adminState.auditTotalPages || adminState.loading" @click="goToAuditPage(adminState.auditPage + 1)">Next</button>
               </div>
             </div>
