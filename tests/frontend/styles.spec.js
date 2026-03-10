@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 const styles = readFileSync(resolve(import.meta.dirname, '../../frontend/src/styles.css'), 'utf8');
 const sharePage = readFileSync(resolve(import.meta.dirname, '../../share/index.php'), 'utf8');
+const installPage = readFileSync(resolve(import.meta.dirname, '../../install/index.php'), 'utf8');
 
 describe('shared control styles', () => {
   it('use press-in hover motion instead of the old gold gradient treatment', () => {
@@ -28,5 +29,20 @@ describe('shared control styles', () => {
     expect(sharePage).toContain('scrollbar-color: rgba(250, 204, 21, 0.88) rgba(7, 15, 28, 0.96);');
     expect(sharePage).toContain('::-webkit-scrollbar-thumb');
     expect(sharePage).toContain('background: linear-gradient(180deg, rgba(250, 204, 21, 0.95), rgba(121, 192, 255, 0.82));');
+  });
+
+  it('defines shared checkbox controls, summary-row helpers, and a dark overscroll fallback', () => {
+    expect(styles).toContain('.checkbox-control{');
+    expect(styles).toContain('.checkbox-control__indicator');
+    expect(styles).toContain('.admin-summary-row--two');
+    expect(styles).toContain('.admin-summary-row--three');
+    expect(styles).toContain('.admin-summary-row--four');
+    expect(styles).toContain('background-color:#050a14');
+    expect(styles).toContain('overscroll-behavior-y:none');
+  });
+
+  it('uses the shared checkbox markup in the share and install forms', () => {
+    expect(sharePage).toContain('checkbox-control');
+    expect(installPage).toContain('checkbox-control');
   });
 });

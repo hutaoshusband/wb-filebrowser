@@ -473,6 +473,30 @@ describe('Admin app shell', () => {
     expect(calls.some((call) => call.action === 'admin.users.list')).toBe(true);
   });
 
+  it('renders summary-row wrappers and shared checkbox hooks across admin surfaces', async () => {
+    const dashboard = await mountAdminApp();
+    expect(dashboard.wrapper.find('.admin-summary-row.admin-summary-row--four').exists()).toBe(true);
+    dashboard.wrapper.unmount();
+
+    const users = await mountAdminApp({ hash: '#/users' });
+    expect(users.wrapper.find('.admin-summary-row.admin-summary-row--two').exists()).toBe(true);
+    expect(users.wrapper.find('label.checkbox-control.checkbox-control--row').exists()).toBe(true);
+    expect(users.wrapper.find('label.checkbox-control .checkbox-control__indicator').exists()).toBe(true);
+    users.wrapper.unmount();
+
+    const permissions = await mountAdminApp({ hash: '#/permissions' });
+    expect(permissions.wrapper.find('.admin-summary-row.admin-summary-row--two').exists()).toBe(true);
+    expect(permissions.wrapper.find('tbody label.checkbox-control.checkbox-control--compact').exists()).toBe(true);
+    permissions.wrapper.unmount();
+
+    const audit = await mountAdminApp({ hash: '#/audit' });
+    expect(audit.wrapper.find('.admin-summary-row.admin-summary-row--three').exists()).toBe(true);
+    audit.wrapper.unmount();
+
+    const security = await mountAdminApp({ hash: '#/security' });
+    expect(security.wrapper.find('.settings-pane label.checkbox-control.checkbox-control--row').exists()).toBe(true);
+  });
+
   it('routes My files to the browser root from admin', async () => {
     const redirectSpy = vi.fn();
     window.__WB_REDIRECT__ = redirectSpy;

@@ -116,9 +116,10 @@ $hasBlockingIssues = array_reduce(
                         </div>
                     </div>
                     <div class="install-choice-grid">
-                        <label class="install-choice checkbox-row">
-                            <input type="checkbox" name="access[public_access]">
-                            <span>
+                        <label class="install-choice checkbox-control checkbox-control--row">
+                            <input class="checkbox-control__input" type="checkbox" name="access[public_access]">
+                            <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                            <span class="checkbox-control__label">
                                 <strong>Allow published browsing without login</strong>
                                 <small>Leave this off if the file browser should stay private until you publish folders on purpose.</small>
                             </span>
@@ -144,9 +145,10 @@ $hasBlockingIssues = array_reduce(
                             <span>Abandoned upload retention (hours)</span>
                             <input type="number" name="uploads[stale_upload_ttl_hours]" min="1" value="24" inputmode="numeric">
                         </label>
-                        <label class="checkbox-row">
-                            <input type="checkbox" name="automation[runner_enabled]" checked>
-                            <span>
+                        <label class="checkbox-control checkbox-control--row">
+                            <input class="checkbox-control__input" type="checkbox" name="automation[runner_enabled]" checked>
+                            <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                            <span class="checkbox-control__label">
                                 <strong>Enable the request-driven automation runner</strong>
                                 <small>Recommended. This keeps storage shield checks and stale upload cleanup active.</small>
                             </span>

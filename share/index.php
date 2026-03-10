@@ -283,9 +283,10 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
                                 <h2>Accept to continue</h2>
                                 <p class="share-lock-note share-terms-card__copy"><?= nl2br(wb_h((string) ($shareContext['terms_message'] ?? ''))) ?></p>
                                 <input type="hidden" name="csrf_token" value="<?= wb_h(Security::csrfToken()) ?>">
-                                <label class="checkbox-row share-terms-card__checkbox">
-                                    <input type="checkbox" name="accept_terms" value="1" required>
-                                    <span>I accept these conditions for opening or downloading this shared file.</span>
+                                <label class="checkbox-control checkbox-control--row share-terms-card__checkbox">
+                                    <input class="checkbox-control__input" type="checkbox" name="accept_terms" value="1" required>
+                                    <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                                    <span class="checkbox-control__label">I accept these conditions for opening or downloading this shared file.</span>
                                 </label>
                                 <?php if ($termsError !== ''): ?>
                                     <p class="share-password-card__error"><?= wb_h($termsError) ?></p>

@@ -2476,35 +2476,37 @@ onBeforeUnmount(() => {
         </div>
 
         <section v-if="route.section === 'dashboard'" class="admin-grid">
-          <article class="panel">
-            <p class="panel-kicker">Storage Shield</p>
-            <h2>{{ session.diagnostic.exposed ? 'Storage needs attention' : 'Storage shield looks healthy' }}</h2>
-            <p>{{ session.diagnostic.message }}</p>
-            <p class="panel-meta">Last checked: {{ formatDateLabel(session.diagnostic.checked_at) }}</p>
-            <button type="button" :disabled="adminState.automationBusy" @click="runAutomationJob('storage_shield_check')">Run shield check</button>
-          </article>
+          <div class="admin-summary-row admin-summary-row--four">
+            <article class="panel">
+              <p class="panel-kicker">Storage Shield</p>
+              <h2>{{ session.diagnostic.exposed ? 'Storage needs attention' : 'Storage shield looks healthy' }}</h2>
+              <p>{{ session.diagnostic.message }}</p>
+              <p class="panel-meta">Last checked: {{ formatDateLabel(session.diagnostic.checked_at) }}</p>
+              <button type="button" :disabled="adminState.automationBusy" @click="runAutomationJob('storage_shield_check')">Run shield check</button>
+            </article>
 
-          <article v-if="adminState.dashboard" class="panel">
-            <p class="panel-kicker">Library</p>
-            <h2>{{ adminState.dashboard.stats.files }} files</h2>
-            <p>{{ adminState.dashboard.stats.folders }} folders across {{ adminState.dashboard.stats.users }} user accounts.</p>
-            <p class="panel-meta">Public browsing: {{ adminState.dashboard.public_access ? 'Enabled' : 'Login required' }}</p>
-          </article>
+            <article v-if="adminState.dashboard" class="panel">
+              <p class="panel-kicker">Library</p>
+              <h2>{{ adminState.dashboard.stats.files }} files</h2>
+              <p>{{ adminState.dashboard.stats.folders }} folders across {{ adminState.dashboard.stats.users }} user accounts.</p>
+              <p class="panel-meta">Public browsing: {{ adminState.dashboard.public_access ? 'Enabled' : 'Login required' }}</p>
+            </article>
 
-          <article v-if="adminState.dashboard" class="panel">
-            <p class="panel-kicker">Storage</p>
-            <h2>{{ adminState.dashboard.stats.used_label }}</h2>
-            <p>of {{ adminState.dashboard.stats.total_label }} used.</p>
-            <p class="panel-meta">Upload limit: {{ uploadLimitLabel(session.uploadPolicy) }}</p>
-          </article>
+            <article v-if="adminState.dashboard" class="panel">
+              <p class="panel-kicker">Storage</p>
+              <h2>{{ adminState.dashboard.stats.used_label }}</h2>
+              <p>of {{ adminState.dashboard.stats.total_label }} used.</p>
+              <p class="panel-meta">Upload limit: {{ uploadLimitLabel(session.uploadPolicy) }}</p>
+            </article>
 
-          <article class="panel">
-            <p class="panel-kicker">Automation</p>
-            <h2>{{ dueAutomationCount }} due job{{ dueAutomationCount === 1 ? '' : 's' }}</h2>
-            <p v-if="automationJobs.length === 0">Automation jobs will appear here after the first admin load.</p>
-            <p v-else>{{ automationJobs[0].last_message }}</p>
-            <button type="button" :disabled="adminState.automationBusy" @click="tickAutomation()">Run due checks</button>
-          </article>
+            <article class="panel">
+              <p class="panel-kicker">Automation</p>
+              <h2>{{ dueAutomationCount }} due job{{ dueAutomationCount === 1 ? '' : 's' }}</h2>
+              <p v-if="automationJobs.length === 0">Automation jobs will appear here after the first admin load.</p>
+              <p v-else>{{ automationJobs[0].last_message }}</p>
+              <button type="button" :disabled="adminState.automationBusy" @click="tickAutomation()">Run due checks</button>
+            </article>
+          </div>
 
           <article class="panel panel-wide">
             <div class="panel-header">
@@ -2548,40 +2550,43 @@ onBeforeUnmount(() => {
         </section>
 
         <section v-else-if="route.section === 'users' && route.userId === 0" class="admin-grid">
-          <article class="panel">
-            <p class="panel-kicker">Create User</p>
-            <h2>Add a new account</h2>
-            <p>Roles and password reset requirements are applied immediately after creation.</p>
-            <form class="auth-form compact" @submit.prevent="createUser">
-              <label>
-                <span>Username</span>
-                <input v-model="newUserForm.username" type="text" required>
-              </label>
-              <label>
-                <span>Password</span>
-                <input v-model="newUserForm.password" type="password" minlength="12" required>
-              </label>
-              <label>
-                <span>Role</span>
-                <select v-model="newUserForm.role" :disabled="!isSuperAdmin">
-                  <option value="user">User</option>
-                  <option value="admin">Admin</option>
-                </select>
-              </label>
-              <label class="checkbox-row">
-                <input v-model="newUserForm.force_password_reset" type="checkbox">
-                <span>Require password reset at next login</span>
-              </label>
-              <button type="submit">Create account</button>
-            </form>
-          </article>
+          <div class="admin-summary-row admin-summary-row--two">
+            <article class="panel">
+              <p class="panel-kicker">Create User</p>
+              <h2>Add a new account</h2>
+              <p>Roles and password reset requirements are applied immediately after creation.</p>
+              <form class="auth-form compact" @submit.prevent="createUser">
+                <label>
+                  <span>Username</span>
+                  <input v-model="newUserForm.username" type="text" required>
+                </label>
+                <label>
+                  <span>Password</span>
+                  <input v-model="newUserForm.password" type="password" minlength="12" required>
+                </label>
+                <label>
+                  <span>Role</span>
+                  <select v-model="newUserForm.role" :disabled="!isSuperAdmin">
+                    <option value="user">User</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                </label>
+                <label class="checkbox-control checkbox-control--row">
+                  <input v-model="newUserForm.force_password_reset" class="checkbox-control__input" type="checkbox">
+                  <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                  <span class="checkbox-control__label">Require password reset at next login</span>
+                </label>
+                <button type="submit">Create account</button>
+              </form>
+            </article>
 
-          <article class="panel">
-            <p class="panel-kicker">Overview</p>
-            <h2>{{ adminState.users.length }} account{{ adminState.users.length === 1 ? '' : 's' }}</h2>
-            <p>{{ filteredUsers.length }} visible in the current filter.</p>
-            <p class="panel-meta">Open a user to edit quota and folder-specific rights.</p>
-          </article>
+            <article class="panel">
+              <p class="panel-kicker">Overview</p>
+              <h2>{{ adminState.users.length }} account{{ adminState.users.length === 1 ? '' : 's' }}</h2>
+              <p>{{ filteredUsers.length }} visible in the current filter.</p>
+              <p class="panel-meta">Open a user to edit quota and folder-specific rights.</p>
+            </article>
+          </div>
 
           <article class="panel panel-table panel-wide">
             <div class="panel-header">
@@ -2658,9 +2663,10 @@ onBeforeUnmount(() => {
                 <option value="suspended">Suspended</option>
               </select>
             </label>
-            <label class="checkbox-row">
-              <input v-model="activeAdminUser.force_password_reset" type="checkbox" :disabled="!canEditUser(activeAdminUser)">
-              <span>Require password reset at next login</span>
+            <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !canEditUser(activeAdminUser) }]">
+              <input v-model="activeAdminUser.force_password_reset" class="checkbox-control__input" type="checkbox" :disabled="!canEditUser(activeAdminUser)">
+              <span class="checkbox-control__indicator" aria-hidden="true"></span>
+              <span class="checkbox-control__label">Require password reset at next login</span>
             </label>
             <div class="quick-actions">
               <button type="button" :disabled="!canEditUser(activeAdminUser)" @click="resetPassword(activeAdminUser)">Reset password</button>
@@ -2707,39 +2713,64 @@ onBeforeUnmount(() => {
                 <tr v-for="row in filteredUserPermissionRows" :key="row.id">
                   <td :style="{ paddingLeft: `${1 + row.depth * 1.2}rem` }">{{ row.path }}</td>
                   <td>
-                    <input
-                      type="checkbox"
-                      :checked="adminState.userPermissionEntries[row.id]?.can_view"
-                      @change="toggleUserPermission(row.id, 'can_view')"
-                    >
+                    <label class="checkbox-control checkbox-control--compact">
+                      <input
+                        class="checkbox-control__input"
+                        type="checkbox"
+                        :checked="adminState.userPermissionEntries[row.id]?.can_view"
+                        :aria-label="`View ${row.path}`"
+                        @change="toggleUserPermission(row.id, 'can_view')"
+                      >
+                      <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                    </label>
                   </td>
                   <td>
-                    <input
-                      type="checkbox"
-                      :checked="adminState.userPermissionEntries[row.id]?.can_upload"
-                      @change="toggleUserPermission(row.id, 'can_upload')"
-                    >
+                    <label class="checkbox-control checkbox-control--compact">
+                      <input
+                        class="checkbox-control__input"
+                        type="checkbox"
+                        :checked="adminState.userPermissionEntries[row.id]?.can_upload"
+                        :aria-label="`Upload ${row.path}`"
+                        @change="toggleUserPermission(row.id, 'can_upload')"
+                      >
+                      <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                    </label>
                   </td>
                   <td>
-                    <input
-                      type="checkbox"
-                      :checked="adminState.userPermissionEntries[row.id]?.can_edit"
-                      @change="toggleUserPermission(row.id, 'can_edit')"
-                    >
+                    <label class="checkbox-control checkbox-control--compact">
+                      <input
+                        class="checkbox-control__input"
+                        type="checkbox"
+                        :checked="adminState.userPermissionEntries[row.id]?.can_edit"
+                        :aria-label="`Edit ${row.path}`"
+                        @change="toggleUserPermission(row.id, 'can_edit')"
+                      >
+                      <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                    </label>
                   </td>
                   <td>
-                    <input
-                      type="checkbox"
-                      :checked="adminState.userPermissionEntries[row.id]?.can_delete"
-                      @change="toggleUserPermission(row.id, 'can_delete')"
-                    >
+                    <label class="checkbox-control checkbox-control--compact">
+                      <input
+                        class="checkbox-control__input"
+                        type="checkbox"
+                        :checked="adminState.userPermissionEntries[row.id]?.can_delete"
+                        :aria-label="`Delete ${row.path}`"
+                        @change="toggleUserPermission(row.id, 'can_delete')"
+                      >
+                      <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                    </label>
                   </td>
                   <td>
-                    <input
-                      type="checkbox"
-                      :checked="adminState.userPermissionEntries[row.id]?.can_create_folders"
-                      @change="toggleUserPermission(row.id, 'can_create_folders')"
-                    >
+                    <label class="checkbox-control checkbox-control--compact">
+                      <input
+                        class="checkbox-control__input"
+                        type="checkbox"
+                        :checked="adminState.userPermissionEntries[row.id]?.can_create_folders"
+                        :aria-label="`Create folders in ${row.path}`"
+                        @change="toggleUserPermission(row.id, 'can_create_folders')"
+                      >
+                      <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                    </label>
                   </td>
                 </tr>
               </tbody>
@@ -2748,19 +2779,21 @@ onBeforeUnmount(() => {
         </section>
 
         <section v-else-if="route.section === 'permissions'" class="admin-grid">
-          <article class="panel panel-form">
-            <p class="panel-kicker">Guest Publishing</p>
-            <h2>{{ permissionPrincipalCopy.title }}</h2>
-            <p>{{ permissionPrincipalCopy.body }}</p>
-            <button type="button" @click="savePermissions">Save permissions</button>
-          </article>
+          <div class="admin-summary-row admin-summary-row--two">
+            <article class="panel panel-form">
+              <p class="panel-kicker">Guest Publishing</p>
+              <h2>{{ permissionPrincipalCopy.title }}</h2>
+              <p>{{ permissionPrincipalCopy.body }}</p>
+              <button type="button" @click="savePermissions">Save permissions</button>
+            </article>
 
-          <article class="panel">
-            <p class="panel-kicker">Guest Access</p>
-            <h2>Published folders only</h2>
-            <p>Guests only receive browse access. User-specific upload, edit, delete, and create-folder rights are configured from each user detail page.</p>
-            <p class="panel-meta">{{ filteredPermissionRows.length }} folder rows visible.</p>
-          </article>
+            <article class="panel">
+              <p class="panel-kicker">Guest Access</p>
+              <h2>Published folders only</h2>
+              <p>Guests only receive browse access. User-specific upload, edit, delete, and create-folder rights are configured from each user detail page.</p>
+              <p class="panel-meta">{{ filteredPermissionRows.length }} folder rows visible.</p>
+            </article>
+          </div>
 
           <article class="panel panel-table panel-wide">
             <div class="panel-header">
@@ -2780,11 +2813,16 @@ onBeforeUnmount(() => {
                 <tr v-for="row in filteredPermissionRows" :key="row.id">
                   <td :style="{ paddingLeft: `${1 + row.depth * 1.2}rem` }">{{ row.path }}</td>
                   <td>
-                    <input
-                      type="checkbox"
-                      :checked="adminState.permissionEntries[row.id]?.can_view"
-                      @change="togglePermission(row.id, 'can_view')"
-                    >
+                    <label class="checkbox-control checkbox-control--compact">
+                      <input
+                        class="checkbox-control__input"
+                        type="checkbox"
+                        :checked="adminState.permissionEntries[row.id]?.can_view"
+                        :aria-label="`Publish ${row.path}`"
+                        @change="togglePermission(row.id, 'can_view')"
+                      >
+                      <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                    </label>
                   </td>
                 </tr>
               </tbody>
@@ -2816,13 +2854,15 @@ onBeforeUnmount(() => {
             <div v-if="adminState.settingsTab === 'access'" class="settings-pane">
               <p class="panel-kicker">Access</p>
               <h2>Published browsing and maintenance</h2>
-              <label class="checkbox-row">
-                <input v-model="adminState.settings.access.public_access" type="checkbox" :disabled="!adminState.canManageSettings">
-                <span>Allow published folders to be browsed without login</span>
+              <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
+                <input v-model="adminState.settings.access.public_access" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                <span class="checkbox-control__label">Allow published folders to be browsed without login</span>
               </label>
-              <label class="checkbox-row">
-                <input v-model="adminState.settings.access.maintenance_enabled" type="checkbox" :disabled="!adminState.canManageSettings">
-                <span>Enable maintenance mode for non-admin users</span>
+              <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
+                <input v-model="adminState.settings.access.maintenance_enabled" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                <span class="checkbox-control__label">Enable maintenance mode for non-admin users</span>
               </label>
               <label>
                 <span>Maintenance scope</span>
@@ -2841,9 +2881,10 @@ onBeforeUnmount(() => {
                   placeholder="Tell users that updates or backups are currently in progress."
                 />
               </label>
-              <label class="checkbox-row">
-                <input v-model="adminState.settings.access.share_terms_enabled" type="checkbox" :disabled="!adminState.canManageSettings">
-                <span>Require guests to accept shared file terms</span>
+              <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
+                <input v-model="adminState.settings.access.share_terms_enabled" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                <span class="checkbox-control__label">Require guests to accept shared file terms</span>
               </label>
               <label>
                 <span>Shared file terms</span>
@@ -2860,9 +2901,10 @@ onBeforeUnmount(() => {
             <div v-else-if="adminState.settingsTab === 'display'" class="settings-pane">
               <p class="panel-kicker">Display</p>
               <h2>Grid thumbnails</h2>
-              <label class="checkbox-row">
-                <input v-model="adminState.settings.display.grid_thumbnails_enabled" type="checkbox" :disabled="!adminState.canManageSettings">
-                <span>Generate image and PDF thumbnails in grid view</span>
+              <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
+                <input v-model="adminState.settings.display.grid_thumbnails_enabled" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                <span class="checkbox-control__label">Generate image and PDF thumbnails in grid view</span>
               </label>
               <p class="panel-meta">Images load lazily, and PDF thumbnails are rendered in the browser from the first page.</p>
             </div>
@@ -2894,9 +2936,10 @@ onBeforeUnmount(() => {
             <div v-else-if="adminState.settingsTab === 'automation'" class="settings-pane">
               <p class="panel-kicker">Automation</p>
               <h2>Background checks and cleanup</h2>
-              <label class="checkbox-row">
-                <input v-model="adminState.settings.automation.runner_enabled" type="checkbox" :disabled="!adminState.canManageSettings">
-                <span>Enable request-driven automation runner</span>
+              <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
+                <input v-model="adminState.settings.automation.runner_enabled" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                <span class="checkbox-control__label">Enable request-driven automation runner</span>
               </label>
               <label>
                 <span>Storage shield interval (minutes)</span>
@@ -2934,59 +2977,61 @@ onBeforeUnmount(() => {
         </section>
 
         <section v-else-if="route.section === 'audit'" class="admin-grid">
-          <article class="panel">
-            <p class="panel-kicker">Audit Logs</p>
-            <h2>{{ adminState.auditTotalItems }} event{{ adminState.auditTotalItems === 1 ? '' : 's' }}</h2>
-            <p>Search the server-side log stream by event key, actor, IP address, or target.</p>
-            <p class="panel-meta">Page {{ adminState.auditPage }} of {{ adminState.auditTotalPages }}</p>
-          </article>
+          <div class="admin-summary-row admin-summary-row--three">
+            <article class="panel">
+              <p class="panel-kicker">Audit Logs</p>
+              <h2>{{ adminState.auditTotalItems }} event{{ adminState.auditTotalItems === 1 ? '' : 's' }}</h2>
+              <p>Search the server-side log stream by event key, actor, IP address, or target.</p>
+              <p class="panel-meta">Page {{ adminState.auditPage }} of {{ adminState.auditTotalPages }}</p>
+            </article>
 
-          <article class="panel">
-            <p class="panel-kicker">Filter</p>
-            <h2>Category</h2>
-            <label>
-              <span>Audit category</span>
-              <select v-model="adminState.auditCategory">
-                <option value="">All categories</option>
-                <option v-for="category in adminState.auditCategories" :key="category.key" :value="category.key">
-                  {{ category.label }}
-                </option>
-              </select>
-            </label>
-            <p class="panel-meta">Use the search bar above for text filters.</p>
-          </article>
+            <article class="panel">
+              <p class="panel-kicker">Filter</p>
+              <h2>Category</h2>
+              <label>
+                <span>Audit category</span>
+                <select v-model="adminState.auditCategory">
+                  <option value="">All categories</option>
+                  <option v-for="category in adminState.auditCategories" :key="category.key" :value="category.key">
+                    {{ category.label }}
+                  </option>
+                </select>
+              </label>
+              <p class="panel-meta">Use the search bar above for text filters.</p>
+            </article>
 
-          <article class="panel panel-form audit-cleanup">
-            <p class="panel-kicker">Audit Cleanup</p>
-            <h2>Delete stored events</h2>
-            <label>
-              <span>Cleanup mode</span>
-              <select v-model="adminState.auditCleanupMode" :disabled="adminState.auditCleanupBusy || !canRunAuditCleanup">
-                <option value="older_than_days">Delete logs older than X days</option>
-                <option value="keep_last_days">Keep only last X days</option>
-                <option value="all">Delete all logs</option>
-              </select>
-            </label>
-            <label v-if="auditCleanupRequiresDays">
-              <span>Days</span>
-              <input
-                v-model.number="adminState.auditCleanupDays"
-                type="number"
-                min="1"
-                max="3650"
+            <article class="panel panel-form audit-cleanup">
+              <p class="panel-kicker">Audit Cleanup</p>
+              <h2>Delete stored events</h2>
+              <label>
+                <span>Cleanup mode</span>
+                <select v-model="adminState.auditCleanupMode" :disabled="adminState.auditCleanupBusy || !canRunAuditCleanup">
+                  <option value="older_than_days">Delete logs older than X days</option>
+                  <option value="keep_last_days">Keep only last X days</option>
+                  <option value="all">Delete all logs</option>
+                </select>
+              </label>
+              <label v-if="auditCleanupRequiresDays">
+                <span>Days</span>
+                <input
+                  v-model.number="adminState.auditCleanupDays"
+                  type="number"
+                  min="1"
+                  max="3650"
+                  :disabled="adminState.auditCleanupBusy || !canRunAuditCleanup"
+                >
+              </label>
+              <p class="panel-meta">Cleanup actions are immediate. Use the built-in retention setting for automatic pruning.</p>
+              <button
+                class="danger"
+                type="button"
                 :disabled="adminState.auditCleanupBusy || !canRunAuditCleanup"
+                @click="runAuditCleanup"
               >
-            </label>
-            <p class="panel-meta">Cleanup actions are immediate. Use the built-in retention setting for automatic pruning.</p>
-            <button
-              class="danger"
-              type="button"
-              :disabled="adminState.auditCleanupBusy || !canRunAuditCleanup"
-              @click="runAuditCleanup"
-            >
-              Run cleanup
-            </button>
-          </article>
+                Run cleanup
+              </button>
+            </article>
+          </div>
 
           <article class="panel panel-table panel-wide">
             <div class="panel-header">
@@ -3038,50 +3083,60 @@ onBeforeUnmount(() => {
               <button class="primary-button" type="button" :disabled="!adminState.canManageSettings" @click="saveSettings">Save security settings</button>
             </div>
             <div class="settings-pane">
-              <label class="checkbox-row">
-                <input v-model="adminState.settings.security.audit_enabled" type="checkbox" :disabled="!adminState.canManageSettings">
-                <span>Enable audit logging</span>
+              <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
+                <input v-model="adminState.settings.security.audit_enabled" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                <span class="checkbox-control__label">Enable audit logging</span>
               </label>
               <label>
                 <span>Audit retention (days)</span>
                 <input v-model.number="adminState.settings.security.audit_retention_days" type="number" min="1" max="3650" :disabled="!adminState.canManageSettings">
               </label>
               <div class="security-toggle-grid">
-                <label class="checkbox-row">
-                  <input v-model="adminState.settings.security.log_auth_success" type="checkbox" :disabled="!adminState.canManageSettings">
-                  <span>Auth successes</span>
+                <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
+                  <input v-model="adminState.settings.security.log_auth_success" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                  <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                  <span class="checkbox-control__label">Auth successes</span>
                 </label>
-                <label class="checkbox-row">
-                  <input v-model="adminState.settings.security.log_auth_failure" type="checkbox" :disabled="!adminState.canManageSettings">
-                  <span>Auth failures</span>
+                <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
+                  <input v-model="adminState.settings.security.log_auth_failure" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                  <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                  <span class="checkbox-control__label">Auth failures</span>
                 </label>
-                <label class="checkbox-row">
-                  <input v-model="adminState.settings.security.log_file_views" type="checkbox" :disabled="!adminState.canManageSettings">
-                  <span>File views</span>
+                <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
+                  <input v-model="adminState.settings.security.log_file_views" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                  <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                  <span class="checkbox-control__label">File views</span>
                 </label>
-                <label class="checkbox-row">
-                  <input v-model="adminState.settings.security.log_file_downloads" type="checkbox" :disabled="!adminState.canManageSettings">
-                  <span>File downloads</span>
+                <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
+                  <input v-model="adminState.settings.security.log_file_downloads" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                  <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                  <span class="checkbox-control__label">File downloads</span>
                 </label>
-                <label class="checkbox-row">
-                  <input v-model="adminState.settings.security.log_file_uploads" type="checkbox" :disabled="!adminState.canManageSettings">
-                  <span>File uploads</span>
+                <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
+                  <input v-model="adminState.settings.security.log_file_uploads" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                  <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                  <span class="checkbox-control__label">File uploads</span>
                 </label>
-                <label class="checkbox-row">
-                  <input v-model="adminState.settings.security.log_file_management" type="checkbox" :disabled="!adminState.canManageSettings">
-                  <span>File management</span>
+                <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
+                  <input v-model="adminState.settings.security.log_file_management" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                  <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                  <span class="checkbox-control__label">File management</span>
                 </label>
-                <label class="checkbox-row">
-                  <input v-model="adminState.settings.security.log_deletions" type="checkbox" :disabled="!adminState.canManageSettings">
-                  <span>Deletions</span>
+                <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
+                  <input v-model="adminState.settings.security.log_deletions" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                  <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                  <span class="checkbox-control__label">Deletions</span>
                 </label>
-                <label class="checkbox-row">
-                  <input v-model="adminState.settings.security.log_admin_actions" type="checkbox" :disabled="!adminState.canManageSettings">
-                  <span>Admin actions</span>
+                <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
+                  <input v-model="adminState.settings.security.log_admin_actions" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                  <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                  <span class="checkbox-control__label">Admin actions</span>
                 </label>
-                <label class="checkbox-row">
-                  <input v-model="adminState.settings.security.log_security_actions" type="checkbox" :disabled="!adminState.canManageSettings">
-                  <span>Security actions</span>
+                <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
+                  <input v-model="adminState.settings.security.log_security_actions" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                  <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                  <span class="checkbox-control__label">Security actions</span>
                 </label>
               </div>
               <p class="panel-meta">Category switches only apply when the audit master switch is enabled.</p>
