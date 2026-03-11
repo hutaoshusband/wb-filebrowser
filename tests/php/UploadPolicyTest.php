@@ -74,4 +74,31 @@ final class UploadPolicyTest extends DatabaseTestCase
             1
         );
     }
+
+    public function testRenameFileRejectsDisallowedExtensionsWhenUploadPolicyIsConfigured(): void
+    {
+        Settings::saveAdminSettings([
+            'uploads' => [
+                'allowed_extensions' => 'png',
+            ],
+        ]);
+
+        $actor = $this->superAdmin();
+        $upload = FileManager::uploadInit(
+            $actor,
+            Database::rootFolderId(),
+            'shell.png',
+            19,
+            'image/png',
+            1
+        );
+
+        file_put_contents(wb_storage_path('chunks/' . $upload['upload_token'] . '/0.part'), '<?php phpinfo(); ?>');
+        $file = FileManager::uploadComplete($actor, (string) $upload['upload_token']);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('Allowed types: .png');
+
+        FileManager::renameFile($actor, (int) $file['id'], 'shell.php');
+    }
 }

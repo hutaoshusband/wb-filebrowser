@@ -358,9 +358,12 @@ final class FileManager
             throw new RuntimeException('You do not have permission to rename files here.');
         }
 
+        $name = wb_validate_entry_name($name, 'file');
+        Settings::assertUploadAllowed($name, (int) $file['size'], $pdo);
+
         $statement = $pdo->prepare('UPDATE files SET original_name = :name, updated_at = :updated_at WHERE id = :id');
         $statement->execute([
-            ':name' => wb_validate_entry_name($name, 'file'),
+            ':name' => $name,
             ':updated_at' => wb_now(),
             ':id' => $fileId,
         ]);
@@ -580,124 +583,145 @@ final class FileManager
 
     public static function uploadComplete(array $user, string $token): array
     {
-        $metadata = self::readUploadMetadata($token);
-
-        if ((int) $metadata['user_id'] !== (int) $user['id']) {
-            throw new RuntimeException('This upload session does not belong to you.');
-        }
-
-        $folderId = (int) $metadata['folder_id'];
-
-        if (!Permissions::canUploadToFolder($folderId, $user)) {
-            throw new RuntimeException('You no longer have permission to upload here.');
-        }
-
-        $chunkCount = (int) $metadata['total_chunks'];
-        $chunkDirectory = wb_storage_path('chunks/' . $token);
-
-        for ($index = 0; $index < $chunkCount; $index++) {
-            if (!is_file($chunkDirectory . DIRECTORY_SEPARATOR . $index . '.part')) {
-                throw new RuntimeException('Upload is incomplete.');
-            }
-        }
-
-        $diskName = wb_random_token(16);
+        $lock = self::acquireUploadCompletionLock($token);
+        $chunkDirectory = $lock['directory'];
+        $diskName = null;
         $diskExtension = 'blob';
-        $finalDirectory = wb_storage_path('uploads/' . substr($diskName, 0, 2) . '/' . substr($diskName, 2, 2));
-
-        if (!is_dir($finalDirectory) && !mkdir($finalDirectory, 0775, true) && !is_dir($finalDirectory)) {
-            throw new RuntimeException('Unable to create the target file directory.');
-        }
-
-        $finalPath = $finalDirectory . DIRECTORY_SEPARATOR . $diskName . '.' . $diskExtension;
-        $output = fopen($finalPath, 'wb');
-
-        if ($output === false) {
-            throw new RuntimeException('Unable to create the final file.');
-        }
-
-        $hash = hash_init('sha256');
+        $insertedFileId = null;
+        $cleanupWorkspace = false;
 
         try {
+            $metadata = self::readUploadMetadata($token);
+
+            if ((int) $metadata['user_id'] !== (int) $user['id']) {
+                throw new RuntimeException('This upload session does not belong to you.');
+            }
+
+            $folderId = (int) $metadata['folder_id'];
+
+            if (!Permissions::canUploadToFolder($folderId, $user)) {
+                throw new RuntimeException('You no longer have permission to upload here.');
+            }
+
+            $chunkCount = (int) $metadata['total_chunks'];
+
             for ($index = 0; $index < $chunkCount; $index++) {
-                $partPath = $chunkDirectory . DIRECTORY_SEPARATOR . $index . '.part';
-                $input = fopen($partPath, 'rb');
-
-                if ($input === false) {
-                    throw new RuntimeException('Unable to read upload chunk.');
+                if (!is_file($chunkDirectory . DIRECTORY_SEPARATOR . $index . '.part')) {
+                    throw new RuntimeException('Upload is incomplete.');
                 }
+            }
 
-                while (!feof($input)) {
-                    $buffer = fread($input, 8192);
+            $diskName = wb_random_token(16);
+            $finalDirectory = wb_storage_path('uploads/' . substr($diskName, 0, 2) . '/' . substr($diskName, 2, 2));
 
-                    if ($buffer === false) {
-                        fclose($input);
+            if (!is_dir($finalDirectory) && !mkdir($finalDirectory, 0775, true) && !is_dir($finalDirectory)) {
+                throw new RuntimeException('Unable to create the target file directory.');
+            }
+
+            $finalPath = $finalDirectory . DIRECTORY_SEPARATOR . $diskName . '.' . $diskExtension;
+            $output = fopen($finalPath, 'wb');
+
+            if ($output === false) {
+                throw new RuntimeException('Unable to create the final file.');
+            }
+
+            $hash = hash_init('sha256');
+
+            try {
+                for ($index = 0; $index < $chunkCount; $index++) {
+                    $partPath = $chunkDirectory . DIRECTORY_SEPARATOR . $index . '.part';
+                    $input = fopen($partPath, 'rb');
+
+                    if ($input === false) {
                         throw new RuntimeException('Unable to read upload chunk.');
                     }
 
-                    fwrite($output, $buffer);
-                    hash_update($hash, $buffer);
-                }
+                    while (!feof($input)) {
+                        $buffer = fread($input, 8192);
 
-                fclose($input);
+                        if ($buffer === false) {
+                            fclose($input);
+                            throw new RuntimeException('Unable to read upload chunk.');
+                        }
+
+                        fwrite($output, $buffer);
+                        hash_update($hash, $buffer);
+                    }
+
+                    fclose($input);
+                }
+            } finally {
+                fclose($output);
             }
+
+            $mimeType = (string) ($metadata['mime_type'] ?? 'application/octet-stream');
+
+            if (function_exists('finfo_open')) {
+                $finfo = finfo_open(FILEINFO_MIME_TYPE);
+
+                if ($finfo !== false) {
+                    $detected = finfo_file($finfo, $finalPath);
+
+                    if (is_string($detected) && $detected !== '') {
+                        $mimeType = $detected;
+                    }
+                }
+            }
+
+            $pdo = Database::connection();
+            $finalSize = (int) (filesize($finalPath) ?: 0);
+            self::assertWithinStorageQuota($user, $finalSize, $token, $pdo);
+            $statement = $pdo->prepare(
+                'INSERT INTO files (folder_id, original_name, disk_name, disk_extension, mime_type, size, checksum, created_by, created_at, updated_at)
+                 VALUES (:folder_id, :original_name, :disk_name, :disk_extension, :mime_type, :size, :checksum, :created_by, :created_at, :updated_at)'
+            );
+            $statement->execute([
+                ':folder_id' => $folderId,
+                ':original_name' => $metadata['original_name'],
+                ':disk_name' => $diskName,
+                ':disk_extension' => $diskExtension,
+                ':mime_type' => $mimeType,
+                ':size' => $finalSize,
+                ':checksum' => hash_final($hash),
+                ':created_by' => $user['id'],
+                ':created_at' => wb_now(),
+                ':updated_at' => wb_now(),
+            ]);
+            $insertedFileId = (int) $pdo->lastInsertId();
+
+            self::invalidateUploadWorkspace($chunkDirectory, $chunkCount);
+            $cleanupWorkspace = true;
+
+            $file = self::fileById($insertedFileId, $pdo);
+
+            if ($file !== null) {
+                AuditLog::record('file.upload', 'file_uploads', [
+                    'actor_user' => $user,
+                    'target_type' => 'file',
+                    'target_id' => (int) $file['id'],
+                    'target_label' => self::filePathLabel($file, $pdo),
+                    'summary' => 'Uploaded file ' . $file['original_name'],
+                    'metadata' => [
+                        'size' => (int) $file['size'],
+                        'mime_type' => (string) $file['mime_type'],
+                    ],
+                ], $pdo);
+            }
+
+            return self::serializeFile($file, $user, $pdo, Permissions::scope($user, $pdo));
+        } catch (\Throwable $exception) {
+            if ($diskName !== null && $insertedFileId === null) {
+                self::deleteBlob($diskName, $diskExtension);
+            }
+
+            if ($exception instanceof RuntimeException && $exception->getMessage() === 'Upload session not found.') {
+                $cleanupWorkspace = true;
+            }
+
+            throw $exception;
         } finally {
-            fclose($output);
+            self::releaseUploadCompletionLock($lock, $cleanupWorkspace);
         }
-
-        $mimeType = (string) ($metadata['mime_type'] ?? 'application/octet-stream');
-
-        if (function_exists('finfo_open')) {
-            $finfo = finfo_open(FILEINFO_MIME_TYPE);
-
-            if ($finfo !== false) {
-                $detected = finfo_file($finfo, $finalPath);
-
-                if (is_string($detected) && $detected !== '') {
-                    $mimeType = $detected;
-                }
-            }
-        }
-
-        $pdo = Database::connection();
-        $finalSize = (int) (filesize($finalPath) ?: 0);
-        self::assertWithinStorageQuota($user, $finalSize, $token, $pdo);
-        $statement = $pdo->prepare(
-            'INSERT INTO files (folder_id, original_name, disk_name, disk_extension, mime_type, size, checksum, created_by, created_at, updated_at)
-             VALUES (:folder_id, :original_name, :disk_name, :disk_extension, :mime_type, :size, :checksum, :created_by, :created_at, :updated_at)'
-        );
-        $statement->execute([
-            ':folder_id' => $folderId,
-            ':original_name' => $metadata['original_name'],
-            ':disk_name' => $diskName,
-            ':disk_extension' => $diskExtension,
-            ':mime_type' => $mimeType,
-            ':size' => $finalSize,
-            ':checksum' => hash_final($hash),
-            ':created_by' => $user['id'],
-            ':created_at' => wb_now(),
-            ':updated_at' => wb_now(),
-        ]);
-
-        self::deleteDirectory($chunkDirectory);
-
-        $file = self::fileById((int) $pdo->lastInsertId(), $pdo);
-
-        if ($file !== null) {
-            AuditLog::record('file.upload', 'file_uploads', [
-                'actor_user' => $user,
-                'target_type' => 'file',
-                'target_id' => (int) $file['id'],
-                'target_label' => self::filePathLabel($file, $pdo),
-                'summary' => 'Uploaded file ' . $file['original_name'],
-                'metadata' => [
-                    'size' => (int) $file['size'],
-                    'mime_type' => (string) $file['mime_type'],
-                ],
-            ], $pdo);
-        }
-
-        return self::serializeFile($file, $user, $pdo, Permissions::scope($user, $pdo));
     }
 
     public static function uploadCancel(array $user, string $token): void
@@ -1132,13 +1156,74 @@ final class FileManager
         return array_map('intval', array_keys($seen));
     }
 
-    private static function readUploadMetadata(string $token): array
+    private static function uploadWorkspacePath(string $token): string
     {
         if (!ctype_xdigit($token)) {
             throw new RuntimeException('Upload session token is invalid.');
         }
 
-        $path = wb_storage_path('chunks/' . $token . '/meta.json');
+        return wb_storage_path('chunks/' . $token);
+    }
+
+    private static function acquireUploadCompletionLock(string $token): array
+    {
+        $directory = self::uploadWorkspacePath($token);
+
+        if (!is_dir($directory)) {
+            throw new RuntimeException('Upload session not found.');
+        }
+
+        $path = $directory . DIRECTORY_SEPARATOR . '.complete.lock';
+        $handle = fopen($path, 'c+b');
+
+        if ($handle === false) {
+            throw new RuntimeException('Upload session not found.');
+        }
+
+        if (!flock($handle, LOCK_EX)) {
+            fclose($handle);
+            throw new RuntimeException('Unable to lock the upload session.');
+        }
+
+        return [
+            'directory' => $directory,
+            'path' => $path,
+            'handle' => $handle,
+        ];
+    }
+
+    private static function releaseUploadCompletionLock(array $lock, bool $cleanupWorkspace = false): void
+    {
+        if (isset($lock['handle']) && is_resource($lock['handle'])) {
+            flock($lock['handle'], LOCK_UN);
+            fclose($lock['handle']);
+        }
+
+        if (!$cleanupWorkspace) {
+            return;
+        }
+
+        if (isset($lock['path']) && is_string($lock['path'])) {
+            @unlink($lock['path']);
+        }
+
+        if (isset($lock['directory']) && is_string($lock['directory'])) {
+            @rmdir($lock['directory']);
+        }
+    }
+
+    private static function invalidateUploadWorkspace(string $directory, int $chunkCount): void
+    {
+        @unlink($directory . DIRECTORY_SEPARATOR . 'meta.json');
+
+        for ($index = 0; $index < $chunkCount; $index++) {
+            @unlink($directory . DIRECTORY_SEPARATOR . $index . '.part');
+        }
+    }
+
+    private static function readUploadMetadata(string $token): array
+    {
+        $path = self::uploadWorkspacePath($token) . DIRECTORY_SEPARATOR . 'meta.json';
 
         if (!is_file($path)) {
             throw new RuntimeException('Upload session not found.');

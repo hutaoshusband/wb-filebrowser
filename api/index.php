@@ -814,6 +814,8 @@ try {
     wb_blocked_response($exception, 403);
 } catch (\InvalidArgumentException $exception) {
     wb_error_response($exception->getMessage(), 422);
+} catch (\PDOException $exception) {
+    wb_internal_error_response('A database error occurred.', $exception);
 } catch (\RuntimeException $exception) {
     $status = match ($exception->getMessage()) {
         'Authentication is required.' => 401,
@@ -821,8 +823,6 @@ try {
         default => 400,
     };
     wb_error_response($exception->getMessage(), $status);
-} catch (\PDOException $exception) {
-    wb_error_response('A database error occurred.', 500, ['detail' => $exception->getMessage()]);
 } catch (\Throwable $exception) {
-    wb_error_response('Unexpected server error.', 500, ['detail' => $exception->getMessage()]);
+    wb_internal_error_response('Unexpected server error.', $exception);
 }

@@ -181,6 +181,105 @@ abstract class DatabaseTestCase extends TestCase
         return $directory;
     }
 
+    protected function executeConcurrentIsolatedPhp(string $code, int $workerCount): array
+    {
+        $workspace = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'wb-isolated-workers-' . bin2hex(random_bytes(8));
+
+        if (!mkdir($workspace, 0775, true) && !is_dir($workspace)) {
+            self::fail('Unable to create an isolated worker workspace.');
+        }
+
+        $startPath = $workspace . DIRECTORY_SEPARATOR . 'start.flag';
+        $processes = [];
+
+        try {
+            for ($index = 0; $index < max(1, $workerCount); $index++) {
+                $scriptPath = $workspace . DIRECTORY_SEPARATOR . 'worker-' . $index . '.php';
+                $script = $this->isolatedPhpScript(sprintf(
+                    <<<'PHP'
+while (!is_file(%s)) {
+    usleep(1000);
+}
+
+%s
+PHP,
+                    var_export($startPath, true),
+                    $code
+                ));
+                file_put_contents($scriptPath, $script);
+
+                $process = proc_open(
+                    [PHP_BINARY, $scriptPath],
+                    [
+                        0 => ['pipe', 'r'],
+                        1 => ['pipe', 'w'],
+                        2 => ['pipe', 'w'],
+                    ],
+                    $pipes,
+                    WB_ROOT
+                );
+
+                if (!is_resource($process)) {
+                    self::fail('Unable to start an isolated PHP worker.');
+                }
+
+                fclose($pipes[0]);
+                $processes[] = [
+                    'process' => $process,
+                    'pipes' => $pipes,
+                ];
+            }
+
+            file_put_contents($startPath, 'go');
+
+            $results = [];
+
+            foreach ($processes as $process) {
+                $stdout = stream_get_contents($process['pipes'][1]);
+                $stderr = stream_get_contents($process['pipes'][2]);
+                fclose($process['pipes'][1]);
+                fclose($process['pipes'][2]);
+
+                $results[] = [
+                    'exit_code' => proc_close($process['process']),
+                    'stdout' => $stdout === false ? '' : $stdout,
+                    'stderr' => $stderr === false ? '' : $stderr,
+                ];
+            }
+
+            return $results;
+        } finally {
+            $this->deleteDirectory($workspace);
+        }
+    }
+
+    private function isolatedPhpScript(string $code): string
+    {
+        return sprintf(
+            <<<'PHP'
+<?php
+declare(strict_types=1);
+
+define('WB_ROOT', %s);
+define('WB_STORAGE', %s);
+define('WB_BASE_PATH', %s);
+
+$_SERVER['HTTP_HOST'] = 'localhost';
+$_SERVER['HTTPS'] = 'off';
+$_SERVER['REMOTE_ADDR'] = '127.0.0.1';
+
+require %s;
+
+%s
+PHP,
+            var_export(WB_ROOT, true),
+            var_export(WB_STORAGE, true),
+            var_export(WB_BASE_PATH, true),
+            var_export(WB_ROOT . '/app/bootstrap.php', true),
+            $code
+        );
+    }
+
     private function resetStorage(): void
     {
         if (is_dir(WB_STORAGE)) {

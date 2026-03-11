@@ -141,6 +141,24 @@ function wb_error_response(string $message, int $status = 400, array $extra = []
     ], $status);
 }
 
+function wb_internal_error_response(string $message, \Throwable $exception): never
+{
+    $action = (string) ($_GET['action'] ?? '');
+    $requestLabel = trim(wb_request_method() . ' ' . $action);
+
+    error_log(sprintf(
+        '[wb-filebrowser] %s during %s: %s: %s in %s:%d',
+        $message,
+        $requestLabel === '' ? 'request' : $requestLabel,
+        $exception::class,
+        $exception->getMessage(),
+        $exception->getFile(),
+        $exception->getLine()
+    ));
+
+    wb_error_response($message, 500);
+}
+
 /**
  * @param array<string, mixed> $maintenance
  */
