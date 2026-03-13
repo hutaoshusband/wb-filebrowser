@@ -16,6 +16,8 @@ if (!defined('WB_STORAGE')) {
 
 require_once __DIR__ . '/helpers.php';
 require_once __DIR__ . '/Settings.php';
+require_once __DIR__ . '/DatabaseConfig.php';
+require_once __DIR__ . '/DatabasePlatform.php';
 require_once __DIR__ . '/Installer.php';
 require_once __DIR__ . '/Database.php';
 require_once __DIR__ . '/Security.php';

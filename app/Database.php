@@ -5,11 +5,13 @@ declare(strict_types=1);
 namespace WbFileBrowser;
 
 use PDO;
+use PDOStatement;
 use RuntimeException;
 
 final class Database
 {
     private static ?PDO $connection = null;
+    private static ?array $config = null;
 
     public static function connection(): PDO
     {
@@ -21,14 +23,42 @@ final class Database
             return self::$connection;
         }
 
-        $pdo = new PDO('sqlite:' . Installer::databasePath());
-        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-        $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-        $pdo->exec('PRAGMA foreign_keys = ON');
+        $config = self::config();
+        $pdo = new PDO(
+            DatabasePlatform::dsn($config),
+            $config['driver'] === 'sqlite' ? null : (string) ($config['username'] ?? ''),
+            $config['driver'] === 'sqlite' ? null : (string) ($config['password'] ?? '')
+        );
+        DatabasePlatform::configureConnection($pdo, $config);
 
         self::$connection = $pdo;
 
         return $pdo;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public static function config(): array
+    {
+        if (is_array(self::$config)) {
+            return self::$config;
+        }
+
+        $config = DatabaseConfig::loadInstalled();
+
+        if (!is_array($config)) {
+            throw new RuntimeException('Database configuration is missing.');
+        }
+
+        self::$config = $config;
+
+        return $config;
+    }
+
+    public static function driver(): string
+    {
+        return (string) self::config()['driver'];
     }
 
     public static function setting(string $key, ?string $default = null): ?string
@@ -42,10 +72,12 @@ final class Database
 
     public static function updateSetting(string $key, string $value): void
     {
-        $statement = self::connection()->prepare(
-            'INSERT INTO settings (key, value, updated_at)
-             VALUES (:key, :value, :updated_at)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
+        $statement = self::prepareUpsert(
+            self::connection(),
+            'settings',
+            ['key', 'value', 'updated_at'],
+            ['value', 'updated_at'],
+            ['key']
         );
         $statement->execute([
             ':key' => $key,
@@ -59,8 +91,31 @@ final class Database
         return (int) (self::setting('root_folder_id', '1') ?? '1');
     }
 
+    /**
+     * @param array<int, string> $insertColumns
+     * @param array<int, string> $updateColumns
+     * @param array<int, string> $conflictColumns
+     */
+    public static function prepareUpsert(
+        PDO $pdo,
+        string $table,
+        array $insertColumns,
+        array $updateColumns,
+        array $conflictColumns
+    ): PDOStatement {
+        return $pdo->prepare(
+            DatabasePlatform::upsertSql(self::driver(), $table, $insertColumns, $updateColumns, $conflictColumns)
+        );
+    }
+
+    public static function lastInsertId(PDO $pdo, string $table): int
+    {
+        return DatabasePlatform::lastInsertId($pdo, self::driver(), $table);
+    }
+
     public static function disconnect(): void
     {
         self::$connection = null;
+        self::$config = null;
     }
 }

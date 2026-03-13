@@ -7,11 +7,36 @@ require __DIR__ . '/../app/bootstrap.php';
 $bootstrap = wb_bootstrap_page('install');
 WbFileBrowser\Security::sendPageHeaders();
 $checks = WbFileBrowser\Installer::environmentChecks();
+$driverChecks = [
+    'sqlite' => false,
+    'mysql' => false,
+    'pgsql' => false,
+];
+
+foreach ($checks as $check) {
+    if (($check['scope'] ?? '') === 'driver' && isset($driverChecks[$check['driver'] ?? ''])) {
+        $driverChecks[$check['driver']] = (bool) ($check['ok'] ?? false);
+    }
+}
+
+$defaultDriver = 'sqlite';
+
+if (!$driverChecks[$defaultDriver]) {
+    foreach (['mysql', 'pgsql'] as $candidate) {
+        if ($driverChecks[$candidate]) {
+            $defaultDriver = $candidate;
+            break;
+        }
+    }
+}
+
 $hasBlockingIssues = array_reduce(
     $checks,
-    static fn (bool $carry, array $check): bool => $carry || !$check['ok'],
+    static fn (bool $carry, array $check): bool => $carry || ((bool) ($check['blocking'] ?? false) && !(bool) ($check['ok'] ?? false)),
     false
 );
+$hasAvailableDriver = in_array(true, $driverChecks, true);
+$hasBlockingIssues = $hasBlockingIssues || !$hasAvailableDriver;
 ?>
 <!doctype html>
 <html lang="en">
@@ -73,7 +98,7 @@ $hasBlockingIssues = array_reduce(
             <div class="install-header">
                 <p class="install-kicker">Install wb-filebrowser</p>
                 <h2>Secure the first workspace</h2>
-                <p>Only three fields are required. Everything else already starts from recommended values.</p>
+                <p>Start with an owner account, choose the database connection, and keep the default safeguards unless you already know you want something different.</p>
             </div>
 
             <form id="install-form" class="install-form">
@@ -110,6 +135,60 @@ $hasBlockingIssues = array_reduce(
                 <section class="install-section">
                     <div class="install-section__header">
                         <span class="install-section__number">2</span>
+                        <div>
+                            <h3>Database connection</h3>
+                            <p>Select the default SQLite database or point the app at a prepared MySQL/PostgreSQL database.</p>
+                        </div>
+                    </div>
+                    <div class="install-field-grid">
+                        <label>
+                            <span>Database driver</span>
+                            <select id="database-driver" name="database[driver]">
+                                <option value="sqlite" data-available="<?= $driverChecks['sqlite'] ? '1' : '0' ?>" <?= $defaultDriver === 'sqlite' ? 'selected' : '' ?> <?= $driverChecks['sqlite'] ? '' : 'disabled' ?>>SQLite</option>
+                                <option value="mysql" data-available="<?= $driverChecks['mysql'] ? '1' : '0' ?>" <?= $defaultDriver === 'mysql' ? 'selected' : '' ?> <?= $driverChecks['mysql'] ? '' : 'disabled' ?>>MySQL</option>
+                                <option value="pgsql" data-available="<?= $driverChecks['pgsql'] ? '1' : '0' ?>" <?= $defaultDriver === 'pgsql' ? 'selected' : '' ?> <?= $driverChecks['pgsql'] ? '' : 'disabled' ?>>PostgreSQL</option>
+                            </select>
+                        </label>
+                        <div class="install-choice install-choice--wide">
+                            <span>Driver availability</span>
+                            <small>SQLite: <?= $driverChecks['sqlite'] ? 'Ready' : 'Unavailable' ?>, MySQL: <?= $driverChecks['mysql'] ? 'Ready' : 'Unavailable' ?>, PostgreSQL: <?= $driverChecks['pgsql'] ? 'Ready' : 'Unavailable' ?></small>
+                        </div>
+                    </div>
+                    <div id="database-sqlite-fields" class="install-field-grid" <?= $defaultDriver === 'sqlite' ? '' : 'hidden' ?>>
+                        <label class="install-choice install-choice--wide">
+                            <span>SQLite database path</span>
+                            <input id="database-sqlite-path" type="text" name="database[path]" value="storage/app.sqlite" autocomplete="off">
+                            <small>Relative paths stay inside this install by default. Use an absolute path if you want the database somewhere else.</small>
+                        </label>
+                    </div>
+                    <div id="database-network-fields" class="install-field-grid" <?= $defaultDriver === 'sqlite' ? 'hidden' : '' ?>>
+                        <label>
+                            <span>Database host</span>
+                            <input id="database-host" type="text" name="database[host]" value="localhost" autocomplete="off">
+                        </label>
+                        <label>
+                            <span>Port</span>
+                            <input id="database-port" type="number" name="database[port]" value="<?= $defaultDriver === 'pgsql' ? '5432' : '3306' ?>" min="1" max="65535" inputmode="numeric">
+                        </label>
+                        <label>
+                            <span>Database name</span>
+                            <input id="database-name" type="text" name="database[name]" autocomplete="off">
+                        </label>
+                        <label>
+                            <span>Database username</span>
+                            <input id="database-username" type="text" name="database[username]" autocomplete="username">
+                        </label>
+                        <label class="install-choice install-choice--wide">
+                            <span>Database password</span>
+                            <input id="database-password" type="password" name="database[password]" autocomplete="new-password">
+                            <small>This is only used to open the database connection and is never shown back in the summary.</small>
+                        </label>
+                    </div>
+                </section>
+
+                <section class="install-section">
+                    <div class="install-section__header">
+                        <span class="install-section__number">3</span>
                         <div>
                             <h3>Default behavior</h3>
                             <p>These values are safe starting points and can be changed later from Settings.</p>
@@ -170,6 +249,10 @@ $hasBlockingIssues = array_reduce(
 
                 <section class="install-summary" aria-live="polite">
                     <div class="install-summary__row">
+                        <span>Database</span>
+                        <strong id="summary-database">SQLite at storage/app.sqlite.</strong>
+                    </div>
+                    <div class="install-summary__row">
                         <span>Access</span>
                         <strong id="summary-access">Private browsing until you publish folders.</strong>
                     </div>
@@ -184,7 +267,7 @@ $hasBlockingIssues = array_reduce(
                 </section>
 
                 <?php if ($hasBlockingIssues): ?>
-                    <p class="install-feedback is-error">Resolve the failed environment checks above before starting the installer.</p>
+                    <p class="install-feedback is-error">Resolve the failed environment checks above and make sure at least one supported PDO database driver is available before starting the installer.</p>
                 <?php endif; ?>
 
                 <button id="install-submit" type="submit" class="primary-button" <?= $hasBlockingIssues ? 'disabled' : '' ?>>Install wb-filebrowser</button>

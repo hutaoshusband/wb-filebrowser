@@ -22,6 +22,8 @@ $_SERVER['REMOTE_ADDR'] = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
 
 require_once $root . '/app/helpers.php';
 require_once $root . '/app/Settings.php';
+require_once $root . '/app/DatabaseConfig.php';
+require_once $root . '/app/DatabasePlatform.php';
 require_once $root . '/app/Installer.php';
 require_once $root . '/app/Database.php';
 require_once $root . '/app/Security.php';

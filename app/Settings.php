@@ -16,10 +16,12 @@ final class Settings
         $settings = array_merge(self::defaultMap(), $overrides);
         $existing = $pdo->query('SELECT key FROM settings')->fetchAll(PDO::FETCH_COLUMN) ?: [];
         $existingMap = array_flip(array_map('strval', $existing));
-        $statement = $pdo->prepare(
-            'INSERT INTO settings (key, value, updated_at)
-             VALUES (:key, :value, :updated_at)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
+        $statement = Database::prepareUpsert(
+            $pdo,
+            'settings',
+            ['key', 'value', 'updated_at'],
+            ['value', 'updated_at'],
+            ['key']
         );
 
         foreach ($settings as $key => $value) {
@@ -174,10 +176,12 @@ final class Settings
         $pdo ??= Database::connection();
         $normalized = self::normalizePayload($payload, self::grouped($pdo));
         $currentShareTerms = self::shareTermsPolicy($pdo);
-        $statement = $pdo->prepare(
-            'INSERT INTO settings (key, value, updated_at)
-             VALUES (:key, :value, :updated_at)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
+        $statement = Database::prepareUpsert(
+            $pdo,
+            'settings',
+            ['key', 'value', 'updated_at'],
+            ['value', 'updated_at'],
+            ['key']
         );
         $shareTermsVersion = $currentShareTerms['version'];
 

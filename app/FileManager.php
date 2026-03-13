@@ -144,7 +144,7 @@ final class FileManager
             ':updated_at' => $now,
         ]);
 
-        $folder = self::folderById((int) $pdo->lastInsertId(), $pdo);
+        $folder = self::folderById(Database::lastInsertId($pdo, 'folders'), $pdo);
 
         if ($folder !== null) {
             AuditLog::record('folder.create', 'file_management', [
@@ -681,7 +681,7 @@ final class FileManager
 
         self::deleteDirectory($chunkDirectory);
 
-        $file = self::fileById((int) $pdo->lastInsertId(), $pdo);
+        $file = self::fileById(Database::lastInsertId($pdo, 'files'), $pdo);
 
         if ($file !== null) {
             AuditLog::record('file.upload', 'file_uploads', [

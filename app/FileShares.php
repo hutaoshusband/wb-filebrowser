@@ -97,6 +97,7 @@ final class FileShares
         $statement = $pdo->prepare(
             'INSERT INTO file_shares (
                 file_id,
+                active_file_id,
                 token,
                 created_by,
                 expires_at,
@@ -109,6 +110,7 @@ final class FileShares
                 revoked_at
              ) VALUES (
                 :file_id,
+                :active_file_id,
                 :token,
                 :created_by,
                 :expires_at,
@@ -125,6 +127,7 @@ final class FileShares
         try {
             $statement->execute([
                 ':file_id' => $fileId,
+                ':active_file_id' => $fileId,
                 ':token' => wb_random_token(24),
                 ':created_by' => (int) $user['id'],
                 ':expires_at' => $options['expires_at'],
@@ -182,7 +185,7 @@ final class FileShares
         self::assertCanManageShares($user, $file, $pdo);
         $statement = $pdo->prepare(
             'UPDATE file_shares
-             SET revoked_at = :revoked_at, updated_at = :updated_at
+             SET revoked_at = :revoked_at, active_file_id = NULL, updated_at = :updated_at
              WHERE file_id = :file_id AND revoked_at IS NULL'
         );
         $now = wb_now();
@@ -397,7 +400,7 @@ final class FileShares
         $now = wb_now();
         $statement = $pdo->prepare(
             'UPDATE file_shares
-             SET revoked_at = :now, updated_at = :now
+             SET revoked_at = :now, active_file_id = NULL, updated_at = :now
              WHERE revoked_at IS NULL
                AND (
                     (expires_at IS NOT NULL AND expires_at <= :now)
@@ -460,16 +463,19 @@ final class FileShares
         $maxViews = $share['max_views'] === null ? null : (int) $share['max_views'];
         $now = wb_now();
         $revokedAt = $maxViews !== null && $newViewCount >= $maxViews ? $now : null;
+        $activeFileId = $revokedAt === null ? (int) $share['file_id'] : null;
         $statement = $pdo->prepare(
             'UPDATE file_shares
              SET view_count = :view_count,
                  updated_at = :updated_at,
+                 active_file_id = :active_file_id,
                  revoked_at = :revoked_at
              WHERE id = :id'
         );
         $statement->execute([
             ':view_count' => $newViewCount,
             ':updated_at' => $now,
+            ':active_file_id' => $activeFileId,
             ':revoked_at' => $revokedAt,
             ':id' => $share['id'],
         ]);
@@ -486,7 +492,7 @@ final class FileShares
         $statement = $pdo->prepare(
             'SELECT *
              FROM file_shares
-             WHERE file_id = :file_id AND revoked_at IS NULL
+             WHERE active_file_id = :file_id AND revoked_at IS NULL
              ORDER BY id DESC
              LIMIT 1'
         );

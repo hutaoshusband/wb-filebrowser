@@ -38,13 +38,12 @@ final class AutomationRunner
     public static function seedJobs(?PDO $pdo = null): void
     {
         $pdo ??= Database::connection();
-        $statement = $pdo->prepare(
-            'INSERT INTO automation_jobs (
-                job_key, label, status, last_result, last_message, last_run_at, next_run_at, last_duration_ms, created_at, updated_at
-             ) VALUES (
-                :job_key, :label, :status, :last_result, :last_message, :last_run_at, :next_run_at, :last_duration_ms, :created_at, :updated_at
-             )
-             ON CONFLICT(job_key) DO UPDATE SET label = excluded.label, updated_at = excluded.updated_at'
+        $statement = Database::prepareUpsert(
+            $pdo,
+            'automation_jobs',
+            ['job_key', 'label', 'status', 'last_result', 'last_message', 'last_run_at', 'next_run_at', 'last_duration_ms', 'created_at', 'updated_at'],
+            ['label', 'updated_at'],
+            ['job_key']
         );
 
         foreach (self::definitions() as $jobKey => $definition) {
@@ -439,10 +438,12 @@ final class AutomationRunner
             }
 
             $token = wb_random_token(16);
-            $upsert = $pdo->prepare(
-                'INSERT INTO settings (key, value, updated_at)
-                 VALUES (:key, :value, :updated_at)
-                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
+            $upsert = Database::prepareUpsert(
+                $pdo,
+                'settings',
+                ['key', 'value', 'updated_at'],
+                ['value', 'updated_at'],
+                ['key']
             );
 
             foreach ([
@@ -478,10 +479,12 @@ final class AutomationRunner
             return;
         }
 
-        $upsert = $pdo->prepare(
-            'INSERT INTO settings (key, value, updated_at)
-             VALUES (:key, :value, :updated_at)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
+        $upsert = Database::prepareUpsert(
+            $pdo,
+            'settings',
+            ['key', 'value', 'updated_at'],
+            ['value', 'updated_at'],
+            ['key']
         );
 
         foreach ([
