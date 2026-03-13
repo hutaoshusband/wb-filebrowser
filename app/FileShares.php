@@ -594,9 +594,12 @@ final class FileShares
 
     private static function shareStreamUrls(string $token): array
     {
+        $inlinePath = '/api/index.php?action=share.stream&grant=' . rawurlencode(self::streamGrant($token, 'inline'));
+        $attachmentPath = '/api/index.php?action=share.stream&grant=' . rawurlencode(self::streamGrant($token, 'attachment'));
+
         return [
-            'inline' => wb_url('/api/index.php?action=share.stream&grant=' . rawurlencode(self::streamGrant($token, 'inline'))),
-            'attachment' => wb_url('/api/index.php?action=share.stream&grant=' . rawurlencode(self::streamGrant($token, 'attachment'))),
+            'inline' => wb_absolute_url($inlinePath) ?? wb_url($inlinePath),
+            'attachment' => wb_absolute_url($attachmentPath) ?? wb_url($attachmentPath),
         ];
     }
 

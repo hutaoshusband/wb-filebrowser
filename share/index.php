@@ -371,6 +371,7 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
                                 readonly
                                 value="<?= wb_h($file['direct_url']) ?>"
                             >
+                            <a class="header-button" href="<?= wb_h($file['direct_url']) ?>" target="_blank" rel="noopener noreferrer">Open direct link</a>
                         </div>
                     </aside>
                 </div>

@@ -56,6 +56,8 @@ describe('shared control styles', () => {
 
   it('renders the public direct-link field from the shared file stream URL', () => {
     expect(sharePage).toContain('value="<?= wb_h($file[\'direct_url\']) ?>"');
+    expect(sharePage).toContain('href="<?= wb_h($file[\'direct_url\']) ?>"');
+    expect(sharePage).toContain('Open direct link');
     expect(sharePage).not.toContain('value="<?= wb_h($share[\'url\']) ?>"');
   });
 });

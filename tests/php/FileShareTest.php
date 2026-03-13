@@ -30,6 +30,7 @@ final class FileShareTest extends DatabaseTestCase
         $this->assertFalse($share['requires_password']);
         $this->assertSame(1, $payload['share']['view_count']);
         $this->assertSame(2, $payload['share']['remaining_views']);
+        $this->assertStringStartsWith('http://localhost/', $payload['file']['preview_url']);
         $this->assertStringContainsString('grant=', $payload['file']['preview_url']);
     }
 
@@ -111,6 +112,8 @@ final class FileShareTest extends DatabaseTestCase
         $this->assertSame('jar', $payload['file']['fallback_variant']);
         $this->assertSame('Java archive', $payload['file']['fallback_label']);
         $this->assertStringContainsString('/media/file-fallbacks/jar.svg', $payload['file']['fallback_icon_url']);
+        $this->assertStringStartsWith('http://localhost/', $payload['file']['download_url']);
+        $this->assertStringStartsWith('http://localhost/', $payload['file']['direct_url']);
         $this->assertSame($payload['file']['download_url'], $payload['file']['direct_url']);
     }
 
@@ -122,6 +125,8 @@ final class FileShareTest extends DatabaseTestCase
 
         $this->assertSame('pdf', $payload['preview_mode']);
         $this->assertSame('pdf', $payload['file']['preview_mode']);
+        $this->assertStringStartsWith('http://localhost/', $payload['file']['preview_url']);
+        $this->assertStringStartsWith('http://localhost/', $payload['file']['direct_url']);
         $this->assertSame($payload['file']['preview_url'], $payload['file']['direct_url']);
         $this->assertNotSame($payload['file']['download_url'], $payload['file']['direct_url']);
     }
