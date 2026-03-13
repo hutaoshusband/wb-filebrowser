@@ -822,7 +822,7 @@ try {
     };
     wb_error_response($exception->getMessage(), $status);
 } catch (\PDOException $exception) {
-    wb_error_response('A database error occurred.', 500, ['detail' => $exception->getMessage()]);
+    wb_error_response('A database error occurred.', 500);
 } catch (\Throwable $exception) {
-    wb_error_response('Unexpected server error.', 500, ['detail' => $exception->getMessage()]);
+    wb_error_response('Unexpected server error.', 500);
 }

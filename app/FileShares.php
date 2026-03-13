@@ -97,6 +97,7 @@ final class FileShares
         $statement = $pdo->prepare(
             'INSERT INTO file_shares (
                 file_id,
+                active_file_id,
                 token,
                 created_by,
                 expires_at,
@@ -109,6 +110,7 @@ final class FileShares
                 revoked_at
              ) VALUES (
                 :file_id,
+                :active_file_id,
                 :token,
                 :created_by,
                 :expires_at,
@@ -125,6 +127,7 @@ final class FileShares
         try {
             $statement->execute([
                 ':file_id' => $fileId,
+                ':active_file_id' => $fileId,
                 ':token' => wb_random_token(24),
                 ':created_by' => (int) $user['id'],
                 ':expires_at' => $options['expires_at'],
@@ -182,7 +185,7 @@ final class FileShares
         self::assertCanManageShares($user, $file, $pdo);
         $statement = $pdo->prepare(
             'UPDATE file_shares
-             SET revoked_at = :revoked_at, updated_at = :updated_at
+             SET revoked_at = :revoked_at, active_file_id = NULL, updated_at = :updated_at
              WHERE file_id = :file_id AND revoked_at IS NULL'
         );
         $now = wb_now();
@@ -397,7 +400,7 @@ final class FileShares
         $now = wb_now();
         $statement = $pdo->prepare(
             'UPDATE file_shares
-             SET revoked_at = :now, updated_at = :now
+             SET revoked_at = :now, active_file_id = NULL, updated_at = :now
              WHERE revoked_at IS NULL
                AND (
                     (expires_at IS NOT NULL AND expires_at <= :now)
@@ -460,16 +463,19 @@ final class FileShares
         $maxViews = $share['max_views'] === null ? null : (int) $share['max_views'];
         $now = wb_now();
         $revokedAt = $maxViews !== null && $newViewCount >= $maxViews ? $now : null;
+        $activeFileId = $revokedAt === null ? (int) $share['file_id'] : null;
         $statement = $pdo->prepare(
             'UPDATE file_shares
              SET view_count = :view_count,
                  updated_at = :updated_at,
+                 active_file_id = :active_file_id,
                  revoked_at = :revoked_at
              WHERE id = :id'
         );
         $statement->execute([
             ':view_count' => $newViewCount,
             ':updated_at' => $now,
+            ':active_file_id' => $activeFileId,
             ':revoked_at' => $revokedAt,
             ':id' => $share['id'],
         ]);
@@ -486,7 +492,7 @@ final class FileShares
         $statement = $pdo->prepare(
             'SELECT *
              FROM file_shares
-             WHERE file_id = :file_id AND revoked_at IS NULL
+             WHERE active_file_id = :file_id AND revoked_at IS NULL
              ORDER BY id DESC
              LIMIT 1'
         );
@@ -553,6 +559,9 @@ final class FileShares
         $extension = strtolower(pathinfo((string) $share['original_name'], PATHINFO_EXTENSION));
         $urls = self::shareStreamUrls((string) $share['token']);
         $preview = wb_file_preview_metadata((string) $share['mime_type'], $extension);
+        $directUrl = ($preview['preview_mode'] ?? 'download') === 'download'
+            ? $urls['attachment']
+            : $urls['inline'];
 
         return array_merge([
             'id' => (int) $share['file_id'],
@@ -568,6 +577,7 @@ final class FileShares
             'extension' => $extension,
             'preview_url' => $urls['inline'],
             'download_url' => $urls['attachment'],
+            'direct_url' => $directUrl,
         ], $preview);
     }
 
@@ -584,9 +594,12 @@ final class FileShares
 
     private static function shareStreamUrls(string $token): array
     {
+        $inlinePath = '/api/index.php?action=share.stream&grant=' . rawurlencode(self::streamGrant($token, 'inline'));
+        $attachmentPath = '/api/index.php?action=share.stream&grant=' . rawurlencode(self::streamGrant($token, 'attachment'));
+
         return [
-            'inline' => wb_url('/api/index.php?action=share.stream&grant=' . rawurlencode(self::streamGrant($token, 'inline'))),
-            'attachment' => wb_url('/api/index.php?action=share.stream&grant=' . rawurlencode(self::streamGrant($token, 'attachment'))),
+            'inline' => wb_absolute_url($inlinePath) ?? wb_url($inlinePath),
+            'attachment' => wb_absolute_url($attachmentPath) ?? wb_url($attachmentPath),
         ];
     }
 

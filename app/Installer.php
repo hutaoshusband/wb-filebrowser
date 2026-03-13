@@ -13,11 +13,17 @@ final class Installer
 
     public static function isInstalled(): bool
     {
-        return is_file(self::lockFilePath()) && is_file(self::databasePath());
+        return is_file(self::lockFilePath()) && (DatabaseConfig::exists() || is_file(wb_storage_path('app.sqlite')));
     }
 
     public static function databasePath(): string
     {
+        $config = DatabaseConfig::read() ?? DatabaseConfig::loadInstalled();
+
+        if (is_array($config) && (string) ($config['driver'] ?? '') === 'sqlite') {
+            return (string) $config['path'];
+        }
+
         return wb_storage_path('app.sqlite');
     }
 
@@ -38,37 +44,75 @@ final class Installer
     public static function environmentChecks(): array
     {
         $storageWritable = is_writable(wb_storage_path());
+        $sessionWritable = is_writable(wb_storage_path('sessions'));
 
         return [
             [
+                'key' => 'php',
                 'label' => 'PHP 8.1 or newer',
                 'ok' => PHP_VERSION_ID >= 80100,
                 'message' => 'Current version: ' . PHP_VERSION,
+                'blocking' => true,
+                'scope' => 'core',
             ],
             [
+                'key' => 'pdo_sqlite',
                 'label' => 'pdo_sqlite extension',
                 'ok' => extension_loaded('pdo_sqlite'),
                 'message' => extension_loaded('pdo_sqlite') ? 'Enabled' : 'Missing',
+                'blocking' => false,
+                'scope' => 'driver',
+                'driver' => 'sqlite',
             ],
             [
+                'key' => 'pdo_mysql',
+                'label' => 'pdo_mysql extension',
+                'ok' => extension_loaded('pdo_mysql'),
+                'message' => extension_loaded('pdo_mysql') ? 'Enabled' : 'Missing',
+                'blocking' => false,
+                'scope' => 'driver',
+                'driver' => 'mysql',
+            ],
+            [
+                'key' => 'pdo_pgsql',
+                'label' => 'pdo_pgsql extension',
+                'ok' => extension_loaded('pdo_pgsql'),
+                'message' => extension_loaded('pdo_pgsql') ? 'Enabled' : 'Missing',
+                'blocking' => false,
+                'scope' => 'driver',
+                'driver' => 'pgsql',
+            ],
+            [
+                'key' => 'fileinfo',
                 'label' => 'fileinfo extension',
                 'ok' => extension_loaded('fileinfo'),
                 'message' => extension_loaded('fileinfo') ? 'Enabled' : 'Missing',
+                'blocking' => true,
+                'scope' => 'core',
             ],
             [
+                'key' => 'mbstring',
                 'label' => 'mbstring extension',
                 'ok' => extension_loaded('mbstring'),
                 'message' => extension_loaded('mbstring') ? 'Enabled' : 'Missing',
+                'blocking' => true,
+                'scope' => 'core',
             ],
             [
+                'key' => 'storage',
                 'label' => 'Storage directory writable',
                 'ok' => $storageWritable,
                 'message' => $storageWritable ? 'Writable' : 'Not writable! Run: chmod -R 775 storage/',
+                'blocking' => true,
+                'scope' => 'core',
             ],
             [
+                'key' => 'sessions',
                 'label' => 'Session directory writable',
-                'ok' => is_writable(wb_storage_path('sessions')),
-                'message' => is_writable(wb_storage_path('sessions')) ? 'Writable' : 'Not writable! Run: chmod -R 775 storage/sessions/',
+                'ok' => $sessionWritable,
+                'message' => $sessionWritable ? 'Writable' : 'Not writable! Run: chmod -R 775 storage/sessions/',
+                'blocking' => true,
+                'scope' => 'core',
             ],
         ];
     }
@@ -79,37 +123,40 @@ final class Installer
             throw new RuntimeException('wb-filebrowser is already installed.');
         }
 
-        foreach (self::environmentChecks() as $check) {
-            if (!$check['ok']) {
-                throw new RuntimeException('Installation requirements are not met.');
-            }
-        }
-
+        self::assertCoreEnvironmentChecks();
         $username = wb_validate_entry_name($username, 'username');
 
         if (mb_strlen($password) < 12) {
             throw new RuntimeException('The Super-Admin password must be at least 12 characters long.');
         }
 
+        $databaseInput = is_array($settings['database'] ?? null) ? $settings['database'] : [];
+        $config = DatabaseConfig::normalize($databaseInput);
+        self::assertDatabaseDriverAvailable((string) $config['driver']);
+        self::assertDatabaseConfigValid($config);
+
         self::createStorageLayout();
         self::writeStorageShield();
 
-        $createdDatabase = false;
+        $pdo = null;
+        $configWritten = false;
+        $createdSqliteFile = false;
+        $dropSchemaOnFailure = false;
 
         try {
-            $databasePath = self::databasePath();
-
-            if (!file_exists($databasePath)) {
-                touch($databasePath);
-                $createdDatabase = true;
+            if ((string) $config['driver'] === 'sqlite') {
+                self::ensureSqlitePathReady((string) $config['path']);
+                $createdSqliteFile = !is_file((string) $config['path']);
             }
 
-            $pdo = new PDO('sqlite:' . $databasePath);
-            $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-            $pdo->exec('PRAGMA foreign_keys = ON');
+            $pdo = self::connect($config);
+            self::assertInstallTargetIsEmpty($pdo, (string) $config['driver']);
+            DatabaseConfig::write($config);
+            $configWritten = true;
+            $dropSchemaOnFailure = true;
 
-            foreach (self::schemaStatements() as $statement) {
-                $pdo->exec($statement);
+            foreach (DatabasePlatform::schemaStatements((string) $config['driver']) as $statement) {
+                self::executeSchemaStatement($pdo, (string) $config['driver'], $statement);
             }
 
             $now = wb_now();
@@ -129,7 +176,7 @@ final class Installer
                 ':created_at' => $now,
                 ':updated_at' => $now,
             ]);
-            $superAdminId = (int) $pdo->lastInsertId();
+            $superAdminId = DatabasePlatform::lastInsertId($pdo, (string) $config['driver'], 'users');
 
             $folderStatement = $pdo->prepare(
                 'INSERT INTO folders (parent_id, name, created_by, created_at, updated_at)
@@ -141,7 +188,7 @@ final class Installer
                 ':created_at' => $now,
                 ':updated_at' => $now,
             ]);
-            $rootFolderId = (int) $pdo->lastInsertId();
+            $rootFolderId = DatabasePlatform::lastInsertId($pdo, (string) $config['driver'], 'folders');
 
             $probeName = 'public-' . wb_random_token(10) . '.txt';
             $probeRelativePath = 'probe/' . $probeName;
@@ -170,11 +217,23 @@ final class Installer
                 'root_folder_id' => $rootFolderId,
             ];
         } catch (\Throwable $exception) {
-            if ($createdDatabase && file_exists(self::databasePath())) {
-                @unlink(self::databasePath());
+            if ($pdo instanceof PDO && $pdo->inTransaction()) {
+                $pdo->rollBack();
             }
 
-            if (file_exists(self::lockFilePath())) {
+            if ($dropSchemaOnFailure && $pdo instanceof PDO) {
+                self::dropKnownSchema($pdo);
+            }
+
+            if ($createdSqliteFile && is_file((string) $config['path'])) {
+                @unlink((string) $config['path']);
+            }
+
+            if ($configWritten && DatabaseConfig::exists()) {
+                @unlink(DatabaseConfig::path());
+            }
+
+            if (is_file(self::lockFilePath())) {
                 @unlink(self::lockFilePath());
             }
 
@@ -213,7 +272,7 @@ Options -Indexes
 HTACCESS;
 
         file_put_contents(wb_storage_path('.htaccess'), $contents);
-        
+
         $webConfig = <<<XML
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration>
@@ -243,44 +302,59 @@ XML;
             return;
         }
 
-        $pdo = new PDO('sqlite:' . self::databasePath());
-        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-        $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-        $pdo->exec('PRAGMA foreign_keys = ON');
+        $config = DatabaseConfig::loadInstalled();
 
-        foreach (self::schemaStatements() as $statement) {
-            $pdo->exec($statement);
+        if (!is_array($config)) {
+            return;
+        }
+
+        $pdo = self::connect($config);
+
+        $schemaStatements = DatabasePlatform::schemaStatements((string) $config['driver']);
+        $tableStatements = array_slice($schemaStatements, 0, count(DatabasePlatform::coreTables()));
+        $indexStatements = array_slice($schemaStatements, count(DatabasePlatform::coreTables()));
+
+        foreach ($tableStatements as $statement) {
+            self::executeSchemaStatement($pdo, (string) $config['driver'], $statement);
         }
 
         self::ensureTableColumns($pdo, 'users', [
-            'storage_quota_bytes INTEGER NULL',
-        ]);
+            'storage_quota_bytes ' . self::bytesType((string) $config['driver']) . ' NULL',
+        ], (string) $config['driver']);
         self::ensureTableColumns($pdo, 'file_shares', [
-            'expires_at TEXT NULL',
+            'expires_at ' . self::timestampType((string) $config['driver']) . ' NULL',
             'max_views INTEGER NULL',
             'view_count INTEGER NOT NULL DEFAULT 0',
             'password_hash TEXT NULL',
             'password_version INTEGER NOT NULL DEFAULT 0',
-        ]);
+            'active_file_id ' . self::referenceType((string) $config['driver']) . ' NULL',
+        ], (string) $config['driver']);
         self::ensureTableColumns($pdo, 'folders', [
-            'description TEXT NOT NULL DEFAULT \'\'',
-            'cached_size_bytes INTEGER NULL',
-            'cached_size_calculated_at TEXT NULL',
-        ]);
+            'description ' . self::descriptionType((string) $config['driver']) . ' NOT NULL DEFAULT \'\'',
+            'cached_size_bytes ' . self::bytesType((string) $config['driver']) . ' NULL',
+            'cached_size_calculated_at ' . self::timestampType((string) $config['driver']) . ' NULL',
+        ], (string) $config['driver']);
         self::ensureTableColumns($pdo, 'files', [
-            'description TEXT NOT NULL DEFAULT \'\'',
-        ]);
+            'description ' . self::descriptionType((string) $config['driver']) . ' NOT NULL DEFAULT \'\'',
+        ], (string) $config['driver']);
         self::ensureTableColumns($pdo, 'folder_permissions', [
-            'can_edit INTEGER NOT NULL DEFAULT 0',
-            'can_delete INTEGER NOT NULL DEFAULT 0',
-            'can_create_folders INTEGER NOT NULL DEFAULT 0',
-        ]);
+            'can_edit ' . self::booleanType((string) $config['driver']) . ' NOT NULL DEFAULT 0',
+            'can_delete ' . self::booleanType((string) $config['driver']) . ' NOT NULL DEFAULT 0',
+            'can_create_folders ' . self::booleanType((string) $config['driver']) . ' NOT NULL DEFAULT 0',
+        ], (string) $config['driver']);
+        self::ensureTableColumns($pdo, 'ip_bans', [
+            'active_ip_address ' . self::ipType((string) $config['driver']) . ' NULL',
+        ], (string) $config['driver']);
+
+        self::syncActiveConstraintColumns($pdo);
+
+        foreach ($indexStatements as $statement) {
+            self::executeSchemaStatement($pdo, (string) $config['driver'], $statement);
+        }
 
         Settings::seedDefaults($pdo);
         $statement = $pdo->prepare(
-            'INSERT INTO settings (key, value, updated_at)
-             VALUES (:key, :value, :updated_at)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
+            DatabasePlatform::upsertSql((string) $config['driver'], 'settings', ['key', 'value', 'updated_at'], ['value', 'updated_at'], ['key'])
         );
         $statement->execute([
             ':key' => 'app_version',
@@ -290,170 +364,263 @@ XML;
         AutomationRunner::seedJobs($pdo);
     }
 
-    private static function schemaStatements(): array
-    {
-        return [
-            'CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL UNIQUE,
-                password_hash TEXT NOT NULL,
-                role TEXT NOT NULL CHECK (role IN (\'super_admin\', \'admin\', \'user\')),
-                status TEXT NOT NULL CHECK (status IN (\'active\', \'suspended\')),
-                force_password_reset INTEGER NOT NULL DEFAULT 0,
-                is_immutable INTEGER NOT NULL DEFAULT 0,
-                storage_quota_bytes INTEGER NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                last_login_at TEXT
-            )',
-            'CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )',
-            'CREATE TABLE IF NOT EXISTS folders (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                parent_id INTEGER NULL REFERENCES folders(id) ON DELETE CASCADE,
-                name TEXT NOT NULL,
-                description TEXT NOT NULL DEFAULT \'\',
-                cached_size_bytes INTEGER NULL,
-                cached_size_calculated_at TEXT NULL,
-                created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                UNIQUE (parent_id, name)
-            )',
-            'CREATE TABLE IF NOT EXISTS files (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                folder_id INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
-                original_name TEXT NOT NULL,
-                disk_name TEXT NOT NULL UNIQUE,
-                disk_extension TEXT NOT NULL,
-                mime_type TEXT NOT NULL,
-                size INTEGER NOT NULL,
-                description TEXT NOT NULL DEFAULT \'\',
-                checksum TEXT NOT NULL,
-                created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )',
-            'CREATE TABLE IF NOT EXISTS file_shares (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-                token TEXT NOT NULL UNIQUE,
-                created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
-                expires_at TEXT NULL,
-                max_views INTEGER NULL,
-                view_count INTEGER NOT NULL DEFAULT 0,
-                password_hash TEXT NULL,
-                password_version INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                revoked_at TEXT NULL
-            )',
-            'CREATE TABLE IF NOT EXISTS folder_permissions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                folder_id INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
-                principal_type TEXT NOT NULL CHECK (principal_type IN (\'user\', \'guest\')),
-                principal_id INTEGER NOT NULL DEFAULT 0,
-                can_view INTEGER NOT NULL DEFAULT 0,
-                can_upload INTEGER NOT NULL DEFAULT 0,
-                can_edit INTEGER NOT NULL DEFAULT 0,
-                can_delete INTEGER NOT NULL DEFAULT 0,
-                can_create_folders INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                UNIQUE (folder_id, principal_type, principal_id)
-            )',
-            'CREATE TABLE IF NOT EXISTS login_attempts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL,
-                ip_address TEXT NOT NULL,
-                success INTEGER NOT NULL DEFAULT 0,
-                attempted_at TEXT NOT NULL
-            )',
-            'CREATE TABLE IF NOT EXISTS rate_limits (
-                bucket_key TEXT PRIMARY KEY,
-                scope TEXT NOT NULL,
-                bucket_identifier TEXT NOT NULL,
-                hits INTEGER NOT NULL DEFAULT 0,
-                window_started_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )',
-            'CREATE TABLE IF NOT EXISTS audit_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                event_type TEXT NOT NULL,
-                category TEXT NOT NULL,
-                actor_user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
-                actor_username TEXT NULL,
-                ip_address TEXT NOT NULL,
-                target_type TEXT NULL,
-                target_id INTEGER NULL,
-                target_label TEXT NULL,
-                metadata_json TEXT NOT NULL DEFAULT \'{}\',
-                created_at TEXT NOT NULL
-            )',
-            'CREATE TABLE IF NOT EXISTS ip_bans (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ip_address TEXT NOT NULL,
-                reason TEXT NOT NULL,
-                created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
-                created_by_username TEXT NULL,
-                created_at TEXT NOT NULL,
-                expires_at TEXT NULL,
-                revoked_at TEXT NULL,
-                revoked_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
-                revoked_by_username TEXT NULL,
-                revoked_reason TEXT NULL CHECK (revoked_reason IN (\'manual\', \'expired\')),
-                updated_at TEXT NOT NULL
-            )',
-            'CREATE TABLE IF NOT EXISTS automation_jobs (
-                job_key TEXT PRIMARY KEY,
-                label TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT \'idle\',
-                last_result TEXT NOT NULL DEFAULT \'idle\',
-                last_message TEXT NOT NULL DEFAULT \'\',
-                last_run_at TEXT NULL,
-                next_run_at TEXT NULL,
-                last_duration_ms INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )',
-            'CREATE INDEX IF NOT EXISTS idx_folders_parent_id ON folders(parent_id)',
-            'CREATE INDEX IF NOT EXISTS idx_files_folder_id ON files(folder_id)',
-            'CREATE UNIQUE INDEX IF NOT EXISTS idx_file_shares_active_file ON file_shares(file_id) WHERE revoked_at IS NULL',
-            'CREATE INDEX IF NOT EXISTS idx_permissions_principal ON folder_permissions(principal_type, principal_id)',
-            'CREATE INDEX IF NOT EXISTS idx_login_attempts_lookup ON login_attempts(username, ip_address, attempted_at)',
-            'CREATE INDEX IF NOT EXISTS idx_rate_limits_updated_at ON rate_limits(updated_at)',
-            'CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at)',
-            'CREATE INDEX IF NOT EXISTS idx_audit_logs_category_created_at ON audit_logs(category, created_at)',
-            'CREATE INDEX IF NOT EXISTS idx_audit_logs_ip_created_at ON audit_logs(ip_address, created_at)',
-            'CREATE UNIQUE INDEX IF NOT EXISTS idx_ip_bans_active_ip ON ip_bans(ip_address) WHERE revoked_at IS NULL',
-            'CREATE INDEX IF NOT EXISTS idx_ip_bans_history ON ip_bans(ip_address, revoked_at, expires_at)',
-            'CREATE INDEX IF NOT EXISTS idx_automation_jobs_next_run ON automation_jobs(next_run_at)',
-        ];
-    }
-
     /**
      * @param array<int, string> $columns
      */
-    private static function ensureTableColumns(PDO $pdo, string $table, array $columns): void
+    private static function ensureTableColumns(PDO $pdo, string $table, array $columns, string $driver): void
     {
-        $existing = $pdo->query('PRAGMA table_info(' . $table . ')')->fetchAll(PDO::FETCH_ASSOC);
-        $columnMap = [];
-
-        foreach ($existing as $column) {
-            $columnMap[(string) ($column['name'] ?? '')] = true;
-        }
+        $existing = array_flip(array_map('strtolower', DatabasePlatform::listColumns($pdo, $driver, $table)));
 
         foreach ($columns as $definition) {
             $name = strtolower((string) strtok(trim($definition), ' '));
 
-            if ($name === '' || isset($columnMap[$name])) {
+            if ($name === '' || isset($existing[$name])) {
                 continue;
             }
 
             $pdo->exec('ALTER TABLE ' . $table . ' ADD COLUMN ' . $definition);
         }
+    }
+
+    /**
+     * @param array<string, mixed> $config
+     */
+    private static function connect(array $config): PDO
+    {
+        try {
+            $pdo = new PDO(
+                DatabasePlatform::dsn($config),
+                (string) ($config['driver'] === 'sqlite' ? null : ($config['username'] ?? '')),
+                (string) ($config['driver'] === 'sqlite' ? null : ($config['password'] ?? ''))
+            );
+        } catch (\PDOException) {
+            throw new RuntimeException('Unable to connect to the selected database.');
+        }
+
+        DatabasePlatform::configureConnection($pdo, $config);
+
+        return $pdo;
+    }
+
+    private static function assertCoreEnvironmentChecks(): void
+    {
+        foreach (self::environmentChecks() as $check) {
+            if (($check['blocking'] ?? false) && !($check['ok'] ?? false)) {
+                throw new RuntimeException('Installation requirements are not met.');
+            }
+        }
+    }
+
+    private static function assertDatabaseDriverAvailable(string $driver): void
+    {
+        $extension = match ($driver) {
+            'sqlite' => 'pdo_sqlite',
+            'mysql' => 'pdo_mysql',
+            'pgsql' => 'pdo_pgsql',
+            default => throw new RuntimeException('Unsupported database driver.'),
+        };
+
+        if (!extension_loaded($extension)) {
+            throw new RuntimeException('The selected database driver is not available.');
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $config
+     */
+    private static function assertDatabaseConfigValid(array $config): void
+    {
+        $driver = (string) $config['driver'];
+
+        if ($driver === 'sqlite') {
+            if (trim((string) ($config['path'] ?? '')) === '') {
+                throw new RuntimeException('SQLite database path is required.');
+            }
+
+            return;
+        }
+
+        foreach (['host' => 'Database host', 'name' => 'Database name', 'username' => 'Database username'] as $key => $label) {
+            if (trim((string) ($config[$key] ?? '')) === '') {
+                throw new RuntimeException($label . ' is required.');
+            }
+        }
+    }
+
+    private static function ensureSqlitePathReady(string $path): void
+    {
+        $directory = dirname($path);
+
+        if (!is_dir($directory) && !mkdir($directory, 0775, true) && !is_dir($directory)) {
+            throw new RuntimeException('Unable to create the selected SQLite directory.');
+        }
+    }
+
+    private static function assertInstallTargetIsEmpty(PDO $pdo, string $driver): void
+    {
+        $tables = DatabasePlatform::tableNames($pdo, $driver);
+
+        if ($tables === []) {
+            return;
+        }
+
+        $matches = array_values(array_intersect($tables, DatabasePlatform::coreTables()));
+
+        if ($matches !== []) {
+            throw new RuntimeException('The selected database already contains wb-filebrowser tables.');
+        }
+
+        throw new RuntimeException('The selected database must be empty before installation.');
+    }
+
+    private static function dropKnownSchema(PDO $pdo): void
+    {
+        $tables = array_reverse(DatabasePlatform::coreTables());
+
+        foreach ($tables as $table) {
+            try {
+                $pdo->exec('DROP TABLE IF EXISTS ' . $table);
+            } catch (\Throwable) {
+                continue;
+            }
+        }
+    }
+
+    private static function syncActiveConstraintColumns(PDO $pdo): void
+    {
+        $pdo->exec(
+            'UPDATE file_shares
+             SET active_file_id = CASE WHEN revoked_at IS NULL THEN file_id ELSE NULL END'
+        );
+        $statement = $pdo->prepare(
+            'UPDATE ip_bans
+             SET active_ip_address = CASE
+                 WHEN revoked_at IS NULL AND (expires_at IS NULL OR expires_at > :now)
+                 THEN ip_address
+                 ELSE NULL
+             END'
+        );
+        $statement->execute([':now' => wb_now()]);
+    }
+
+    private static function executeSchemaStatement(PDO $pdo, string $driver, string $statement): void
+    {
+        if (preg_match('/CREATE\s+(UNIQUE\s+)?INDEX\s+IF\s+NOT\s+EXISTS\s+([A-Za-z0-9_]+)\s+ON\s+([A-Za-z0-9_]+)/i', $statement, $matches) === 1) {
+            $indexName = $matches[2];
+            $tableName = $matches[3];
+
+            if (self::indexExists($pdo, $driver, $tableName, $indexName)) {
+                return;
+            }
+
+            $statement = preg_replace('/\s+IF\s+NOT\s+EXISTS/i', '', $statement) ?? $statement;
+        }
+
+        $pdo->exec($statement);
+    }
+
+    private static function indexExists(PDO $pdo, string $driver, string $table, string $index): bool
+    {
+        $table = self::assertIdentifier($table);
+        $index = self::assertIdentifier($index);
+
+        return match ($driver) {
+            'sqlite' => self::sqliteIndexExists($pdo, $table, $index),
+            'mysql' => self::mysqlIndexExists($pdo, $table, $index),
+            'pgsql' => self::pgsqlIndexExists($pdo, $table, $index),
+            default => false,
+        };
+    }
+
+    private static function sqliteIndexExists(PDO $pdo, string $table, string $index): bool
+    {
+        $rows = $pdo->query('PRAGMA index_list(' . $table . ')')->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($rows as $row) {
+            if ((string) ($row['name'] ?? '') === $index) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static function mysqlIndexExists(PDO $pdo, string $table, string $index): bool
+    {
+        $statement = $pdo->query('SHOW INDEX FROM ' . $table);
+        $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($rows as $row) {
+            if ((string) ($row['Key_name'] ?? '') === $index) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static function pgsqlIndexExists(PDO $pdo, string $table, string $index): bool
+    {
+        $statement = $pdo->prepare(
+            'SELECT 1
+             FROM pg_indexes
+             WHERE schemaname = current_schema()
+               AND tablename = :table
+               AND indexname = :index
+             LIMIT 1'
+        );
+        $statement->execute([
+            ':table' => $table,
+            ':index' => $index,
+        ]);
+
+        return $statement->fetchColumn() !== false;
+    }
+
+    private static function assertIdentifier(string $value): string
+    {
+        if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $value) !== 1) {
+            throw new RuntimeException('Invalid database identifier.');
+        }
+
+        return $value;
+    }
+
+    private static function booleanType(string $driver): string
+    {
+        return match ($driver) {
+            'mysql' => 'TINYINT(1)',
+            'pgsql' => 'SMALLINT',
+            default => 'INTEGER',
+        };
+    }
+
+    private static function referenceType(string $driver): string
+    {
+        return match ($driver) {
+            'mysql' => 'BIGINT UNSIGNED',
+            'pgsql' => 'BIGINT',
+            default => 'INTEGER',
+        };
+    }
+
+    private static function bytesType(string $driver): string
+    {
+        return $driver === 'sqlite' ? 'INTEGER' : 'BIGINT';
+    }
+
+    private static function timestampType(string $driver): string
+    {
+        return $driver === 'sqlite' ? 'TEXT' : 'VARCHAR(40)';
+    }
+
+    private static function descriptionType(string $driver): string
+    {
+        return $driver === 'sqlite' ? 'TEXT' : 'VARCHAR(1000)';
+    }
+
+    private static function ipType(string $driver): string
+    {
+        return $driver === 'sqlite' ? 'TEXT' : 'VARCHAR(45)';
     }
 }

@@ -1,4 +1,54 @@
-(function () {
+const DEFAULT_PORTS = {
+  mysql: 3306,
+  pgsql: 5432,
+};
+
+const checkboxValue = (formData, name) => formData.get(name) === 'on';
+
+const numberValue = (formData, name, fallback) => {
+  const rawValue = formData.get(name);
+
+  if (rawValue === null || rawValue === '') {
+    return fallback;
+  }
+
+  const value = Number(rawValue);
+  return Number.isFinite(value) ? value : fallback;
+};
+
+const summarizeExtensions = (value) => {
+  const cleaned = String(value || '')
+    .split(/[\s,]+/)
+    .map((item) => item.trim().replace(/^\./, '').toLowerCase())
+    .filter(Boolean);
+
+  return cleaned.length > 0
+    ? `Allowed types: .${cleaned.join(', .')}.`
+    : 'Any file type is allowed.';
+};
+
+function setFieldGroupState(group, isActive) {
+  if (!group) {
+    return;
+  }
+
+  group.hidden = !isActive;
+  group.querySelectorAll('input, select, textarea').forEach((field) => {
+    field.disabled = !isActive;
+  });
+}
+
+function selectedDriverIsAvailable(driverSelect) {
+  const option = driverSelect?.selectedOptions?.[0];
+
+  if (!option) {
+    return false;
+  }
+
+  return option.dataset.available !== '0';
+}
+
+export function initInstallForm() {
   const bootstrapNode = document.getElementById('wb-bootstrap');
   const bootstrap = bootstrapNode ? JSON.parse(bootstrapNode.textContent || '{}') : {};
   const basePath = bootstrap.base_path || '';
@@ -7,12 +57,28 @@
   const submitButton = document.getElementById('install-submit');
   const passwordLengthHint = document.getElementById('install-password-length');
   const passwordMatchHint = document.getElementById('install-password-match');
+  const summaryDatabase = document.getElementById('summary-database');
   const summaryAccess = document.getElementById('summary-access');
   const summaryUploads = document.getElementById('summary-uploads');
   const summaryAutomation = document.getElementById('summary-automation');
+  const driverSelect = document.getElementById('database-driver');
+  const sqliteFields = document.getElementById('database-sqlite-fields');
+  const networkFields = document.getElementById('database-network-fields');
+  const networkPort = document.getElementById('database-port');
   const installBlocked = document.body.dataset.installBlocked === '1';
 
-  if (!form || !feedback || !submitButton || !passwordLengthHint || !passwordMatchHint || !summaryAccess || !summaryUploads || !summaryAutomation) {
+  if (
+    !form
+    || !feedback
+    || !submitButton
+    || !passwordLengthHint
+    || !passwordMatchHint
+    || !summaryDatabase
+    || !summaryAccess
+    || !summaryUploads
+    || !summaryAutomation
+    || !driverSelect
+  ) {
     return;
   }
 
@@ -26,22 +92,28 @@
     }
   };
 
-  const checkboxValue = (formData, name) => formData.get(name) === 'on';
+  const syncDriverFields = () => {
+    const driver = driverSelect.value || 'sqlite';
+    const sqliteActive = driver === 'sqlite';
 
-  const numberValue = (formData, name, fallback) => {
-    const value = Number(formData.get(name) || fallback);
-    return Number.isFinite(value) ? value : fallback;
-  };
+    setFieldGroupState(sqliteFields, sqliteActive);
+    setFieldGroupState(networkFields, !sqliteActive);
 
-  const summarizeExtensions = (value) => {
-    const cleaned = String(value || '')
-      .split(/[\s,]+/)
-      .map((item) => item.trim().replace(/^\./, '').toLowerCase())
-      .filter(Boolean);
+    if (!sqliteActive && networkPort && networkPort.value === '') {
+      networkPort.value = String(DEFAULT_PORTS[driver] || DEFAULT_PORTS.mysql);
+    }
 
-    return cleaned.length > 0
-      ? `Allowed types: .${cleaned.join(', .')}.`
-      : 'Any file type is allowed.';
+    const driverAvailable = selectedDriverIsAvailable(driverSelect);
+    submitButton.disabled = installBlocked || !driverAvailable;
+
+    if (!driverAvailable) {
+      setFeedback('The selected database driver is not available in PHP. Choose another driver or enable the matching PDO extension.', 'is-error');
+      return;
+    }
+
+    if (feedback.classList.contains('is-error') && feedback.textContent.includes('database driver is not available')) {
+      setFeedback('');
+    }
   };
 
   const syncInstallSummary = () => {
@@ -54,6 +126,11 @@
     const staleHours = numberValue(formData, 'uploads[stale_upload_ttl_hours]', 24);
     const diagnosticMinutes = numberValue(formData, 'automation[diagnostic_interval_minutes]', 30);
     const cleanupMinutes = numberValue(formData, 'automation[cleanup_interval_minutes]', 60);
+    const driver = String(formData.get('database[driver]') || 'sqlite');
+
+    summaryDatabase.textContent = driver === 'sqlite'
+      ? `SQLite at ${String(formData.get('database[path]') || 'storage/app.sqlite')}.`
+      : `${driver === 'mysql' ? 'MySQL' : 'PostgreSQL'} on ${String(formData.get('database[host]') || 'localhost')}:${numberValue(formData, 'database[port]', DEFAULT_PORTS[driver] || 3306)} using ${String(formData.get('database[name]') || 'the selected database')}.`;
 
     summaryAccess.textContent = publicAccess
       ? 'Published folders can be shared without login.'
@@ -77,8 +154,14 @@
     passwordMatchHint.classList.toggle('is-good', passwordsMatch);
   };
 
-  form.addEventListener('input', syncInstallSummary);
-  syncInstallSummary();
+  const syncState = () => {
+    syncDriverFields();
+    syncInstallSummary();
+  };
+
+  form.addEventListener('input', syncState);
+  form.addEventListener('change', syncState);
+  syncState();
 
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -89,9 +172,15 @@
       return;
     }
 
+    if (!selectedDriverIsAvailable(driverSelect)) {
+      setFeedback('The selected database driver is not available in PHP. Choose another driver or enable the matching PDO extension.', 'is-error');
+      return;
+    }
+
     const formData = new FormData(form);
     const password = String(formData.get('password') || '');
     const passwordConfirm = String(formData.get('password_confirm') || '');
+    const driver = String(formData.get('database[driver]') || 'sqlite');
 
     if (password !== passwordConfirm) {
       setFeedback('Passwords do not match.', 'is-error');
@@ -112,6 +201,15 @@
           csrf_token: String(formData.get('csrf_token') || ''),
           username: String(formData.get('username') || ''),
           password,
+          database: {
+            driver,
+            path: driver === 'sqlite' ? String(formData.get('database[path]') || '') : '',
+            host: driver === 'sqlite' ? '' : String(formData.get('database[host]') || ''),
+            port: driver === 'sqlite' ? null : numberValue(formData, 'database[port]', DEFAULT_PORTS[driver] || 3306),
+            name: driver === 'sqlite' ? '' : String(formData.get('database[name]') || ''),
+            username: driver === 'sqlite' ? '' : String(formData.get('database[username]') || ''),
+            password: driver === 'sqlite' ? '' : String(formData.get('database[password]') || ''),
+          },
           access: {
             public_access: checkboxValue(formData, 'access[public_access]'),
           },
@@ -148,4 +246,6 @@
       setFeedback(error instanceof Error ? error.message : 'Installation failed.', 'is-error');
     }
   });
-}());
+}
+
+initInstallForm();

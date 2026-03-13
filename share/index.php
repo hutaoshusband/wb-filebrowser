@@ -369,8 +369,9 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
                                 class="share-direct-link__field"
                                 type="text"
                                 readonly
-                                value="<?= wb_h($share['url']) ?>"
+                                value="<?= wb_h($file['direct_url']) ?>"
                             >
+                            <a class="header-button" href="<?= wb_h($file['direct_url']) ?>" target="_blank" rel="noopener noreferrer">Open direct link</a>
                         </div>
                     </aside>
                 </div>

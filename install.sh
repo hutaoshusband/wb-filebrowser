@@ -8,8 +8,18 @@ err() { echo "[error] $1"; exit 1; }
 
 # php
 command -v php >/dev/null || err "php not found"
-[ "$(php -r 'echo PHP_VERSION_ID;')" -ge 80000 ] || err "php 8.0+ required"
-for ext in pdo_sqlite fileinfo mbstring; do
+[ "$(php -r 'echo PHP_VERSION_ID;')" -ge 80100 ] || err "php 8.1+ required"
+
+PDO_DRIVERS=()
+for ext in pdo_sqlite pdo_mysql pdo_pgsql; do
+    if php -m | grep -qi "^${ext}$"; then
+        PDO_DRIVERS+=("$ext")
+    fi
+done
+
+[ "${#PDO_DRIVERS[@]}" -gt 0 ] || err "missing supported PDO extension: enable pdo_sqlite, pdo_mysql, or pdo_pgsql"
+
+for ext in fileinfo mbstring; do
     php -m | grep -qi "^${ext}$" || err "missing php extension: ${ext}"
 done
 
@@ -41,6 +51,7 @@ command -v node >/dev/null || err "node still not available after install attemp
 command -v npm  >/dev/null || err "npm still not available after install attempt"
 
 echo "-- php ok ($(php -r 'echo PHP_VERSION;'))"
+echo "-- pdo drivers ok (${PDO_DRIVERS[*]})"
 echo "-- node ok ($(node -v))"
 echo "-- npm ok ($(npm -v))"
 

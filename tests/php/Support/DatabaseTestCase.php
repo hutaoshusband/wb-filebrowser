@@ -59,7 +59,7 @@ abstract class DatabaseTestCase extends TestCase
             ':created_at' => $now,
             ':updated_at' => $now,
         ]);
-        $id = (int) Database::connection()->lastInsertId();
+        $id = Database::lastInsertId(Database::connection(), 'users');
         $fetch = Database::connection()->prepare(
             'SELECT id, username, role, status, force_password_reset, is_immutable, storage_quota_bytes, created_at, updated_at, last_login_at
              FROM users WHERE id = :id LIMIT 1'
@@ -139,7 +139,7 @@ abstract class DatabaseTestCase extends TestCase
             ':updated_at' => $now,
         ]);
 
-        $id = (int) Database::connection()->lastInsertId();
+        $id = Database::lastInsertId(Database::connection(), 'files');
         $fetch = Database::connection()->prepare('SELECT * FROM files WHERE id = :id LIMIT 1');
         $fetch->execute([':id' => $id]);
 
