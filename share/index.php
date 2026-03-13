@@ -369,7 +369,7 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
                                 class="share-direct-link__field"
                                 type="text"
                                 readonly
-                                value="<?= wb_h($share['url']) ?>"
+                                value="<?= wb_h($file['direct_url']) ?>"
                             >
                         </div>
                     </aside>

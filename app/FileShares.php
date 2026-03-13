@@ -559,6 +559,9 @@ final class FileShares
         $extension = strtolower(pathinfo((string) $share['original_name'], PATHINFO_EXTENSION));
         $urls = self::shareStreamUrls((string) $share['token']);
         $preview = wb_file_preview_metadata((string) $share['mime_type'], $extension);
+        $directUrl = ($preview['preview_mode'] ?? 'download') === 'download'
+            ? $urls['attachment']
+            : $urls['inline'];
 
         return array_merge([
             'id' => (int) $share['file_id'],
@@ -574,6 +577,7 @@ final class FileShares
             'extension' => $extension,
             'preview_url' => $urls['inline'],
             'download_url' => $urls['attachment'],
+            'direct_url' => $directUrl,
         ], $preview);
     }
 

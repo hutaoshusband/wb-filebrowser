@@ -20,6 +20,14 @@ describe('shared control styles', () => {
     expect(styles).toContain('object-fit:contain');
   });
 
+  it('pins the desktop sidebar while the main shell owns vertical scrolling', () => {
+    expect(styles).toContain('.wb-shell{display:grid;grid-template-columns:260px minmax(0,1fr);height:100vh;overflow:hidden;color:var(--text)}');
+    expect(styles).toContain('.wb-sidebar{background:linear-gradient(180deg,#07101d 0,#0c1729 100%);border-right:1px solid rgba(255,255,255,.06);padding:24px 18px;display:flex;flex-direction:column;gap:28px;min-height:0;overflow:auto}');
+    expect(styles).toContain('.wb-main{position:relative;padding:18px 22px 22px;display:flex;flex-direction:column;gap:16px;min-width:0;min-height:0;overflow-y:auto}');
+    expect(styles).toContain('@media (max-width:980px){.wb-shell{grid-template-columns:1fr}');
+    expect(styles).toContain('.wb-sidebar{position:fixed;top:0;left:0;bottom:0;width:min(320px,84vw);z-index:20;display:grid;gap:16px;overflow:auto;transform:translateX(-110%);transition:transform .22s ease,box-shadow .22s ease}');
+  });
+
   it('keeps shared code previews vertically scrollable inside the preview frame', () => {
     expect(styles).toContain('.share-text-preview{width:100%;min-height:100%;display:grid;grid-template-rows:minmax(0,1fr) auto}');
     expect(sharePage).toContain('.preview-frame:has(.share-text-preview) {');
@@ -44,5 +52,10 @@ describe('shared control styles', () => {
   it('uses the shared checkbox markup in the share and install forms', () => {
     expect(sharePage).toContain('checkbox-control');
     expect(installPage).toContain('checkbox-control');
+  });
+
+  it('renders the public direct-link field from the shared file stream URL', () => {
+    expect(sharePage).toContain('value="<?= wb_h($file[\'direct_url\']) ?>"');
+    expect(sharePage).not.toContain('value="<?= wb_h($share[\'url\']) ?>"');
   });
 });
