@@ -518,6 +518,7 @@ final class FileManager
             throw new InvalidArgumentException('Upload must contain at least one chunk.');
         }
 
+        self::assertDeclaredChunkCountMatchesSize($size, $totalChunks);
         self::assertWithinStorageQuota($user, $size);
 
         if ($relativePathSegments !== []) {
@@ -572,6 +573,13 @@ final class FileManager
             throw new RuntimeException('Unable to store upload chunk.');
         }
 
+        try {
+            self::assertChunkFileSize($targetPath, $metadata, $index);
+        } catch (RuntimeException $exception) {
+            @unlink($targetPath);
+            throw $exception;
+        }
+
         return [
             'received' => $index + 1,
             'total' => (int) $metadata['total_chunks'],
@@ -596,9 +604,13 @@ final class FileManager
         $chunkDirectory = wb_storage_path('chunks/' . $token);
 
         for ($index = 0; $index < $chunkCount; $index++) {
-            if (!is_file($chunkDirectory . DIRECTORY_SEPARATOR . $index . '.part')) {
+            $partPath = $chunkDirectory . DIRECTORY_SEPARATOR . $index . '.part';
+
+            if (!is_file($partPath)) {
                 throw new RuntimeException('Upload is incomplete.');
             }
+
+            self::assertChunkFileSize($partPath, $metadata, $index);
         }
 
         $diskName = wb_random_token(16);
@@ -619,85 +631,98 @@ final class FileManager
         $hash = hash_init('sha256');
 
         try {
-            for ($index = 0; $index < $chunkCount; $index++) {
-                $partPath = $chunkDirectory . DIRECTORY_SEPARATOR . $index . '.part';
-                $input = fopen($partPath, 'rb');
+            try {
+                for ($index = 0; $index < $chunkCount; $index++) {
+                    $partPath = $chunkDirectory . DIRECTORY_SEPARATOR . $index . '.part';
+                    $input = fopen($partPath, 'rb');
 
-                if ($input === false) {
-                    throw new RuntimeException('Unable to read upload chunk.');
-                }
-
-                while (!feof($input)) {
-                    $buffer = fread($input, 8192);
-
-                    if ($buffer === false) {
-                        fclose($input);
+                    if ($input === false) {
                         throw new RuntimeException('Unable to read upload chunk.');
                     }
 
-                    fwrite($output, $buffer);
-                    hash_update($hash, $buffer);
+                    while (!feof($input)) {
+                        $buffer = fread($input, 8192);
+
+                        if ($buffer === false) {
+                            fclose($input);
+                            throw new RuntimeException('Unable to read upload chunk.');
+                        }
+
+                        fwrite($output, $buffer);
+                        hash_update($hash, $buffer);
+                    }
+
+                    fclose($input);
                 }
-
-                fclose($input);
+            } finally {
+                fclose($output);
             }
-        } finally {
-            fclose($output);
-        }
 
-        $mimeType = (string) ($metadata['mime_type'] ?? 'application/octet-stream');
+            $mimeType = (string) ($metadata['mime_type'] ?? 'application/octet-stream');
 
-        if (function_exists('finfo_open')) {
-            $finfo = finfo_open(FILEINFO_MIME_TYPE);
+            if (function_exists('finfo_open')) {
+                $finfo = finfo_open(FILEINFO_MIME_TYPE);
 
-            if ($finfo !== false) {
-                $detected = finfo_file($finfo, $finalPath);
+                if ($finfo !== false) {
+                    $detected = finfo_file($finfo, $finalPath);
 
-                if (is_string($detected) && $detected !== '') {
-                    $mimeType = $detected;
+                    if (is_string($detected) && $detected !== '') {
+                        $mimeType = $detected;
+                    }
                 }
             }
+
+            $pdo = Database::connection();
+            $finalSize = (int) (filesize($finalPath) ?: 0);
+
+            if ($finalSize !== (int) $metadata['size']) {
+                throw new RuntimeException('Upload size does not match the declared size.');
+            }
+
+            Settings::assertUploadAllowed((string) $metadata['original_name'], $finalSize, $pdo);
+            self::assertWithinStorageQuota($user, $finalSize, $token, $pdo);
+            $statement = $pdo->prepare(
+                'INSERT INTO files (folder_id, original_name, disk_name, disk_extension, mime_type, size, checksum, created_by, created_at, updated_at)
+                 VALUES (:folder_id, :original_name, :disk_name, :disk_extension, :mime_type, :size, :checksum, :created_by, :created_at, :updated_at)'
+            );
+            $statement->execute([
+                ':folder_id' => $folderId,
+                ':original_name' => $metadata['original_name'],
+                ':disk_name' => $diskName,
+                ':disk_extension' => $diskExtension,
+                ':mime_type' => $mimeType,
+                ':size' => $finalSize,
+                ':checksum' => hash_final($hash),
+                ':created_by' => $user['id'],
+                ':created_at' => wb_now(),
+                ':updated_at' => wb_now(),
+            ]);
+
+            self::deleteDirectory($chunkDirectory);
+
+            $file = self::fileById(Database::lastInsertId($pdo, 'files'), $pdo);
+
+            if ($file !== null) {
+                AuditLog::record('file.upload', 'file_uploads', [
+                    'actor_user' => $user,
+                    'target_type' => 'file',
+                    'target_id' => (int) $file['id'],
+                    'target_label' => self::filePathLabel($file, $pdo),
+                    'summary' => 'Uploaded file ' . $file['original_name'],
+                    'metadata' => [
+                        'size' => (int) $file['size'],
+                        'mime_type' => (string) $file['mime_type'],
+                    ],
+                ], $pdo);
+
+                return self::serializeFile($file, $user, $pdo, Permissions::scope($user, $pdo));
+            }
+        } catch (\Throwable $exception) {
+            @unlink($finalPath);
+            throw $exception;
         }
 
-        $pdo = Database::connection();
-        $finalSize = (int) (filesize($finalPath) ?: 0);
-        self::assertWithinStorageQuota($user, $finalSize, $token, $pdo);
-        $statement = $pdo->prepare(
-            'INSERT INTO files (folder_id, original_name, disk_name, disk_extension, mime_type, size, checksum, created_by, created_at, updated_at)
-             VALUES (:folder_id, :original_name, :disk_name, :disk_extension, :mime_type, :size, :checksum, :created_by, :created_at, :updated_at)'
-        );
-        $statement->execute([
-            ':folder_id' => $folderId,
-            ':original_name' => $metadata['original_name'],
-            ':disk_name' => $diskName,
-            ':disk_extension' => $diskExtension,
-            ':mime_type' => $mimeType,
-            ':size' => $finalSize,
-            ':checksum' => hash_final($hash),
-            ':created_by' => $user['id'],
-            ':created_at' => wb_now(),
-            ':updated_at' => wb_now(),
-        ]);
-
-        self::deleteDirectory($chunkDirectory);
-
-        $file = self::fileById(Database::lastInsertId($pdo, 'files'), $pdo);
-
-        if ($file !== null) {
-            AuditLog::record('file.upload', 'file_uploads', [
-                'actor_user' => $user,
-                'target_type' => 'file',
-                'target_id' => (int) $file['id'],
-                'target_label' => self::filePathLabel($file, $pdo),
-                'summary' => 'Uploaded file ' . $file['original_name'],
-                'metadata' => [
-                    'size' => (int) $file['size'],
-                    'mime_type' => (string) $file['mime_type'],
-                ],
-            ], $pdo);
-        }
-
-        return self::serializeFile($file, $user, $pdo, Permissions::scope($user, $pdo));
+        throw new RuntimeException('Upload failed.');
     }
 
     public static function uploadCancel(array $user, string $token): void
@@ -1150,7 +1175,52 @@ final class FileManager
             throw new RuntimeException('Upload metadata is corrupted.');
         }
 
+        $size = (int) ($payload['size'] ?? -1);
+        $totalChunks = (int) ($payload['total_chunks'] ?? 0);
+
+        if ($size < 0 || $totalChunks < 1 || $totalChunks !== self::expectedChunkCount($size)) {
+            throw new RuntimeException('Upload metadata is invalid.');
+        }
+
+        $payload['size'] = $size;
+        $payload['total_chunks'] = $totalChunks;
+
         return $payload;
+    }
+
+    private static function assertDeclaredChunkCountMatchesSize(int $size, int $totalChunks): void
+    {
+        if ($totalChunks !== self::expectedChunkCount($size)) {
+            throw new InvalidArgumentException('Declared chunk count does not match file size.');
+        }
+    }
+
+    private static function expectedChunkCount(int $size): int
+    {
+        $normalizedSize = max(0, $size);
+
+        return max(1, intdiv($normalizedSize + self::CHUNK_SIZE - 1, self::CHUNK_SIZE));
+    }
+
+    private static function assertChunkFileSize(string $path, array $metadata, int $index): void
+    {
+        $size = filesize($path);
+
+        if ($size === false) {
+            throw new RuntimeException('Upload chunk is unreadable.');
+        }
+
+        if ((int) $size !== self::expectedChunkSize((int) $metadata['size'], $index)) {
+            throw new RuntimeException('Upload chunk size is invalid.');
+        }
+    }
+
+    private static function expectedChunkSize(int $size, int $index): int
+    {
+        $start = $index * self::CHUNK_SIZE;
+        $remaining = max(0, $size - $start);
+
+        return min(self::CHUNK_SIZE, $remaining);
     }
 
     private static function childFolderByName(int $parentId, string $name, PDO $pdo): ?array
