@@ -88,7 +88,13 @@ final class Database
 
     public static function rootFolderId(): int
     {
-        return (int) (self::setting('root_folder_id', '1') ?? '1');
+        $id = self::connection()->query('SELECT id FROM folders WHERE parent_id IS NULL AND name = \'Home\'')->fetchColumn();
+
+        if ($id === false) {
+            throw new RuntimeException('Root folder not found.');
+        }
+
+        return (int) $id;
     }
 
     /**
