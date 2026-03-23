@@ -168,14 +168,6 @@ function wb_redirect(string $path): never
     exit;
 }
 
-function wb_forbidden_page(string $title = 'Access blocked', string $message = 'This request has been blocked.'): never
-{
-    WbFileBrowser\Security::sendPageHeaders();
-    http_response_code(403);
-    echo '<!doctype html><html lang="en"><head>' . wb_page_head($title . ' | wb-filebrowser') . '</head><body class="install-shell"><main class="install-layout"><section class="install-card"><div class="install-header"><p class="install-kicker">Forbidden</p><h1>' . wb_h($title) . '</h1><p>' . wb_h($message) . '</p></div><div class="quick-actions"><a class="header-button primary-button" href="' . wb_h(wb_url('/')) . '">Open the file browser</a></div></section></main></body></html>';
-    exit;
-}
-
 function wb_countdown_label(int $remainingSeconds): string
 {
     $remaining = max(0, $remainingSeconds);
