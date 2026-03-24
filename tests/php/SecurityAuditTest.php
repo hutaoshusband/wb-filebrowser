@@ -235,6 +235,29 @@ final class SecurityAuditTest extends DatabaseTestCase
         $this->assertSame(1, $this->countAuditEvents('admin.audit.cleanup'));
     }
 
+    public function testAuditRecordEncodesMetadataAndHandlesMalformedUtf8(): void
+    {
+        $this->enableAudit([
+            'log_auth_success' => true,
+        ]);
+
+        AuditLog::record('test.metadata', 'auth_success', [
+            'metadata' => ['key' => "\xB1\x31"]
+        ]);
+
+        $statement = Database::connection()->query("SELECT metadata_json FROM audit_logs WHERE event_type = 'test.metadata'");
+        $malformedJson = $statement->fetchColumn();
+        $this->assertSame('{}', $malformedJson);
+
+        AuditLog::record('test.metadata.valid', 'auth_success', [
+            'metadata' => ['key' => 'value']
+        ]);
+
+        $statementValid = Database::connection()->query("SELECT metadata_json FROM audit_logs WHERE event_type = 'test.metadata.valid'");
+        $validJson = $statementValid->fetchColumn();
+        $this->assertSame('{"key":"value"}', $validJson);
+    }
+
     /**
      * @param array<string, mixed> $overrides
      */
