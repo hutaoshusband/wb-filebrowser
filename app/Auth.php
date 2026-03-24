@@ -9,6 +9,8 @@ use RuntimeException;
 
 final class Auth
 {
+    public const MSG_RATE_LIMIT_LOGIN = 'Too many failed login attempts. Please wait a few minutes and try again.';
+
     public static function currentUser(?PDO $pdo = null): ?array
     {
         Security::startSession();
@@ -44,7 +46,7 @@ final class Auth
         $rateLimitBuckets = self::loginRateLimitBuckets($username, $ip);
         Security::assertRateLimitAvailable(
             $rateLimitBuckets,
-            'Too many failed login attempts. Please wait a few minutes and try again.',
+            self::MSG_RATE_LIMIT_LOGIN,
             $pdo,
             ['source' => 'auth_login']
         );
@@ -74,7 +76,7 @@ final class Auth
                 ], $pdo);
                 Security::assertRateLimitAvailable(
                     $rateLimitBuckets,
-                    'Too many failed login attempts. Please wait a few minutes and try again.',
+                    self::MSG_RATE_LIMIT_LOGIN,
                     $pdo,
                     ['source' => 'auth_login']
                 );

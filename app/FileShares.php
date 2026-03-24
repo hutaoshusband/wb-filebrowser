@@ -10,6 +10,8 @@ use RuntimeException;
 
 final class FileShares
 {
+    public const MSG_RATE_LIMIT_SHARE = 'Shared file unavailable right now.';
+
     private const TEXT_PREVIEW_LIMIT_BYTES = 262144;
     private const STREAM_GRANT_TTL_SECONDS = 600;
 

@@ -11,6 +11,7 @@ use RuntimeException;
 final class FileManager
 {
     public const CHUNK_SIZE = 2097152;
+    public const MSG_RATE_LIMIT_UPLOAD = 'Too many upload attempts. Please wait a few minutes and try again.';
 
     public static function listFolder(?array $user, int $folderId, string $sort = 'name', string $direction = 'asc'): array
     {

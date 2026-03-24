@@ -62,7 +62,7 @@ try {
         ];
         Security::assertRateLimitAvailable(
             $shareRateLimitBuckets,
-            'Shared file unavailable right now.',
+            FileShares::MSG_RATE_LIMIT_SHARE,
             null,
             ['source' => 'share_view']
         );
@@ -83,7 +83,7 @@ try {
                 ];
                 Security::assertRateLimitAvailable(
                     $passwordRateLimitBuckets,
-                    'Shared file unavailable right now.',
+                    FileShares::MSG_RATE_LIMIT_SHARE,
                     null,
                     ['source' => 'share_password']
                 );
@@ -107,7 +107,7 @@ try {
                     ]);
                     Security::assertRateLimitAvailable(
                         $passwordRateLimitBuckets,
-                        'Shared file unavailable right now.',
+                        FileShares::MSG_RATE_LIMIT_SHARE,
                         null,
                         ['source' => 'share_password']
                     );
