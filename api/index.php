@@ -323,7 +323,7 @@ try {
                     'window' => 10 * 60,
                 ],
             ];
-            Security::assertRateLimitAvailable($uploadRateLimitBuckets, 'Too many upload attempts. Please wait a few minutes and try again.');
+            Security::assertRateLimitAvailable($uploadRateLimitBuckets, FileManager::MSG_RATE_LIMIT_UPLOAD);
             Security::consumeRateLimit($uploadRateLimitBuckets);
             wb_json_response([
                 'ok' => true,
