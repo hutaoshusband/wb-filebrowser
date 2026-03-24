@@ -870,12 +870,21 @@ final class FileManager
         );
         $calculatedAt = wb_now();
 
-        foreach ($sizes as $folderId => $size) {
-            $statement->execute([
-                ':cached_size_bytes' => $size,
-                ':cached_size_calculated_at' => $calculatedAt,
-                ':id' => $folderId,
-            ]);
+        $pdo->beginTransaction();
+
+        try {
+            foreach ($sizes as $folderId => $size) {
+                $statement->execute([
+                    ':cached_size_bytes' => $size,
+                    ':cached_size_calculated_at' => $calculatedAt,
+                    ':id' => $folderId,
+                ]);
+            }
+
+            $pdo->commit();
+        } catch (\Throwable $exception) {
+            $pdo->rollBack();
+            throw $exception;
         }
 
         return count($sizes);

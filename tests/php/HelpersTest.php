@@ -35,9 +35,8 @@ class HelpersTest extends TestCase
         $actual = wb_json_html($input);
 
         $this->assertEquals($expected, $actual);
+    }
 
-final class HelpersTest extends TestCase
-{
     public function testRelativeTimeReturnsUnknownForNull(): void
     {
         $this->assertSame('Unknown', wb_relative_time(null));
