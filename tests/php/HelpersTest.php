@@ -6,12 +6,58 @@ namespace WbFileBrowser\Tests;
 
 use PHPUnit\Framework\TestCase;
 use PHPUnit\Framework\Attributes\CoversFunction;
+use PHPUnit\Framework\Attributes\DataProvider;
 
 #[CoversFunction('wb_json_html')]
 #[CoversFunction('wb_relative_time')]
 #[CoversFunction('wb_validate_entry_name')]
+#[CoversFunction('wb_parse_bool')]
 class HelpersTest extends TestCase
 {
+    #[DataProvider('provideParseBoolData')]
+    public function testWbParseBool(mixed $value, bool $expected): void
+    {
+        $this->assertSame($expected, wb_parse_bool($value));
+    }
+
+    public static function provideParseBoolData(): iterable
+    {
+        yield 'bool true' => [true, true];
+        yield 'bool false' => [false, false];
+
+        yield 'int 1' => [1, true];
+        yield 'int 0' => [0, false];
+        yield 'int 2' => [2, false];
+        yield 'int -1' => [-1, false];
+
+        yield 'string 1' => ['1', true];
+        yield 'string 0' => ['0', false];
+        yield 'string true' => ['true', true];
+        yield 'string false' => ['false', false];
+        yield 'string yes' => ['yes', true];
+        yield 'string no' => ['no', false];
+        yield 'string on' => ['on', true];
+        yield 'string off' => ['off', false];
+
+        yield 'string TRUE uppercase' => ['TRUE', true];
+        yield 'string Yes mixed case' => ['Yes', true];
+        yield 'string ON mixed case' => ['ON', true];
+        yield 'string spaces' => ['  true  ', true];
+        yield 'string spaces with 1' => [' 1 ', true];
+        yield 'string empty' => ['', false];
+        yield 'string random' => ['random_string', false];
+
+        yield 'null' => [null, false];
+        yield 'float 1.0' => [1.0, true];
+        yield 'float 0.0' => [0.0, false];
+
+        yield 'object with toString returning true' => [new class {
+            public function __toString(): string
+            {
+                return 'true';
+            }
+        }, true];
+    }
     public function testWbJsonHtmlEscapesUnsafeCharacters(): void
     {
         $input = ['unsafe' => '<script>alert("xss & stuff \'")</script>'];
