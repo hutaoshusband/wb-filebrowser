@@ -93,4 +93,19 @@ final class DatabasePlatformTest extends TestCase
         $this->assertNull(DatabasePlatform::sequenceName('mysql', 'users'));
         $this->assertSame('users_id_seq', DatabasePlatform::sequenceName('pgsql', 'users'));
     }
+
+    public function testNormalizesDatabaseDriverNames(): void
+    {
+        $this->assertSame('sqlite', DatabasePlatform::normalizeDriver('sqlite'));
+        $this->assertSame('mysql', DatabasePlatform::normalizeDriver('MYSQL'));
+        $this->assertSame('pgsql', DatabasePlatform::normalizeDriver('  pgsql  '));
+    }
+
+    public function testThrowsExceptionForUnsupportedDriver(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Unsupported database driver.');
+
+        DatabasePlatform::normalizeDriver('invalid');
+    }
 }
