@@ -13,6 +13,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 #[CoversFunction('wb_validate_entry_name')]
 #[CoversFunction('wb_normalize_name')]
 #[CoversFunction('wb_parse_bool')]
+#[CoversFunction('wb_format_bytes')]
 class HelpersTest extends TestCase
 {
     #[DataProvider('provideParseBoolData')]
@@ -175,5 +176,29 @@ class HelpersTest extends TestCase
         yield 'string with combination of control chars' => ["\x00hello\x01 \x1Fworld\x7F", 'hello world'];
         yield 'string with whitespace stripped by regex (newline, carriage return, tab)' => ["hello\n\r\tworld", "helloworld"];
         yield 'surrounding and internal control chars' => [" \x00 hello \x7F world \x1F ", 'hello  world'];
+    }
+
+    #[DataProvider('provideFormatBytesData')]
+    public function testWbFormatBytes(?int $bytes, string $expected): void
+    {
+        $this->assertSame($expected, wb_format_bytes($bytes));
+    }
+
+    public static function provideFormatBytesData(): iterable
+    {
+        yield 'null' => [null, 'Unknown'];
+        yield 'negative integer' => [-1, 'Unknown'];
+        yield 'zero' => [0, '0 B'];
+        yield 'bytes' => [500, '500 B'];
+        yield 'exact KB' => [1024, '1.0 KB'];
+        yield 'KB with decimal' => [1536, '1.5 KB'];
+        yield 'exact MB' => [1048576, '1.0 MB'];
+        yield 'MB with decimal' => [1572864, '1.5 MB'];
+        yield 'exact GB' => [1073741824, '1.0 GB'];
+        yield 'GB with decimal' => [1610612736, '1.5 GB'];
+        yield 'exact TB' => [1099511627776, '1.0 TB'];
+        yield 'TB with decimal' => [1649267441664, '1.5 TB'];
+        yield '10 TB' => [10995116277760, '10 TB'];
+        yield '100 TB' => [109951162777600, '100 TB'];
     }
 }
