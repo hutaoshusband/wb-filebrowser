@@ -14,7 +14,7 @@ function wb_h(?string $value): string
 
 function wb_detect_base_path(): string
 {
-    if (PHP_SAPI === 'cli') {
+    if (PHP_SAPI === 'cli' && empty($_SERVER['WB_TESTING_BASE_PATH'])) {
         return '';
     }
 
