@@ -11,6 +11,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 #[CoversFunction('wb_json_html')]
 #[CoversFunction('wb_relative_time')]
 #[CoversFunction('wb_validate_entry_name')]
+#[CoversFunction('wb_normalize_name')]
 #[CoversFunction('wb_parse_bool')]
 class HelpersTest extends TestCase
 {
@@ -153,5 +154,26 @@ class HelpersTest extends TestCase
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('Folder name is required.');
         wb_validate_entry_name('', 'folder');
+    }
+
+    #[DataProvider('provideNormalizeNameData')]
+    public function testWbNormalizeName(string $input, string $expected): void
+    {
+        $this->assertSame($expected, wb_normalize_name($input));
+    }
+
+    public static function provideNormalizeNameData(): iterable
+    {
+        yield 'normal string' => ['hello world', 'hello world'];
+        yield 'surrounding spaces' => ['  hello world  ', 'hello world'];
+        yield 'empty string' => ['', ''];
+        yield 'string with only spaces' => ['   ', ''];
+        yield 'string with null bytes' => ["hello\x00world", 'helloworld'];
+        yield 'string with unit separator' => ["hello\x1Fworld", 'helloworld'];
+        yield 'string with DEL character' => ["hello\x7Fworld", 'helloworld'];
+        yield 'string with start of heading' => ["hello\x01world", 'helloworld'];
+        yield 'string with combination of control chars' => ["\x00hello\x01 \x1Fworld\x7F", 'hello world'];
+        yield 'string with whitespace stripped by regex (newline, carriage return, tab)' => ["hello\n\r\tworld", "helloworld"];
+        yield 'surrounding and internal control chars' => [" \x00 hello \x7F world \x1F ", 'hello  world'];
     }
 }
