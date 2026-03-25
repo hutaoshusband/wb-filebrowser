@@ -14,6 +14,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 #[CoversFunction('wb_normalize_name')]
 #[CoversFunction('wb_parse_bool')]
 #[CoversFunction('wb_format_bytes')]
+#[CoversFunction('wb_detect_base_path')]
 class HelpersTest extends TestCase
 {
     #[DataProvider('provideParseBoolData')]
@@ -200,5 +201,70 @@ class HelpersTest extends TestCase
         yield 'TB with decimal' => [1649267441664, '1.5 TB'];
         yield '10 TB' => [10995116277760, '10 TB'];
         yield '100 TB' => [109951162777600, '100 TB'];
+    }
+
+    #[DataProvider('provideDetectBasePathData')]
+    public function testWbDetectBasePath(
+        ?string $scriptName,
+        ?string $scriptFilename,
+        string $expected
+    ): void {
+        $_SERVER['WB_TESTING_BASE_PATH'] = '1';
+
+        $originalScriptName = $_SERVER['SCRIPT_NAME'] ?? null;
+        $originalScriptFilename = $_SERVER['SCRIPT_FILENAME'] ?? null;
+
+        if ($scriptName !== null) {
+            $_SERVER['SCRIPT_NAME'] = $scriptName;
+        } else {
+            unset($_SERVER['SCRIPT_NAME']);
+        }
+
+        if ($scriptFilename !== null) {
+            $_SERVER['SCRIPT_FILENAME'] = str_replace('{WB_ROOT}', WB_ROOT, $scriptFilename);
+        } else {
+            unset($_SERVER['SCRIPT_FILENAME']);
+        }
+
+        try {
+            $this->assertSame($expected, wb_detect_base_path());
+        } finally {
+            unset($_SERVER['WB_TESTING_BASE_PATH']);
+
+            if ($originalScriptName !== null) {
+                $_SERVER['SCRIPT_NAME'] = $originalScriptName;
+            } else {
+                unset($_SERVER['SCRIPT_NAME']);
+            }
+
+            if ($originalScriptFilename !== null) {
+                $_SERVER['SCRIPT_FILENAME'] = $originalScriptFilename;
+            } else {
+                unset($_SERVER['SCRIPT_FILENAME']);
+            }
+        }
+    }
+
+    public static function provideDetectBasePathData(): iterable
+    {
+        yield 'root path' => ['/index.php', '{WB_ROOT}/index.php', ''];
+        yield 'subdirectory base path' => ['/base/subdir/index.php', '{WB_ROOT}/subdir/index.php', '/base'];
+        yield 'deep subdirectory base path' => ['/a/b/subdir/index.php', '{WB_ROOT}/subdir/index.php', '/a/b'];
+
+        yield 'script file not inside project root' => ['/fallback/index.php', '/var/www/other/index.php', '/fallback'];
+
+        yield 'windows paths' => ['/base/win/index.php', '{WB_ROOT}\\win\\index.php', '/base'];
+        yield 'windows paths fallback' => ['/win/index.php', 'C:\\outside\\win\\index.php', '/win'];
+
+        yield 'missing script name' => [null, '{WB_ROOT}/index.php', ''];
+        yield 'missing script filename' => ['/index.php', null, ''];
+
+        yield 'empty string script name' => ['', '{WB_ROOT}/index.php', ''];
+
+        yield 'index.php without slash script name' => ['index.php', '{WB_ROOT}/index.php', ''];
+
+        yield 'script file shorter than project root' => ['/short/index.php', '/short/index.php', '/short'];
+
+        yield 'relative segments mismatch' => ['/mismatch/index.php', '{WB_ROOT}/different/different2/index.php', '/mismatch'];
     }
 }
