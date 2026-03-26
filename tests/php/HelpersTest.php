@@ -50,6 +50,7 @@ class PhpInputStreamMock
 #[CoversFunction('wb_detect_base_path')]
 #[CoversFunction('wb_request_data')]
 #[CoversFunction('wb_is_json_request')]
+#[CoversFunction('wb_cookie_path')]
 class HelpersTest extends TestCase
 {
     #[DataProvider('provideParseBoolData')]
@@ -301,6 +302,43 @@ class HelpersTest extends TestCase
         yield 'script file shorter than project root' => ['/short/index.php', '/short/index.php', '/short'];
 
         yield 'relative segments mismatch' => ['/mismatch/index.php', '{WB_ROOT}/different/different2/index.php', '/mismatch'];
+    }
+
+    public function testWbCookiePathDefault(): void
+    {
+        $this->assertSame('/', wb_cookie_path());
+    }
+
+    public function testWbCookiePathWithCustomBasePath(): void
+    {
+        $script = sprintf(
+            <<<'PHP'
+<?php
+declare(strict_types=1);
+
+define('WB_BASE_PATH', '/custom/path');
+require_once %s;
+
+echo wb_cookie_path();
+PHP,
+            var_export(__DIR__ . '/../../app/helpers.php', true)
+        );
+
+        $tmpFile = tempnam(sys_get_temp_dir(), 'wb_test_');
+        $this->assertNotFalse($tmpFile, 'Failed to create temporary file for test');
+
+        try {
+            file_put_contents($tmpFile, $script);
+
+            $output = [];
+            $returnVar = 0;
+            exec(escapeshellcmd(PHP_BINARY) . ' ' . escapeshellarg($tmpFile), $output, $returnVar);
+
+            $this->assertSame(0, $returnVar, 'PHP script execution failed');
+            $this->assertSame(['/custom/path/'], $output);
+        } finally {
+            @unlink($tmpFile);
+        }
     }
 
     #[DataProvider('provideRequestDataData')]
