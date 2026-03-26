@@ -8,6 +8,39 @@ use PHPUnit\Framework\TestCase;
 use PHPUnit\Framework\Attributes\CoversFunction;
 use PHPUnit\Framework\Attributes\DataProvider;
 
+class PhpInputStreamMock
+{
+    public static string $data = '';
+    private int $position = 0;
+
+    public function stream_open(string $path, string $mode, int $options, ?string &$opened_path): bool
+    {
+        return true;
+    }
+
+    public function stream_read(int $count): string|false
+    {
+        $ret = substr(self::$data, $this->position, $count);
+        $this->position += strlen($ret);
+        return $ret;
+    }
+
+    public function stream_eof(): bool
+    {
+        return $this->position >= strlen(self::$data);
+    }
+
+    public function stream_stat(): array|false
+    {
+        return [];
+    }
+
+    public function stream_set_option(int $option, int $arg1, int $arg2): bool
+    {
+        return false;
+    }
+}
+
 #[CoversFunction('wb_json_html')]
 #[CoversFunction('wb_relative_time')]
 #[CoversFunction('wb_validate_entry_name')]
@@ -15,6 +48,8 @@ use PHPUnit\Framework\Attributes\DataProvider;
 #[CoversFunction('wb_parse_bool')]
 #[CoversFunction('wb_format_bytes')]
 #[CoversFunction('wb_detect_base_path')]
+#[CoversFunction('wb_request_data')]
+#[CoversFunction('wb_is_json_request')]
 class HelpersTest extends TestCase
 {
     #[DataProvider('provideParseBoolData')]
@@ -266,5 +301,114 @@ class HelpersTest extends TestCase
         yield 'script file shorter than project root' => ['/short/index.php', '/short/index.php', '/short'];
 
         yield 'relative segments mismatch' => ['/mismatch/index.php', '{WB_ROOT}/different/different2/index.php', '/mismatch'];
+    }
+
+    #[DataProvider('provideRequestDataData')]
+    public function testWbRequestData(?string $contentType, array $postData, string $inputStream, array $expected): void
+    {
+        // Setup $_SERVER and $_POST
+        $originalContentType = $_SERVER['CONTENT_TYPE'] ?? null;
+        $originalPost = $_POST;
+
+        if ($contentType !== null) {
+            $_SERVER['CONTENT_TYPE'] = $contentType;
+        } else {
+            unset($_SERVER['CONTENT_TYPE']);
+        }
+
+        $_POST = $postData;
+
+        // Setup php://input mock
+        stream_wrapper_unregister('php');
+        stream_wrapper_register('php', PhpInputStreamMock::class);
+        PhpInputStreamMock::$data = $inputStream;
+
+        try {
+            $this->assertSame($expected, wb_request_data());
+        } finally {
+            // Restore php://input
+            stream_wrapper_restore('php');
+
+            // Restore $_SERVER and $_POST
+            if ($originalContentType !== null) {
+                $_SERVER['CONTENT_TYPE'] = $originalContentType;
+            } else {
+                unset($_SERVER['CONTENT_TYPE']);
+            }
+            $_POST = $originalPost;
+        }
+    }
+
+    public static function provideRequestDataData(): iterable
+    {
+        yield 'non-json request returns POST data' => [
+            'application/x-www-form-urlencoded',
+            ['foo' => 'bar'],
+            '{"json":"data"}',
+            ['foo' => 'bar']
+        ];
+
+        yield 'missing content type returns POST data' => [
+            null,
+            ['foo' => 'bar'],
+            '{"json":"data"}',
+            ['foo' => 'bar']
+        ];
+
+        yield 'json request returns decoded input' => [
+            'application/json',
+            ['post' => 'ignored'],
+            '{"foo":"bar","baz":123}',
+            ['foo' => 'bar', 'baz' => 123]
+        ];
+
+        yield 'json request with charset returns decoded input' => [
+            'application/json; charset=utf-8',
+            ['post' => 'ignored'],
+            '{"test":true}',
+            ['test' => true]
+        ];
+
+        yield 'json request with empty input returns empty array' => [
+            'application/json',
+            ['post' => 'ignored'],
+            '',
+            []
+        ];
+
+        yield 'json request with invalid json returns empty array' => [
+            'application/json',
+            ['post' => 'ignored'],
+            '{invalid-json}',
+            []
+        ];
+
+        yield 'json request with non-array json (string) returns empty array' => [
+            'application/json',
+            ['post' => 'ignored'],
+            '"just a string"',
+            []
+        ];
+
+        yield 'json request with non-array json (number) returns empty array' => [
+            'application/json',
+            ['post' => 'ignored'],
+            '12345',
+            []
+        ];
+
+        yield 'json request with non-array json (boolean) returns empty array' => [
+            'application/json',
+            ['post' => 'ignored'],
+            'true',
+            []
+        ];
+
+        yield 'json request with json array returns decoded array' => [
+            'application/json',
+            ['post' => 'ignored'],
+            '[1, 2, 3]',
+            [1, 2, 3]
+        ];
     }
 }
