@@ -235,6 +235,21 @@ final class SecurityAuditTest extends DatabaseTestCase
         $this->assertSame(1, $this->countAuditEvents('admin.audit.cleanup'));
     }
 
+    public function testAuditRecordFallsBackToEmptyJsonObjectWhenJsonEncodeFails(): void
+    {
+        $this->enableAudit([
+            'log_admin_actions' => true,
+        ]);
+
+        AuditLog::record('test.malformed', 'admin_actions', [
+            'metadata' => ['invalid_utf8' => "\x80"]
+        ]);
+
+        $statement = Database::connection()->query("SELECT metadata_json FROM audit_logs WHERE event_type = 'test.malformed'");
+        $json = $statement->fetchColumn();
+        $this->assertSame('{}', $json);
+    }
+
     public function testAuditRecordEncodesMetadataAndHandlesMalformedUtf8(): void
     {
         $this->enableAudit([
