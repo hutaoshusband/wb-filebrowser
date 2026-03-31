@@ -862,23 +862,28 @@ final class FileManager
             $computeSize((int) $folderId);
         }
 
-        $statement = $pdo->prepare(
-            'UPDATE folders
-             SET cached_size_bytes = :cached_size_bytes,
-                 cached_size_calculated_at = :cached_size_calculated_at
-             WHERE id = :id'
-        );
         $calculatedAt = wb_now();
-
         $pdo->beginTransaction();
 
         try {
-            foreach ($sizes as $folderId => $size) {
-                $statement->execute([
-                    ':cached_size_bytes' => $size,
-                    ':cached_size_calculated_at' => $calculatedAt,
-                    ':id' => $folderId,
-                ]);
+            foreach (array_chunk(array_keys($sizes), 250) as $chunk) {
+                $cases = [];
+                $params = [':calculated_at' => $calculatedAt];
+
+                foreach ($chunk as $index => $folderId) {
+                    $cases[] = "WHEN :id{$index} THEN :size{$index}";
+                    $params[":id{$index}"] = $folderId;
+                    $params[":size{$index}"] = $sizes[$folderId];
+                }
+
+                $ids = implode(', ', array_map(static fn (int $i): string => ":id{$i}", array_keys($chunk)));
+                $sql = sprintf(
+                    'UPDATE folders SET cached_size_bytes = CASE id %s END, cached_size_calculated_at = :calculated_at WHERE id IN (%s)',
+                    implode(' ', $cases),
+                    $ids
+                );
+
+                $pdo->prepare($sql)->execute($params);
             }
 
             $pdo->commit();
