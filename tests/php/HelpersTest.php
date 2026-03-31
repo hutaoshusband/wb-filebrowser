@@ -139,59 +139,46 @@ class HelpersTest extends TestCase
         $this->assertSame('invalid-date-string', wb_relative_time('invalid-date-string'));
     }
 
-    public function testWbValidateEntryNameReturnsValidName(): void
+    #[DataProvider('provideWbValidateEntryNameSuccessData')]
+    public function testWbValidateEntryNameSuccess(string $input, string $expected, string $kind = 'item'): void
     {
-        $this->assertSame('valid_name.txt', wb_validate_entry_name('valid_name.txt'));
-        $this->assertSame('spaces allowed', wb_validate_entry_name(' spaces allowed '));
+        $this->assertSame($expected, wb_validate_entry_name($input, $kind));
     }
 
-    public function testWbValidateEntryNameThrowsOnEmptyString(): void
+    public static function provideWbValidateEntryNameSuccessData(): iterable
     {
-        $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('Item name is required.');
-        wb_validate_entry_name('   ');
+        yield 'plain string' => ['file.txt', 'file.txt'];
+        yield 'with spaces' => ['  file.txt  ', 'file.txt'];
+        yield 'spaces in middle' => ['file name.txt', 'file name.txt'];
+        yield 'multibyte string' => ['🚀 file.txt', '🚀 file.txt'];
+        yield 'multibyte string with spaces' => ['  🚀 file.txt  ', '🚀 file.txt'];
+        yield 'max length 255' => [str_repeat('a', 255), str_repeat('a', 255)];
+        yield 'max length 255 multibyte' => [str_repeat('🚀', 255), str_repeat('🚀', 255)];
+        yield 'control characters' => ["file\x00name.txt", 'filename.txt'];
+        yield 'custom kind' => ['folder_name', 'folder_name', 'folder'];
     }
 
-    public function testWbValidateEntryNameThrowsOnTooLongName(): void
+    #[DataProvider('provideWbValidateEntryNameFailureData')]
+    public function testWbValidateEntryNameFailure(string $input, string $expectedMessage, string $kind = 'item'): void
     {
         $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('Item name must be 255 characters or fewer.');
-        wb_validate_entry_name(str_repeat('a', 256));
+        $this->expectExceptionMessage($expectedMessage);
+        wb_validate_entry_name($input, $kind);
     }
 
-    public function testWbValidateEntryNameThrowsOnPathSeparators(): void
+    public static function provideWbValidateEntryNameFailureData(): iterable
     {
-        $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('Item name cannot contain path separators.');
-        wb_validate_entry_name('folder/file.txt');
-    }
-
-    public function testWbValidateEntryNameThrowsOnBackslash(): void
-    {
-        $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('Item name cannot contain path separators.');
-        wb_validate_entry_name('folder\\file.txt');
-    }
-
-    public function testWbValidateEntryNameThrowsOnInvalidDots(): void
-    {
-        $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('Item name is invalid.');
-        wb_validate_entry_name('.');
-    }
-
-    public function testWbValidateEntryNameThrowsOnInvalidDoubleDots(): void
-    {
-        $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('Item name is invalid.');
-        wb_validate_entry_name('..');
-    }
-
-    public function testWbValidateEntryNameUsesCustomKindInException(): void
-    {
-        $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('Folder name is required.');
-        wb_validate_entry_name('', 'folder');
+        yield 'empty string' => ['', 'Item name is required.'];
+        yield 'only spaces' => ['   ', 'Item name is required.'];
+        yield 'only control chars' => ["\x00\x01\x1F", 'Item name is required.'];
+        yield 'too long' => [str_repeat('a', 256), 'Item name must be 255 characters or fewer.'];
+        yield 'too long multibyte' => [str_repeat('🚀', 256), 'Item name must be 255 characters or fewer.'];
+        yield 'forward slash' => ['folder/file.txt', 'Item name cannot contain path separators.'];
+        yield 'backslash' => ['folder\\file.txt', 'Item name cannot contain path separators.'];
+        yield 'dot' => ['.', 'Item name is invalid.'];
+        yield 'double dot' => ['..', 'Item name is invalid.'];
+        yield 'custom kind empty' => ['', 'Folder name is required.', 'folder'];
+        yield 'custom kind too long' => [str_repeat('a', 256), 'Folder name must be 255 characters or fewer.', 'folder'];
     }
 
     #[DataProvider('provideNormalizeNameData')]
