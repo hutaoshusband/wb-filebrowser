@@ -5,7 +5,6 @@ declare(strict_types=1);
 use WbFileBrowser\Auth;
 use WbFileBrowser\AutomationRunner;
 use WbFileBrowser\AuditLog;
-use WbFileBrowser\BlockedAccessException;
 use WbFileBrowser\Database;
 use WbFileBrowser\FileManager;
 use WbFileBrowser\FileShares;
@@ -24,20 +23,11 @@ $installed = Installer::isInstalled();
 
 Security::sendApiHeaders();
 
-if ($installed) {
-    try {
-        IpBanService::assertCurrentIpAllowed();
-    } catch (BlockedAccessException $exception) {
-        if (in_array($action, ['files.stream', 'share.stream'], true)) {
-            http_response_code(403);
-            exit;
-        }
-
-        wb_blocked_response($exception, 403);
-    }
-}
-
 try {
+    if ($installed) {
+        IpBanService::assertCurrentIpAllowed();
+    }
+
     $requestData = wb_request_data();
     $csrfToken = $requestData['csrf_token'] ?? ($_SERVER['HTTP_X_CSRF_TOKEN'] ?? null);
     $currentUser = $installed ? Auth::currentUser() : null;
@@ -391,9 +381,6 @@ try {
                 }
 
                 FileShares::stream((string) ($_GET['token'] ?? ''), (string) ($_GET['disposition'] ?? 'inline'));
-            } catch (BlockedAccessException) {
-                http_response_code(403);
-                exit;
             } catch (\RuntimeException $exception) {
                 http_response_code($exception->getMessage() === 'Share password is required.' ? 403 : 404);
                 exit;
@@ -805,7 +792,7 @@ try {
     }
 } catch (MaintenanceModeException $exception) {
     wb_maintenance_response($exception->payload(), 503);
-} catch (BlockedAccessException $exception) {
+} catch (\WbFileBrowser\BlockedAccessException $exception) {
     if (in_array($action, ['files.stream', 'share.stream'], true)) {
         http_response_code(403);
         exit;
