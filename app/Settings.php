@@ -24,16 +24,34 @@ final class Settings
             ['key']
         );
 
-        foreach ($settings as $key => $value) {
-            if (!$overrideExisting && isset($existingMap[$key])) {
-                continue;
+        $inTransaction = $pdo->inTransaction();
+
+        if (!$inTransaction) {
+            $pdo->beginTransaction();
+        }
+
+        try {
+            foreach ($settings as $key => $value) {
+                if (!$overrideExisting && isset($existingMap[$key])) {
+                    continue;
+                }
+
+                $statement->execute([
+                    ':key' => $key,
+                    ':value' => (string) $value,
+                    ':updated_at' => wb_now(),
+                ]);
             }
 
-            $statement->execute([
-                ':key' => $key,
-                ':value' => (string) $value,
-                ':updated_at' => wb_now(),
-            ]);
+            if (!$inTransaction) {
+                $pdo->commit();
+            }
+        } catch (\Throwable $exception) {
+            if (!$inTransaction) {
+                $pdo->rollBack();
+            }
+
+            throw $exception;
         }
     }
 
@@ -222,12 +240,30 @@ final class Settings
             'display_grid_thumbnails_enabled' => $normalized['display']['grid_thumbnails_enabled'] ? '1' : '0',
         ];
 
-        foreach ($updates as $key => $value) {
-            $statement->execute([
-                ':key' => $key,
-                ':value' => $value,
-                ':updated_at' => wb_now(),
-            ]);
+        $inTransaction = $pdo->inTransaction();
+
+        if (!$inTransaction) {
+            $pdo->beginTransaction();
+        }
+
+        try {
+            foreach ($updates as $key => $value) {
+                $statement->execute([
+                    ':key' => $key,
+                    ':value' => $value,
+                    ':updated_at' => wb_now(),
+                ]);
+            }
+
+            if (!$inTransaction) {
+                $pdo->commit();
+            }
+        } catch (\Throwable $exception) {
+            if (!$inTransaction) {
+                $pdo->rollBack();
+            }
+
+            throw $exception;
         }
 
         AutomationRunner::syncJobs($pdo);
