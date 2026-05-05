@@ -570,15 +570,18 @@ final class FileManager
 
         $targetPath = wb_storage_path('chunks/' . $token . '/' . $index . '.part');
 
-        if (!move_uploaded_file($fileUpload['tmp_name'], $targetPath)) {
-            throw new RuntimeException('Unable to store upload chunk.');
-        }
-
         try {
+            if (!move_uploaded_file($fileUpload['tmp_name'], $targetPath)) {
+                throw new RuntimeException('Failed to write chunk');
+            }
+
             self::assertChunkFileSize($targetPath, $metadata, $index);
-        } catch (RuntimeException $exception) {
+        } catch (\Exception $e) {
             @unlink($targetPath);
-            throw $exception;
+            if ($e instanceof RuntimeException) {
+                throw $e;
+            }
+            throw new RuntimeException('Failed to write chunk', 0, $e);
         }
 
         return [
