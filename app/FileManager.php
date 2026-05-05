@@ -29,6 +29,7 @@ final class FileManager
         }
 
         $folders = [];
+        $folderRows = [];
         $folderStatement = $pdo->prepare('SELECT * FROM folders WHERE parent_id = :parent_id');
         $folderStatement->execute([':parent_id' => $folderId]);
 
@@ -39,7 +40,22 @@ final class FileManager
                 continue;
             }
 
-            $folders[] = self::serializeFolder($childFolder, $user, $pdo, $scope);
+            $folderRows[] = $childFolder;
+        }
+
+        $childCounts = self::getChildCounts(
+            array_merge([$folderId], array_map(static fn (array $f): int => (int) $f['id'], $folderRows)),
+            $pdo
+        );
+
+        foreach ($folderRows as $childFolder) {
+            $folders[] = self::serializeFolder(
+                $childFolder,
+                $user,
+                $pdo,
+                $scope,
+                $childCounts[(int) $childFolder['id']] ?? 0
+            );
         }
 
         $files = [];
@@ -57,7 +73,7 @@ final class FileManager
         self::sortEntries($files, $sort, $direction, false);
 
         return [
-            'folder' => self::serializeFolder($folder, $user, $pdo, $scope),
+            'folder' => self::serializeFolder($folder, $user, $pdo, $scope, $childCounts[$folderId] ?? 0),
             'breadcrumbs' => self::buildBreadcrumbs($folderId, $scope, $pdo),
             'folders' => $folders,
             'files' => $files,
@@ -84,6 +100,7 @@ final class FileManager
         $like = '%' . str_replace(['%', '_'], ['\%', '\_'], $query) . '%';
 
         $folders = [];
+        $folderRows = [];
         $folderStatement = $pdo->prepare('SELECT * FROM folders WHERE name LIKE :query ESCAPE \'\\\'');
         $folderStatement->execute([':query' => $like]);
 
@@ -94,7 +111,22 @@ final class FileManager
                 continue;
             }
 
-            $folders[] = self::serializeFolder($folder, $user, $pdo, $scope);
+            $folderRows[] = $folder;
+        }
+
+        $childCounts = self::getChildCounts(
+            array_map(static fn (array $f): int => (int) $f['id'], $folderRows),
+            $pdo
+        );
+
+        foreach ($folderRows as $folder) {
+            $folders[] = self::serializeFolder(
+                $folder,
+                $user,
+                $pdo,
+                $scope,
+                $childCounts[(int) $folder['id']] ?? 0
+            );
         }
 
         $files = [];
@@ -945,6 +977,7 @@ final class FileManager
         $folders = $pdo->query('SELECT * FROM folders ORDER BY name ASC')->fetchAll();
         $allowed = $scope['all'] ? null : array_flip($scope['ancestors']);
         $nodes = [];
+        $allowedRows = [];
 
         foreach ($folders as $folder) {
             $id = (int) $folder['id'];
@@ -953,7 +986,22 @@ final class FileManager
                 continue;
             }
 
-            $nodes[] = self::serializeFolder($folder, $user, $pdo, $scope);
+            $allowedRows[] = $folder;
+        }
+
+        $childCounts = self::getChildCounts(
+            array_map(static fn (array $f): int => (int) $f['id'], $allowedRows),
+            $pdo
+        );
+
+        foreach ($allowedRows as $folder) {
+            $nodes[] = self::serializeFolder(
+                $folder,
+                $user,
+                $pdo,
+                $scope,
+                $childCounts[(int) $folder['id']] ?? 0
+            );
         }
 
         return $nodes;
@@ -999,11 +1047,43 @@ final class FileManager
         return array_reverse($breadcrumbs);
     }
 
-    private static function serializeFolder(array $folder, ?array $user, PDO $pdo, array $scope): array
+    /**
+     * @param array<int> $folderIds
+     * @return array<int, int>
+     */
+    private static function getChildCounts(array $folderIds, PDO $pdo): array
+    {
+        if ($folderIds === []) {
+            return [];
+        }
+
+        $counts = array_fill_keys($folderIds, 0);
+
+        foreach (array_chunk($folderIds, 250) as $chunk) {
+            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+            $statement = $pdo->prepare(
+                'SELECT parent_id, COUNT(*) as count FROM folders WHERE parent_id IN (' . $placeholders . ') GROUP BY parent_id'
+            );
+            $statement->execute($chunk);
+
+            foreach ($statement->fetchAll() as $row) {
+                $counts[(int) $row['parent_id']] = (int) $row['count'];
+            }
+        }
+
+        return $counts;
+    }
+
+    private static function serializeFolder(array $folder, ?array $user, PDO $pdo, array $scope, ?int $childCount = null): array
     {
         $folderId = (int) $folder['id'];
-        $childCountStatement = $pdo->prepare('SELECT COUNT(*) FROM folders WHERE parent_id = :parent_id');
-        $childCountStatement->execute([':parent_id' => $folderId]);
+
+        if ($childCount === null) {
+            $childCountStatement = $pdo->prepare('SELECT COUNT(*) FROM folders WHERE parent_id = :parent_id');
+            $childCountStatement->execute([':parent_id' => $folderId]);
+            $childCount = (int) $childCountStatement->fetchColumn();
+        }
+
         $isRoot = $folderId === Database::rootFolderId();
         $cachedSize = $folder['cached_size_bytes'] === null ? null : (int) $folder['cached_size_bytes'];
 
@@ -1019,7 +1099,7 @@ final class FileManager
             'updated_at' => $folder['updated_at'],
             'updated_relative' => wb_relative_time($folder['updated_at']),
             'cached_size_calculated_at' => $folder['cached_size_calculated_at'] === null ? null : (string) $folder['cached_size_calculated_at'],
-            'child_count' => (int) $childCountStatement->fetchColumn(),
+            'child_count' => $childCount,
             'can_open' => $scope['all'] || in_array($folderId, $scope['ancestors'], true),
             'can_upload' => Permissions::canUploadToFolder($folderId, $user, $pdo, $scope),
             'can_create_folders' => Permissions::canCreateFoldersIn($folderId, $user, $pdo, $scope),
