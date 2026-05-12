@@ -1089,8 +1089,9 @@ async function uploadQueuedItems(items, emptyDirectories = []) {
       } catch (error) {
         try {
           await api('upload.cancel', { method: 'POST', body: { upload_token: token } });
-        } catch (_) {
+        } catch (cancelError) {
           // Best-effort cleanup for incomplete uploads.
+          console.error('Failed to cancel upload:', cancelError);
         }
 
         throw error;
@@ -2131,6 +2132,7 @@ function restoreBlockedState() {
       return;
     }
   } catch (_) {
+    // Ignore parsing errors from session storage.
   }
 
   window.sessionStorage.removeItem(BLOCKED_STORAGE_KEY);
