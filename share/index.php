@@ -174,29 +174,26 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
         .preview-frame:has(.share-text-preview),
         .share-text-preview pre {
             scrollbar-width: thin;
-            scrollbar-color: rgba(250, 204, 21, 0.88) rgba(7, 15, 28, 0.96);
+            scrollbar-color: #2e2e31 #141416;
         }
         .preview-frame:has(.share-text-preview)::-webkit-scrollbar,
         .share-text-preview pre::-webkit-scrollbar {
-            width: 14px;
-            height: 14px;
+            width: 10px;
+            height: 10px;
         }
         .preview-frame:has(.share-text-preview)::-webkit-scrollbar-track,
         .share-text-preview pre::-webkit-scrollbar-track {
-            background: linear-gradient(180deg, rgba(14, 24, 40, 0.98), rgba(6, 12, 22, 0.98));
-            border-radius: 999px;
-            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+            background: #141416;
         }
         .preview-frame:has(.share-text-preview)::-webkit-scrollbar-thumb,
         .share-text-preview pre::-webkit-scrollbar-thumb {
-            border: 3px solid rgba(7, 15, 28, 0.96);
+            border: 3px solid #141416;
             border-radius: 999px;
-            background: linear-gradient(180deg, rgba(250, 204, 21, 0.95), rgba(121, 192, 255, 0.82));
-            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.34), 0 0 14px rgba(250, 204, 21, 0.16);
+            background: #2e2e31;
         }
         .preview-frame:has(.share-text-preview)::-webkit-scrollbar-thumb:hover,
         .share-text-preview pre::-webkit-scrollbar-thumb:hover {
-            background: linear-gradient(180deg, rgba(253, 224, 71, 0.98), rgba(147, 197, 253, 0.9));
+            background: #3a3a3e;
         }
         .share-text-preview pre code.hljs {
             background: transparent;
@@ -329,13 +326,50 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
                 <div class="share-view">
                     <div class="preview-frame share-view__frame">
                         <?php if ($previewMode === 'image'): ?>
-                            <img src="<?= wb_h($file['preview_url']) ?>" alt="<?= wb_h($file['name']) ?>">
+                            <img class="preview-frame__image" src="<?= wb_h($file['preview_url']) ?>" alt="<?= wb_h($file['name']) ?>">
                         <?php elseif ($previewMode === 'pdf'): ?>
                             <iframe src="<?= wb_h($file['preview_url']) ?>" title="Shared PDF preview"></iframe>
                         <?php elseif ($previewMode === 'video'): ?>
-                            <video src="<?= wb_h($file['preview_url']) ?>" controls></video>
+                            <div class="media-player media-player--video">
+                                <div class="media-player__stage">
+                                    <video id="share-media" src="<?= wb_h($file['preview_url']) ?>" preload="metadata"></video>
+                                </div>
+                                <div class="media-player__bar">
+                                    <button class="media-player__btn media-player__btn--play" type="button" data-mp="play" aria-label="Play">&#9658;</button>
+                                    <span class="media-player__time" data-mp="current">0:00</span>
+                                    <span class="media-player__seek">
+                                        <input type="range" min="0" max="0" step="0.1" value="0" data-mp="seek" aria-label="Seek">
+                                    </span>
+                                    <span class="media-player__time" data-mp="duration">0:00</span>
+                                    <span class="media-player__volume">
+                                        <button class="media-player__btn" type="button" data-mp="mute" aria-label="Mute">&#128266;</button>
+                                        <input type="range" min="0" max="1" step="0.05" value="1" data-mp="volume" aria-label="Volume">
+                                    </span>
+                                    <button class="media-player__btn" type="button" data-mp="fullscreen" aria-label="Fullscreen">&#9974;</button>
+                                </div>
+                            </div>
                         <?php elseif ($previewMode === 'audio'): ?>
-                            <audio src="<?= wb_h($file['preview_url']) ?>" controls></audio>
+                            <div class="media-player media-player--audio">
+                                <div class="media-player__stage">
+                                    <div class="media-player__audio-art">
+                                        <span class="media-player__icon">&#127925;</span>
+                                        <strong><?= wb_h($file['name']) ?></strong>
+                                    </div>
+                                </div>
+                                <div class="media-player__bar">
+                                    <button class="media-player__btn media-player__btn--play" type="button" data-mp="play" aria-label="Play">&#9658;</button>
+                                    <span class="media-player__time" data-mp="current">0:00</span>
+                                    <span class="media-player__seek">
+                                        <input type="range" min="0" max="0" step="0.1" value="0" data-mp="seek" aria-label="Seek">
+                                    </span>
+                                    <span class="media-player__time" data-mp="duration">0:00</span>
+                                    <span class="media-player__volume">
+                                        <button class="media-player__btn" type="button" data-mp="mute" aria-label="Mute">&#128266;</button>
+                                        <input type="range" min="0" max="1" step="0.05" value="1" data-mp="volume" aria-label="Volume">
+                                    </span>
+                                    <audio id="share-media" src="<?= wb_h($file['preview_url']) ?>" preload="metadata"></audio>
+                                </div>
+                            </div>
                         <?php elseif ($previewMode === 'text'): ?>
                             <div class="share-text-preview">
                                 <pre><code id="share-code" class="language-<?= wb_h($hljsLang) ?>"><?= wb_h((string) ($payload['text_preview'] ?? '')) ?></code></pre>
@@ -385,6 +419,79 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
         if (el) {
             hljs.highlightElement(el);
         }
+    })();
+    </script>
+    <script>
+    (function() {
+        var media = document.getElementById('share-media');
+        if (!media) {
+            return;
+        }
+        var root = media.closest('.media-player');
+        var playBtn = root.querySelector('[data-mp="play"]');
+        var muteBtn = root.querySelector('[data-mp="mute"]');
+        var fsBtn = root.querySelector('[data-mp="fullscreen"]');
+        var seek = root.querySelector('[data-mp="seek"]');
+        var volume = root.querySelector('[data-mp="volume"]');
+        var current = root.querySelector('[data-mp="current"]');
+        var duration = root.querySelector('[data-mp="duration"]');
+
+        function fmt(s) {
+            s = Math.max(0, Math.floor(Number(s) || 0));
+            var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+            var p = function(n) { return String(n).padStart(2, '0'); };
+            return h > 0 ? h + ':' + p(m) + ':' + p(sec) : m + ':' + p(sec);
+        }
+
+        function syncPlay() {
+            playBtn.innerHTML = media.paused ? '&#9658;' : '&#10074;&#10074;';
+            playBtn.setAttribute('aria-label', media.paused ? 'Play' : 'Pause');
+        }
+        function syncMute() {
+            var muted = media.muted || media.volume === 0;
+            muteBtn.innerHTML = muted ? '&#128263;' : '&#128266;';
+            muteBtn.setAttribute('aria-label', muted ? 'Unmute' : 'Mute');
+            volume.value = muted ? 0 : media.volume;
+        }
+
+        if (playBtn) { playBtn.addEventListener('click', function() { media.paused ? media.play() : media.pause(); }); }
+        if (muteBtn) { muteBtn.addEventListener('click', function() { media.muted = !media.muted; syncMute(); }); }
+        if (fsBtn) {
+            fsBtn.addEventListener('click', function() {
+                if (document.fullscreenElement) { document.exitFullscreen && document.exitFullscreen(); }
+                else if (root.requestFullscreen) { root.requestFullscreen(); }
+            });
+        }
+        if (seek) {
+            seek.addEventListener('input', function() {
+                var v = Number(seek.value);
+                if (isFinite(v)) { media.currentTime = v; }
+            });
+        }
+        if (volume) {
+            volume.addEventListener('input', function() {
+                var v = Number(volume.value);
+                if (isFinite(v)) {
+                    media.volume = v;
+                    if (v > 0 && media.muted) { media.muted = false; }
+                    syncMute();
+                }
+            });
+        }
+
+        media.addEventListener('click', function() { media.paused ? media.play() : media.pause(); });
+        media.addEventListener('timeupdate', function() {
+            current.textContent = fmt(media.currentTime);
+            seek.value = media.currentTime;
+        });
+        media.addEventListener('loadedmetadata', function() {
+            duration.textContent = fmt(media.duration);
+            seek.max = isFinite(media.duration) ? media.duration : 0;
+        });
+        media.addEventListener('play', syncPlay);
+        media.addEventListener('pause', syncPlay);
+        media.addEventListener('ended', syncPlay);
+        media.addEventListener('volumechange', syncMute);
     })();
     </script>
 </body>

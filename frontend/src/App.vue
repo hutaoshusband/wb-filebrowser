@@ -174,6 +174,15 @@ const selectMode = ref(false);
 const selectedKey = ref('');
 const previewItem = ref(null);
 const previewText = ref('');
+const mediaRef = ref(null);
+const mediaState = reactive({
+  playing: false,
+  currentTime: 0,
+  duration: 0,
+  volume: 1,
+  muted: false,
+  ready: false,
+});
 const infoItem = ref(null);
 const helpOpen = ref(false);
 const contextMenu = ref(null);
@@ -820,6 +829,7 @@ const vThumbObserve = {
 async function openPreview(item) {
   previewItem.value = item;
   previewText.value = '';
+  resetMediaState();
 
   if (previewMode(item) === 'text') {
     const response = await fetch(item.preview_url, { credentials: 'same-origin', cache: 'no-store' });
@@ -830,6 +840,117 @@ async function openPreview(item) {
 function closePreview() {
   previewItem.value = null;
   previewText.value = '';
+  resetMediaState();
+}
+
+function resetMediaState() {
+  mediaState.playing = false;
+  mediaState.currentTime = 0;
+  mediaState.duration = 0;
+  mediaState.volume = 1;
+  mediaState.muted = false;
+  mediaState.ready = false;
+}
+
+function formatMediaTime(seconds) {
+  const value = Math.max(0, Math.floor(Number(seconds) || 0));
+  const hours = Math.floor(value / 3600);
+  const minutes = Math.floor((value % 3600) / 60);
+  const secs = value % 60;
+  const pad = (input) => String(input).padStart(2, '0');
+  return hours > 0 ? `${hours}:${pad(minutes)}:${pad(secs)}` : `${minutes}:${pad(secs)}`;
+}
+
+function mediaProgressPercent() {
+  if (!mediaState.duration) {
+    return 0;
+  }
+  return Math.min(100, (mediaState.currentTime / mediaState.duration) * 100);
+}
+
+function togglePlay() {
+  const media = mediaRef.value;
+  if (!media) {
+    return;
+  }
+  if (media.paused) {
+    media.play();
+  } else {
+    media.pause();
+  }
+}
+
+function onMediaSeek(event) {
+  const media = mediaRef.value;
+  const value = Number(event.target.value);
+  if (!media || !Number.isFinite(value)) {
+    return;
+  }
+  media.currentTime = value;
+  mediaState.currentTime = value;
+}
+
+function onMediaVolume(event) {
+  const value = Number(event.target.value);
+  const media = mediaRef.value;
+  if (!media || !Number.isFinite(value)) {
+    return;
+  }
+  media.volume = value;
+  mediaState.volume = value;
+  if (value > 0 && media.muted) {
+    media.muted = false;
+    mediaState.muted = false;
+  }
+}
+
+function toggleMute() {
+  const media = mediaRef.value;
+  if (!media) {
+    return;
+  }
+  media.muted = !media.muted;
+  mediaState.muted = media.muted;
+}
+
+function onMediaTimeUpdate() {
+  const media = mediaRef.value;
+  if (!media) {
+    return;
+  }
+  mediaState.currentTime = media.currentTime;
+}
+
+function onMediaLoadedMetadata() {
+  const media = mediaRef.value;
+  if (!media) {
+    return;
+  }
+  mediaState.duration = Number.isFinite(media.duration) ? media.duration : 0;
+  mediaState.volume = media.volume;
+  mediaState.muted = media.muted;
+  mediaState.ready = true;
+}
+
+function onMediaPlay() {
+  mediaState.playing = true;
+}
+
+function onMediaPause() {
+  mediaState.playing = false;
+}
+
+function toggleFullscreen() {
+  const media = mediaRef.value;
+  const wrapper = media?.closest('.media-player');
+  if (!wrapper) {
+    return;
+  }
+  if (document.fullscreenElement) {
+    document.exitFullscreen?.();
+    return;
+  }
+  wrapper.requestFullscreen?.();
 }
 
 async function saveDescription() {
@@ -3347,8 +3468,80 @@ onBeforeUnmount(() => {
           <div class="preview-frame">
             <img v-if="previewMode(previewItem) === 'image'" class="preview-frame__image" :src="previewItem.preview_url" :alt="previewItem.name">
             <iframe v-else-if="previewMode(previewItem) === 'pdf'" :src="previewItem.preview_url" title="PDF preview"></iframe>
-            <video v-else-if="previewMode(previewItem) === 'video'" :src="previewItem.preview_url" controls></video>
-            <audio v-else-if="previewMode(previewItem) === 'audio'" :src="previewItem.preview_url" controls></audio>
+            <div v-else-if="previewMode(previewItem) === 'video'" class="media-player media-player--video">
+              <div class="media-player__stage">
+                <video
+                  ref="mediaRef"
+                  :src="previewItem.preview_url"
+                  preload="metadata"
+                  @click="togglePlay"
+                  @timeupdate="onMediaTimeUpdate"
+                  @loadedmetadata="onMediaLoadedMetadata"
+                  @play="onMediaPlay"
+                  @pause="onMediaPause"
+                  @ended="onMediaPause"
+                ></video>
+              </div>
+              <div class="media-player__bar">
+                <button class="media-player__btn media-player__btn--play" type="button" :aria-label="mediaState.playing ? 'Pause' : 'Play'" @click="togglePlay">{{ mediaState.playing ? '❚❚' : '►' }}</button>
+                <span class="media-player__time">{{ formatMediaTime(mediaState.currentTime) }}</span>
+                <span class="media-player__seek">
+                  <input
+                    type="range"
+                    min="0"
+                    :max="mediaState.duration || 0"
+                    step="0.1"
+                    :value="mediaState.currentTime"
+                    :aria-label="'Seek'"
+                    @input="onMediaSeek"
+                  >
+                </span>
+                <span class="media-player__time">{{ formatMediaTime(mediaState.duration) }}</span>
+                <span class="media-player__volume">
+                  <button class="media-player__btn" type="button" :aria-label="mediaState.muted ? 'Unmute' : 'Mute'" @click="toggleMute">{{ mediaState.muted || mediaState.volume === 0 ? '🔇' : '🔊' }}</button>
+                  <input type="range" min="0" max="1" step="0.05" :value="mediaState.muted ? 0 : mediaState.volume" aria-label="Volume" @input="onMediaVolume">
+                </span>
+                <button class="media-player__btn" type="button" aria-label="Fullscreen" @click="toggleFullscreen">⛶</button>
+              </div>
+            </div>
+            <div v-else-if="previewMode(previewItem) === 'audio'" class="media-player media-player--audio">
+              <div class="media-player__stage">
+                <div class="media-player__audio-art">
+                  <span class="media-player__icon">🎵</span>
+                  <strong>{{ previewItem.name }}</strong>
+                </div>
+              </div>
+              <div class="media-player__bar">
+                <button class="media-player__btn media-player__btn--play" type="button" :aria-label="mediaState.playing ? 'Pause' : 'Play'" @click="togglePlay">{{ mediaState.playing ? '❚❚' : '►' }}</button>
+                <span class="media-player__time">{{ formatMediaTime(mediaState.currentTime) }}</span>
+                <span class="media-player__seek">
+                  <input
+                    type="range"
+                    min="0"
+                    :max="mediaState.duration || 0"
+                    step="0.1"
+                    :value="mediaState.currentTime"
+                    aria-label="Seek"
+                    @input="onMediaSeek"
+                  >
+                </span>
+                <span class="media-player__time">{{ formatMediaTime(mediaState.duration) }}</span>
+                <span class="media-player__volume">
+                  <button class="media-player__btn" type="button" :aria-label="mediaState.muted ? 'Unmute' : 'Mute'" @click="toggleMute">{{ mediaState.muted || mediaState.volume === 0 ? '🔇' : '🔊' }}</button>
+                  <input type="range" min="0" max="1" step="0.05" :value="mediaState.muted ? 0 : mediaState.volume" aria-label="Volume" @input="onMediaVolume">
+                </span>
+                <audio
+                  ref="mediaRef"
+                  :src="previewItem.preview_url"
+                  preload="metadata"
+                  @timeupdate="onMediaTimeUpdate"
+                  @loadedmetadata="onMediaLoadedMetadata"
+                  @play="onMediaPlay"
+                  @pause="onMediaPause"
+                  @ended="onMediaPause"
+                ></audio>
+              </div>
+            </div>
             <pre v-else-if="previewMode(previewItem) === 'text'">{{ previewText }}</pre>
             <div v-else class="file-fallback">
               <img class="file-fallback__icon" :src="fallbackIconUrl(previewItem)" alt="">
