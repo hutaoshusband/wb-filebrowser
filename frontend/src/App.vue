@@ -2332,7 +2332,7 @@ onBeforeUnmount(() => {
 
     <aside class="wb-sidebar">
       <button class="sidebar-brand sidebar-brand--icon" type="button" @click="browseHome">
-        <img :src="basePath + '/media/logo.svg'" alt="wb-filebrowser" class="brand-mark brand-mark--large">
+        <img :src="basePath + '/media/forum-logo.webp'" alt="wb-filebrowser" class="brand-mark brand-mark--large">
       </button>
 
       <nav class="sidebar-nav">

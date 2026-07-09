@@ -265,7 +265,7 @@ function wb_page_head(string $title): string
         '<meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
         '<title>' . wb_h($title) . '</title>',
-        '<link rel="icon" type="image/svg+xml" href="' . wb_h(wb_url('/media/logo.svg')) . '">',
+        '<link rel="icon" type="image/webp" href="' . wb_h(wb_url('/media/forum-logo.webp')) . '">',
         '<link rel="stylesheet" href="' . wb_h(wb_url('/assets/app.css')) . '">',
     ]);
 }
