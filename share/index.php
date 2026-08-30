@@ -340,8 +340,8 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
                                     </div>
                                     <div class="media-player__controls">
                                         <button class="media-player__btn media-player__btn--play" type="button" data-mp="play" aria-label="Play">
-                                            <svg class="media-player__icon media-player__icon--play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.14v13.72c0 .8.88 1.3 1.57.88l10.96-6.86a1.04 1.04 0 0 0 0-1.76L9.57 4.26A1.04 1.04 0 0 0 8 5.14Z"/></svg>
-                                            <svg class="media-player__icon media-player__icon--pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h3.4c.55 0 1 .45 1 1v12c0 .55-.45 1-1 1H7c-.55 0-1-.45-1-1V6c0-.55.45-1 1-1Zm9.6 0H20c.55 0 1 .45 1 1v12c0 .55-.45 1-1 1h-3.4c-.55 0-1-.45-1-1V6c0-.55.45-1 1-1Z"/></svg>
+                                            <svg class="media-player__icon media-player__icon--play" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14l12-7z"/></svg>
+                                            <svg class="media-player__icon media-player__icon--pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 5h3.4c.55 0 1 .45 1 1v12c0 .55-.45 1-1 1H5.5c-.55 0-1-.45-1-1V6c0-.55.45-1 1-1Zm9.6 0h3.4c.55 0 1 .45 1 1v12c0 .55-.45 1-1 1h-3.4c-.55 0-1-.45-1-1V6c0-.55.45-1 1-1Z"/></svg>
                                         </button>
                                         <span class="media-player__time" data-mp="current">0:00</span>
                                         <span class="media-player__spacer"></span>
@@ -376,8 +376,8 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
                                     </div>
                                     <div class="media-player__controls">
                                         <button class="media-player__btn media-player__btn--play" type="button" data-mp="play" aria-label="Play">
-                                            <svg class="media-player__icon media-player__icon--play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.14v13.72c0 .8.88 1.3 1.57.88l10.96-6.86a1.04 1.04 0 0 0 0-1.76L9.57 4.26A1.04 1.04 0 0 0 8 5.14Z"/></svg>
-                                            <svg class="media-player__icon media-player__icon--pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h3.4c.55 0 1 .45 1 1v12c0 .55-.45 1-1 1H7c-.55 0-1-.45-1-1V6c0-.55.45-1 1-1Zm9.6 0H20c.55 0 1 .45 1 1v12c0 .55-.45 1-1 1h-3.4c-.55 0-1-.45-1-1V6c0-.55.45-1 1-1Z"/></svg>
+                                            <svg class="media-player__icon media-player__icon--play" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14l12-7z"/></svg>
+                                            <svg class="media-player__icon media-player__icon--pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 5h3.4c.55 0 1 .45 1 1v12c0 .55-.45 1-1 1H5.5c-.55 0-1-.45-1-1V6c0-.55.45-1 1-1Zm9.6 0h3.4c.55 0 1 .45 1 1v12c0 .55-.45 1-1 1h-3.4c-.55 0-1-.45-1-1V6c0-.55.45-1 1-1Z"/></svg>
                                         </button>
                                         <span class="media-player__time" data-mp="current">0:00</span>
                                         <span class="media-player__spacer"></span>
