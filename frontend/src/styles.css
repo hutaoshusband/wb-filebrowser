@@ -230,7 +230,7 @@ a{color:var(--c-accent);text-decoration:none;transition:color var(--ease)}
 .media-player__btn--play{background:var(--c-accent);width:30px;height:30px;border-radius:50%;color:#0b0f0c}
 .media-player__btn--play:hover{background:var(--c-accent-hover);color:#0b0f0c}
 .media-player__icon{width:16px;height:16px;display:block;fill:currentColor}
-.media-player__icon--play{margin-left:2px}
+.media-player__icon--play{margin-left:0}
 .media-player__icon--pause,.media-player__icon--muted{display:none}
 .media-player.is-playing .media-player__icon--play{display:none}
 .media-player.is-playing .media-player__icon--pause{display:block}
