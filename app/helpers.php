@@ -261,12 +261,15 @@ function wb_bootstrap_script_tag(array $bootstrap): string
 
 function wb_page_head(string $title): string
 {
+    $stylesheetPath = dirname(__DIR__) . '/assets/app.css';
+    $stylesheetVersion = is_file($stylesheetPath) ? (string) filemtime($stylesheetPath) : '1';
+
     return implode("\n", [
         '<meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
         '<title>' . wb_h($title) . '</title>',
         '<link rel="icon" type="image/webp" href="' . wb_h(wb_url('/media/forum-logo.webp')) . '">',
-        '<link rel="stylesheet" href="' . wb_h(wb_url('/assets/app.css')) . '">',
+        '<link rel="stylesheet" href="' . wb_h(wb_url('/assets/app.css?v=' . $stylesheetVersion)) . '">',
     ]);
 }
 
@@ -496,11 +499,14 @@ function wb_file_preview_metadata(string $mimeType, string $extension): array
     }
 
     $fallback = wb_file_fallback_metadata($extension, $mimeType);
+    $fallbackIconName = $fallback['icon'] . '.svg';
+    $fallbackIconPath = dirname(__DIR__) . '/media/file-fallbacks/' . $fallbackIconName;
+    $fallbackIconVersion = is_file($fallbackIconPath) ? (string) filemtime($fallbackIconPath) : '1';
 
     return [
         'preview_mode' => 'download',
         'fallback_variant' => $fallback['variant'],
-        'fallback_icon_url' => wb_url('/media/file-fallbacks/' . $fallback['icon'] . '.svg'),
+        'fallback_icon_url' => wb_url('/media/file-fallbacks/' . $fallbackIconName . '?v=' . $fallbackIconVersion),
         'fallback_label' => $fallback['label'],
     ];
 }

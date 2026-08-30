@@ -316,10 +316,10 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
                     <div>
                         <p class="install-kicker">Shared file</p>
                         <h1><?= wb_h($file['name']) ?></h1>
-                        <p><?= wb_h($file['mime_type']) ?></p>
+                        <p class="share-header__meta"><?= wb_h($file['mime_type']) ?></p>
                     </div>
                     <div class="share-actions">
-                        <a class="header-button" href="<?= wb_h($file['download_url']) ?>">Download</a>
+                        <a class="header-button share-download" href="<?= wb_h($file['download_url']) ?>">Download</a>
                     </div>
                 </header>
 
@@ -382,7 +382,7 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
                                 <img class="file-fallback__icon" src="<?= wb_h($fallbackIconUrl) ?>" alt="">
                                 <span class="file-fallback__badge"><?= wb_h($fallbackBadge) ?></span>
                                 <strong><?= wb_h($fallbackLabel) ?></strong>
-                                <p>Browser preview is unavailable for this format. Use the secure download action to open it locally.</p>
+                                <p>This file can’t be previewed in your browser. Download it to open it locally.</p>
                                 <a class="header-button primary-button" href="<?= wb_h($file['download_url']) ?>">Download file</a>
                             </div>
                         <?php endif; ?>
@@ -397,15 +397,18 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
                             <div><dt>Checksum</dt><dd><?= wb_h($file['checksum']) ?></dd></div>
                         </dl>
                         <div class="share-direct-link">
-                            <label class="share-direct-link__label" for="share-direct-link">Direct Link:</label>
-                            <input
-                                id="share-direct-link"
-                                class="share-direct-link__field"
-                                type="text"
-                                readonly
-                                value="<?= wb_h($file['direct_url']) ?>"
-                            >
-                            <a class="header-button" href="<?= wb_h($file['direct_url']) ?>" target="_blank" rel="noopener noreferrer">Open direct link</a>
+                            <label class="share-direct-link__label" for="share-direct-link">Direct link</label>
+                            <div class="share-direct-link__row">
+                                <input
+                                    id="share-direct-link"
+                                    class="share-direct-link__field"
+                                    type="text"
+                                    readonly
+                                    value="<?= wb_h($file['direct_url']) ?>"
+                                >
+                                <button class="header-button share-direct-link__copy" type="button" data-copy-target="#share-direct-link">Copy</button>
+                            </div>
+                            <a class="header-button share-direct-link__open" href="<?= wb_h($file['direct_url']) ?>" target="_blank" rel="noopener noreferrer">Open direct link</a>
                         </div>
                     </aside>
                 </div>
@@ -419,6 +422,34 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
         if (el) {
             hljs.highlightElement(el);
         }
+    })();
+    (function() {
+        document.querySelectorAll('[data-copy-target]').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var target = document.querySelector(btn.getAttribute('data-copy-target'));
+                if (!target) return;
+                var done = function() { btn.textContent = 'Copied'; setTimeout(function() { btn.textContent = 'Copy'; }, 1500); };
+                var fallback = function() {
+                    target.focus();
+                    target.select();
+                    target.setSelectionRange(0, target.value.length);
+                    try { document.execCommand('copy'); } catch (error) {}
+                    done();
+                };
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    var fallbackTimer = setTimeout(fallback, 200);
+                    navigator.clipboard.writeText(target.value).then(function() {
+                        clearTimeout(fallbackTimer);
+                        done();
+                    }, function() {
+                        clearTimeout(fallbackTimer);
+                        fallback();
+                    });
+                } else {
+                    fallback();
+                }
+            });
+        });
     })();
     </script>
     <script>
