@@ -26,6 +26,7 @@ final class FileShares
         }
 
         self::assertCanManageShares($user, $file, $pdo);
+        FileManager::assertFileNotLockedFor($file, $user, $pdo);
         $share = self::activeShareRow($fileId, $pdo);
 
         return $share === null ? null : self::serializeShare($share, $file);
@@ -42,6 +43,7 @@ final class FileShares
         }
 
         self::assertCanManageShares($user, $file, $pdo);
+        FileManager::assertFileNotLockedFor($file, $user, $pdo);
         $options = self::normalizeOptions($options);
         $existing = self::activeShareRow($fileId, $pdo);
         $now = wb_now();
@@ -185,6 +187,7 @@ final class FileShares
         }
 
         self::assertCanManageShares($user, $file, $pdo);
+        FileManager::assertFileNotLockedFor($file, $user, $pdo);
         $statement = $pdo->prepare(
             'UPDATE file_shares
              SET revoked_at = :revoked_at, active_file_id = NULL, updated_at = :updated_at

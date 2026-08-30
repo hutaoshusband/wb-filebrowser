@@ -135,6 +135,8 @@ const adminState = reactive({
   userPermissionEntries: {},
   automationJobs: [],
   automationBusy: false,
+  dbBackups: [],
+  dbBackupsBusy: false,
   auditLogs: [],
   auditPage: 1,
   auditTotalPages: 1,
@@ -1699,6 +1701,78 @@ async function loadSecurityState() {
   applySecurityPayload(payload);
 }
 
+async function loadDbBackups() {
+  if (!isSuperAdmin.value) {
+    adminState.dbBackups = [];
+    return;
+  }
+
+  try {
+    const payload = await api('dbbackup.list');
+    adminState.dbBackups = payload.backups ?? [];
+  } catch (error) {
+    adminState.dbBackups = [];
+  }
+}
+
+async function createDbBackup() {
+  adminState.dbBackupsBusy = true;
+  try {
+    const payload = await api('dbbackup.create', { method: 'POST', body: {} });
+    adminState.dbBackups = payload.backups ?? [];
+    showMessage('Backup created.');
+  } catch (error) {
+    showMessage(error instanceof Error ? error.message : 'Unable to create the backup.');
+  } finally {
+    adminState.dbBackupsBusy = false;
+  }
+}
+
+async function restoreDbBackup(backup) {
+  if (!backup || !window.confirm(`Restore "${backup.name}"? The current database is saved as a safety copy first.`)) {
+    return;
+  }
+
+  adminState.dbBackupsBusy = true;
+  try {
+    const payload = await api('dbbackup.restore', { method: 'POST', body: { name: backup.name } });
+    adminState.dbBackups = payload.backups ?? [];
+    showMessage('Database restored. Reload the page to see the restored state.');
+  } catch (error) {
+    showMessage(error instanceof Error ? error.message : 'Unable to restore this backup.');
+  } finally {
+    adminState.dbBackupsBusy = false;
+  }
+}
+
+async function deleteDbBackup(backup) {
+  if (!backup || !window.confirm(`Delete backup "${backup.name}"?`)) {
+    return;
+  }
+
+  adminState.dbBackupsBusy = true;
+  try {
+    const payload = await api('dbbackup.delete', { method: 'POST', body: { name: backup.name } });
+    adminState.dbBackups = payload.backups ?? [];
+    showMessage('Backup deleted.');
+  } catch (error) {
+    showMessage(error instanceof Error ? error.message : 'Unable to delete the backup.');
+  } finally {
+    adminState.dbBackupsBusy = false;
+  }
+}
+
+function downloadDbBackup(backup) {
+  if (backup?.download_url) {
+    window.location.href = backup.download_url;
+  }
+}
+
+function formatBackupDate(iso) {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
+}
+
 function createPermissionEntry() {
   return {
     can_view: false,
@@ -1869,6 +1943,7 @@ async function loadAdminSection() {
 
     if (route.section === 'security') {
       await loadSecurityState();
+      await loadDbBackups();
       return;
     }
 
@@ -3310,6 +3385,35 @@ onBeforeUnmount(() => {
             </form>
           </article>
 
+          <article v-if="isSuperAdmin" class="panel panel-wide">
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">Database backups</p>
+                <h2>One restore point for every file and share</h2>
+              </div>
+              <button class="primary-button" type="button" :disabled="adminState.dbBackupsBusy" @click="createDbBackup">Create backup now</button>
+            </div>
+            <div class="settings-pane">
+              <p v-if="adminState.dbBackups.length === 0" class="panel-meta">No backups yet. A nightly copy is also kept outside the web space automatically.</p>
+              <table v-if="adminState.dbBackups.length > 0" class="backup-table">
+                <thead>
+                  <tr><th>Backup</th><th>Size</th><th>Created</th><th>Actions</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="backup in adminState.dbBackups" :key="backup.name">
+                    <td><code>{{ backup.name }}</code></td>
+                    <td>{{ backup.size_label }}</td>
+                    <td>{{ formatBackupDate(backup.created_at) }}</td>
+                    <td class="backup-actions">
+                      <button type="button" :disabled="adminState.dbBackupsBusy" @click="restoreDbBackup(backup)">Restore</button>
+                      <button type="button" :disabled="adminState.dbBackupsBusy" @click="downloadDbBackup(backup)">Download</button>
+                      <button type="button" class="danger" :disabled="adminState.dbBackupsBusy" @click="deleteDbBackup(backup)">Delete</button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
           <article class="panel panel-table panel-wide">
             <div class="panel-header">
               <div>
@@ -3440,7 +3544,7 @@ onBeforeUnmount(() => {
                 @click="handleEntryClick(item)"
                 @contextmenu="handleContextMenu($event, item)"
               >
-                <td class="name-cell"><span class="row-icon">{{ item.type === 'folder' ? '📁' : '📄' }}</span><span>{{ item.name }}</span></td>
+                <td class="name-cell"><span class="row-icon">{{ item.type === 'folder' ? '📁' : '📄' }}</span><span>{{ item.name }}</span><span v-if="item.type === 'file' && item.locked" class="entry-locked">Locked</span></td>
                 <td>{{ item.size_label }}</td>
                 <td>{{ item.updated_relative }}</td>
               </tr>
@@ -3454,11 +3558,11 @@ onBeforeUnmount(() => {
       <section class="preview-modal">
         <header class="preview-modal__header">
           <div>
-            <h2>{{ previewItem.name }}</h2>
+            <h2>{{ previewItem.name }} <span v-if="previewItem.type === 'file' && previewItem.locked" class="entry-locked">Locked</span></h2>
             <p>{{ previewItem.mime_type }}</p>
           </div>
           <div class="header-actions">
-            <button v-if="canManageShares && previewItem.type === 'file'" class="header-button" type="button" @click="createShareLink(previewItem)">Share link</button>
+            <button v-if="canManageShares && previewItem.type === 'file' && !previewItem.locked" class="header-button" type="button" @click="createShareLink(previewItem)">Share link</button>
             <button v-if="canManageShares && previewItem.type === 'file'" class="header-button" type="button" @click="openShareLink(previewItem)">Open share</button>
             <button class="header-button" type="button" @click="downloadSelected">Download</button>
             <button class="header-button" type="button" @click="closePreview">Close</button>
@@ -3532,7 +3636,6 @@ onBeforeUnmount(() => {
               <div class="media-player__stage">
                 <div class="media-player__audio-art">
                   <div class="media-player__art">
-                    <svg class="media-player__disc" viewBox="0 0 96 96" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2"><circle cx="48" cy="48" r="46"/><circle cx="48" cy="48" r="36" opacity=".5"/><circle cx="48" cy="48" r="26" opacity=".3"/></g><circle cx="48" cy="48" r="12" fill="currentColor"/><circle cx="48" cy="48" r="4" fill="#0b0b0c"/></svg>
                     <span class="media-player__eq" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></span>
                   </div>
                   <strong>{{ previewItem.name }}</strong>
@@ -3730,9 +3833,9 @@ onBeforeUnmount(() => {
         </button>
       </div>
       <div v-if="shell === 'app' && canShowItemActions(infoItem)" class="drawer-actions">
-        <button v-if="canManageShares && infoItem.type === 'file'" type="button" @click="createShareLink(infoItem)">Share link</button>
+        <button v-if="canManageShares && infoItem.type === 'file' && !infoItem.locked" type="button" @click="createShareLink(infoItem)">Share link</button>
         <button v-if="canManageShares && infoItem.type === 'file'" type="button" @click="openShareLink(infoItem)">Open share</button>
-        <button v-if="canManageShares && infoItem.type === 'file' && shareState.fileId === infoItem.id && shareState.link" type="button" @click="revokeShareLink(infoItem)">Disable share</button>
+        <button v-if="canManageShares && infoItem.type === 'file' && !infoItem.locked && shareState.fileId === infoItem.id && shareState.link" type="button" @click="revokeShareLink(infoItem)">Disable share</button>
         <button v-if="canEditItem(infoItem)" type="button" @click="renameSelected(infoItem)">Rename</button>
         <button v-if="canEditItem(infoItem)" type="button" @click="moveSelected(infoItem)">Move</button>
         <button v-if="canDeleteItem(infoItem)" type="button" class="danger" @click="deleteSelected(infoItem)">Delete</button>
@@ -3741,7 +3844,7 @@ onBeforeUnmount(() => {
 
     <div v-if="contextMenu" class="context-menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }">
       <template v-if="contextMenu.kind === 'item'">
-        <button v-if="canManageShares && contextMenu.item.type === 'file'" type="button" @click="createShareLink(contextMenu.item)">Share link</button>
+        <button v-if="canManageShares && contextMenu.item.type === 'file' && !contextMenu.item.locked" type="button" @click="createShareLink(contextMenu.item)">Share link</button>
         <button v-if="canEditItem(contextMenu.item)" type="button" @click="renameSelected(contextMenu.item)">Rename</button>
         <button v-if="canEditItem(contextMenu.item)" type="button" @click="moveSelected(contextMenu.item)">Move</button>
         <button v-if="canDeleteItem(contextMenu.item)" type="button" class="danger" @click="deleteSelected(contextMenu.item)">Delete</button>

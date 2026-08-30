@@ -364,7 +364,6 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
                                 <div class="media-player__stage">
                                     <div class="media-player__audio-art">
                                         <div class="media-player__art">
-                                            <svg class="media-player__disc" viewBox="0 0 96 96" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2"><circle cx="48" cy="48" r="46"/><circle cx="48" cy="48" r="36" opacity=".5"/><circle cx="48" cy="48" r="26" opacity=".3"/></g><circle cx="48" cy="48" r="12" fill="currentColor"/><circle cx="48" cy="48" r="4" fill="#0b0b0c"/></svg>
                                             <span class="media-player__eq" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></span>
                                         </div>
                                         <strong><?= wb_h($file['name']) ?></strong>

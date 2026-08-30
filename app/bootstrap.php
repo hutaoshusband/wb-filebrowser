@@ -20,6 +20,7 @@ require_once __DIR__ . '/DatabaseConfig.php';
 require_once __DIR__ . '/DatabasePlatform.php';
 require_once __DIR__ . '/Installer.php';
 require_once __DIR__ . '/Database.php';
+require_once __DIR__ . '/DatabaseBackup.php';
 require_once __DIR__ . '/Security.php';
 require_once __DIR__ . '/BlockedAccessException.php';
 require_once __DIR__ . '/MaintenanceModeException.php';

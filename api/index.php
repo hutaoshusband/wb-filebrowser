@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use WbFileBrowser\Auth;
+use WbFileBrowser\DatabaseBackup;
 use WbFileBrowser\AutomationRunner;
 use WbFileBrowser\AuditLog;
 use WbFileBrowser\Database;
@@ -786,6 +787,69 @@ try {
                 'result' => $result,
                 'diagnostic' => Settings::diagnosticState(),
             ]);
+
+        case 'dbbackup.list':
+            Auth::requireSuperAdmin();
+            wb_json_response([
+                'ok' => true,
+                'backups' => DatabaseBackup::list(Database::connection()),
+            ]);
+
+        case 'dbbackup.create':
+            $requireCsrf();
+            $actor = Auth::requireSuperAdmin();
+            $backup = DatabaseBackup::create(Database::connection());
+            AuditLog::record('admin.dbbackup.create', 'admin_actions', [
+                'actor_user' => $actor,
+                'target_type' => 'database',
+                'target_label' => $backup['name'],
+                'summary' => 'Created database backup ' . $backup['name'],
+            ]);
+            wb_json_response([
+                'ok' => true,
+                'backup' => $backup,
+                'backups' => DatabaseBackup::list(Database::connection()),
+            ], 201);
+
+        case 'dbbackup.restore':
+            $requireCsrf();
+            $actor = Auth::requireSuperAdmin();
+            $safety = DatabaseBackup::restore((string) ($requestData['name'] ?? ''), Database::connection());
+            AuditLog::record('admin.dbbackup.restore', 'admin_actions', [
+                'actor_user' => $actor,
+                'target_type' => 'database',
+                'target_label' => (string) ($requestData['name'] ?? ''),
+                'summary' => 'Restored database from backup ' . (string) ($requestData['name'] ?? ''),
+                'metadata' => [
+                    'safety_backup' => $safety['name'],
+                ],
+            ]);
+            wb_json_response([
+                'ok' => true,
+                'safety_backup' => $safety,
+                'backups' => DatabaseBackup::list(Database::connection()),
+            ]);
+
+        case 'dbbackup.delete':
+            $requireCsrf();
+            $actor = Auth::requireSuperAdmin();
+            $name = (string) ($requestData['name'] ?? '');
+            DatabaseBackup::delete($name);
+            AuditLog::record('admin.dbbackup.delete', 'admin_actions', [
+                'actor_user' => $actor,
+                'target_type' => 'database',
+                'target_label' => $name,
+                'summary' => 'Deleted database backup ' . $name,
+            ]);
+            wb_json_response([
+                'ok' => true,
+                'backups' => DatabaseBackup::list(Database::connection()),
+            ]);
+
+        case 'dbbackup.download':
+            Auth::requireSuperAdmin();
+            $backup = DatabaseBackup::resolve((string) ($_GET['name'] ?? ''));
+            Security::sendFile($backup['path'], 'application/x-sqlite3', $backup['name'], 'attachment');
 
         default:
             wb_error_response('Unknown API action.', 404);

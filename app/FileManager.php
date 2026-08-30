@@ -378,6 +378,45 @@ final class FileManager
         throw new RuntimeException('Folder not found.');
     }
 
+    /**
+     * Files created by an administrator are locked for every other account
+     * except their owner and the Super-Admin: they stay visible and shareable
+     * by link, but cannot be modified.
+     */
+    public static function fileIsLockedFor(array $file, ?array $user, PDO $pdo): bool
+    {
+        if ($user === null) {
+            return false;
+        }
+
+        $creatorId = (int) ($file['created_by'] ?? 0);
+
+        if ($creatorId === 0 || $creatorId === (int) $user['id']) {
+            return false;
+        }
+
+        if (($user['role'] ?? '') === 'super_admin') {
+            return false;
+        }
+
+        static $roleCache = [];
+
+        if (!isset($roleCache[$creatorId])) {
+            $statement = $pdo->prepare('SELECT role FROM users WHERE id = :id');
+            $statement->execute([':id' => $creatorId]);
+            $roleCache[$creatorId] = (string) ($statement->fetchColumn() ?: '');
+        }
+
+        return in_array($roleCache[$creatorId], ['admin', 'super_admin'], true);
+    }
+
+    public static function assertFileNotLockedFor(array $file, ?array $user, PDO $pdo): void
+    {
+        if (self::fileIsLockedFor($file, $user, $pdo)) {
+            throw new RuntimeException('This file is locked by its administrator owner.');
+        }
+    }
+
     public static function renameFile(array $user, int $fileId, string $name): void
     {
         $pdo = Database::connection();
@@ -390,6 +429,7 @@ final class FileManager
         if (!Permissions::canEditFolder((int) $file['folder_id'], $user, $pdo)) {
             throw new RuntimeException('You do not have permission to rename files here.');
         }
+        self::assertFileNotLockedFor($file, $user, $pdo);
 
         $statement = $pdo->prepare('UPDATE files SET original_name = :name, updated_at = :updated_at WHERE id = :id');
         $statement->execute([
@@ -425,6 +465,7 @@ final class FileManager
         if (!Permissions::canEditFolder((int) $file['folder_id'], $user, $pdo)) {
             throw new RuntimeException('You do not have permission to move this file.');
         }
+        self::assertFileNotLockedFor($file, $user, $pdo);
 
         if (self::folderById($targetFolderId, $pdo) === null) {
             throw new RuntimeException('Destination folder not found.');
@@ -468,6 +509,7 @@ final class FileManager
         if (!Permissions::canDeleteFolder((int) $file['folder_id'], $user, $pdo)) {
             throw new RuntimeException('You do not have permission to delete files here.');
         }
+        self::assertFileNotLockedFor($file, $user, $pdo);
 
         $fileLabel = self::filePathLabel($file, $pdo);
         self::deleteBlob((string) $file['disk_name'], (string) $file['disk_extension']);
@@ -495,6 +537,7 @@ final class FileManager
         if (!Permissions::canEditFolder((int) $file['folder_id'], $user, $pdo)) {
             throw new RuntimeException('You do not have permission to edit this file.');
         }
+        self::assertFileNotLockedFor($file, $user, $pdo);
 
         $normalized = self::normalizeDescription($description);
         $statement = $pdo->prepare(
@@ -1130,8 +1173,9 @@ final class FileManager
             'updated_relative' => wb_relative_time($file['updated_at']),
             'checksum' => $file['checksum'],
             'extension' => $extension,
-            'can_edit' => Permissions::canEditFolder($folderId, $user, $pdo, $scope),
-            'can_delete' => Permissions::canDeleteFolder($folderId, $user, $pdo, $scope),
+            'locked' => self::fileIsLockedFor($file, $user, $pdo),
+            'can_edit' => !self::fileIsLockedFor($file, $user, $pdo) && Permissions::canEditFolder($folderId, $user, $pdo, $scope),
+            'can_delete' => !self::fileIsLockedFor($file, $user, $pdo) && Permissions::canDeleteFolder($folderId, $user, $pdo, $scope),
             'preview_url' => wb_url('/api/index.php?action=files.stream&id=' . (int) $file['id'] . '&disposition=inline'),
             'download_url' => wb_url('/api/index.php?action=files.stream&id=' . (int) $file['id'] . '&disposition=attachment'),
         ], $preview);
