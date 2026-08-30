@@ -335,16 +335,13 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
                                     <video id="share-media" src="<?= wb_h($file['preview_url']) ?>" preload="metadata"></video>
                                 </div>
                                 <div class="media-player__bar">
-                                    <div class="media-player__progress">
-                                        <input class="media-player__seek" type="range" min="0" max="0" step="0.1" value="0" data-mp="seek" style="--mp-fill:0%" aria-label="Seek">
-                                    </div>
                                     <div class="media-player__controls">
                                         <button class="media-player__btn media-player__btn--play" type="button" data-mp="play" aria-label="Play">
                                             <svg class="media-player__icon media-player__icon--play" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14l12-7z"/></svg>
                                             <svg class="media-player__icon media-player__icon--pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 5h3.4c.55 0 1 .45 1 1v12c0 .55-.45 1-1 1H5.5c-.55 0-1-.45-1-1V6c0-.55.45-1 1-1Zm9.6 0h3.4c.55 0 1 .45 1 1v12c0 .55-.45 1-1 1h-3.4c-.55 0-1-.45-1-1V6c0-.55.45-1 1-1Z"/></svg>
                                         </button>
                                         <span class="media-player__time" data-mp="current">0:00</span>
-                                        <span class="media-player__spacer"></span>
+                                        <input class="media-player__seek" type="range" min="0" max="0" step="0.1" value="0" data-mp="seek" style="--mp-fill:0%" aria-label="Seek">
                                         <span class="media-player__time" data-mp="duration">0:00</span>
                                         <span class="media-player__volume">
                                             <button class="media-player__btn" type="button" data-mp="mute" aria-label="Mute">
@@ -371,16 +368,13 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
                                     <audio id="share-media" src="<?= wb_h($file['preview_url']) ?>" preload="metadata"></audio>
                                 </div>
                                 <div class="media-player__bar">
-                                    <div class="media-player__progress">
-                                        <input class="media-player__seek" type="range" min="0" max="0" step="0.1" value="0" data-mp="seek" style="--mp-fill:0%" aria-label="Seek">
-                                    </div>
                                     <div class="media-player__controls">
                                         <button class="media-player__btn media-player__btn--play" type="button" data-mp="play" aria-label="Play">
                                             <svg class="media-player__icon media-player__icon--play" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14l12-7z"/></svg>
                                             <svg class="media-player__icon media-player__icon--pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 5h3.4c.55 0 1 .45 1 1v12c0 .55-.45 1-1 1H5.5c-.55 0-1-.45-1-1V6c0-.55.45-1 1-1Zm9.6 0h3.4c.55 0 1 .45 1 1v12c0 .55-.45 1-1 1h-3.4c-.55 0-1-.45-1-1V6c0-.55.45-1 1-1Z"/></svg>
                                         </button>
                                         <span class="media-player__time" data-mp="current">0:00</span>
-                                        <span class="media-player__spacer"></span>
+<input class="media-player__seek" type="range" min="0" max="0" step="0.1" value="0" data-mp="seek" style="--mp-fill:0%" aria-label="Seek">
                                         <span class="media-player__time" data-mp="duration">0:00</span>
                                         <span class="media-player__volume">
                                             <button class="media-player__btn" type="button" data-mp="mute" aria-label="Mute">
