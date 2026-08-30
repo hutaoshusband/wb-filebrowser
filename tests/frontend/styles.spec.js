@@ -12,7 +12,9 @@ describe('forum-matched design tokens', () => {
     expect(styles).toContain("--c-accent:#30d158");
     expect(styles).toContain("--c-text:#e1e1e6");
     expect(styles).toContain("--c-text-dim:#8e8e93");
-    expect(styles).toContain("Hanken+Grotesk");
+    expect(styles).toContain("@font-face");
+    expect(styles).toContain("'Hanken Grotesk'");
+    expect(styles).toContain("./fonts/hanken-grotesk-latin.woff2");
   });
 
   it('pins the sidebar layout while the main shell owns vertical scrolling', () => {

@@ -62,7 +62,7 @@ final class Security
     {
         return self::commonHeaders() + [
             'Cache-Control' => 'no-store, no-cache, must-revalidate, max-age=0',
-            'Content-Security-Policy' => "default-src 'self'; script-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
+            'Content-Security-Policy' => "default-src 'self'; script-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
         ];
     }
 

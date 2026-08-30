@@ -3468,7 +3468,7 @@ onBeforeUnmount(() => {
           <div class="preview-frame">
             <img v-if="previewMode(previewItem) === 'image'" class="preview-frame__image" :src="previewItem.preview_url" :alt="previewItem.name">
             <iframe v-else-if="previewMode(previewItem) === 'pdf'" :src="previewItem.preview_url" title="PDF preview"></iframe>
-            <div v-else-if="previewMode(previewItem) === 'video'" class="media-player media-player--video">
+            <div v-else-if="previewMode(previewItem) === 'video'" class="media-player media-player--video" :class="{ 'is-playing': mediaState.playing, 'is-paused': !mediaState.playing, 'is-muted': mediaState.muted || mediaState.volume === 0 }">
               <div class="media-player__stage">
                 <video
                   ref="mediaRef"
@@ -3477,69 +3477,118 @@ onBeforeUnmount(() => {
                   @click="togglePlay"
                   @timeupdate="onMediaTimeUpdate"
                   @loadedmetadata="onMediaLoadedMetadata"
+                  @durationchange="onMediaLoadedMetadata"
                   @play="onMediaPlay"
                   @pause="onMediaPause"
                   @ended="onMediaPause"
                 ></video>
               </div>
               <div class="media-player__bar">
-                <button class="media-player__btn media-player__btn--play" type="button" :aria-label="mediaState.playing ? 'Pause' : 'Play'" @click="togglePlay">{{ mediaState.playing ? '❚❚' : '►' }}</button>
-                <span class="media-player__time">{{ formatMediaTime(mediaState.currentTime) }}</span>
-                <span class="media-player__seek">
+                <div class="media-player__progress">
                   <input
+                    class="media-player__seek"
                     type="range"
                     min="0"
                     :max="mediaState.duration || 0"
                     step="0.1"
                     :value="mediaState.currentTime"
-                    :aria-label="'Seek'"
+                    :style="{ '--mp-fill': mediaProgressPercent() + '%' }"
+                    aria-label="Seek"
                     @input="onMediaSeek"
                   >
-                </span>
-                <span class="media-player__time">{{ formatMediaTime(mediaState.duration) }}</span>
-                <span class="media-player__volume">
-                  <button class="media-player__btn" type="button" :aria-label="mediaState.muted ? 'Unmute' : 'Mute'" @click="toggleMute">{{ mediaState.muted || mediaState.volume === 0 ? '🔇' : '🔊' }}</button>
-                  <input type="range" min="0" max="1" step="0.05" :value="mediaState.muted ? 0 : mediaState.volume" aria-label="Volume" @input="onMediaVolume">
-                </span>
-                <button class="media-player__btn" type="button" aria-label="Fullscreen" @click="toggleFullscreen">⛶</button>
+                </div>
+                <div class="media-player__controls">
+                  <button class="media-player__btn media-player__btn--play" type="button" :aria-label="mediaState.playing ? 'Pause' : 'Play'" @click="togglePlay">
+                    <svg class="media-player__icon media-player__icon--play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.14v13.72c0 .8.88 1.3 1.57.88l10.96-6.86a1.04 1.04 0 0 0 0-1.76L9.57 4.26A1.04 1.04 0 0 0 8 5.14Z"/></svg>
+                    <svg class="media-player__icon media-player__icon--pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h3.4c.55 0 1 .45 1 1v12c0 .55-.45 1-1 1H7c-.55 0-1-.45-1-1V6c0-.55.45-1 1-1Zm9.6 0H20c.55 0 1 .45 1 1v12c0 .55-.45 1-1 1h-3.4c-.55 0-1-.45-1-1V6c0-.55.45-1 1-1Z"/></svg>
+                  </button>
+                  <span class="media-player__time">{{ formatMediaTime(mediaState.currentTime) }}</span>
+                  <span class="media-player__spacer"></span>
+                  <span class="media-player__time">{{ formatMediaTime(mediaState.duration) }}</span>
+                  <span class="media-player__volume">
+                    <button class="media-player__btn" type="button" :aria-label="mediaState.muted || mediaState.volume === 0 ? 'Unmute' : 'Mute'" @click="toggleMute">
+                      <svg class="media-player__icon media-player__icon--unmuted" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5c0 .55.45 1 1 1h2.6l3.7 3.1c.66.55 1.65.08 1.65-.77V6.17c0-.85-1-1.32-1.65-.77L7.6 8.5H5c-.55 0-1 .45-1 1Z"/><path d="M15.4 9.3a.9.9 0 0 1 1.26-.14 4.4 4.4 0 0 1 0 5.68.9.9 0 1 1-1.4-1.13 2.6 2.6 0 0 0 0-3.42.9.9 0 0 1 .14-1.13Z"/><path d="M17.6 6.5a.9.9 0 0 1 1.26-.15 7.6 7.6 0 0 1 0 11.3.9.9 0 1 1-1.2-1.34 5.8 5.8 0 0 0 0-8.62.9.9 0 0 1-.06-1.19Z"/></svg>
+                      <svg class="media-player__icon media-player__icon--muted" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5c0 .55.45 1 1 1h2.6l3.7 3.1c.66.55 1.65.08 1.65-.77V6.17c0-.85-1-1.32-1.65-.77L7.6 8.5H5c-.55 0-1 .45-1 1Z"/><path d="M15.3 9.05a.9.9 0 0 1 1.27 0l1.63 1.64 1.63-1.64a.9.9 0 1 1 1.27 1.28L19.47 12l1.63 1.64a.9.9 0 1 1-1.27 1.27L18.2 13.27l-1.63 1.64a.9.9 0 1 1-1.27-1.27L16.93 12 15.3 10.33a.9.9 0 0 1 0-1.28Z"/></svg>
+                    </button>
+                    <input
+                      class="media-player__volume"
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      :value="mediaState.muted ? 0 : mediaState.volume"
+                      :style="{ '--mp-fill': (mediaState.muted ? 0 : mediaState.volume * 100) + '%' }"
+                      aria-label="Volume"
+                      @input="onMediaVolume"
+                    >
+                  </span>
+                  <button class="media-player__btn" type="button" aria-label="Fullscreen" @click="toggleFullscreen">
+                    <svg class="media-player__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h4.5a1 1 0 0 1 0 2H6v2.5a1 1 0 0 1-2 0V4Zm11.5 0H20v4.5a1 1 0 0 1-2 0V6h-2.5a1 1 0 0 1 0-2ZM4 15.5a1 1 0 0 1 2 0V18h2.5a1 1 0 0 1 0 2H4v-4.5Zm16 0V20h-4.5a1 1 0 0 1 0-2H18v-2.5a1 1 0 0 1 2 0Z"/></svg>
+                  </button>
+                </div>
               </div>
             </div>
-            <div v-else-if="previewMode(previewItem) === 'audio'" class="media-player media-player--audio">
+            <div v-else-if="previewMode(previewItem) === 'audio'" class="media-player media-player--audio" :class="{ 'is-playing': mediaState.playing, 'is-paused': !mediaState.playing, 'is-muted': mediaState.muted || mediaState.volume === 0 }">
               <div class="media-player__stage">
                 <div class="media-player__audio-art">
-                  <span class="media-player__icon">🎵</span>
+                  <div class="media-player__art">
+                    <svg class="media-player__disc" viewBox="0 0 96 96" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2"><circle cx="48" cy="48" r="46"/><circle cx="48" cy="48" r="36" opacity=".5"/><circle cx="48" cy="48" r="26" opacity=".3"/></g><circle cx="48" cy="48" r="12" fill="currentColor"/><circle cx="48" cy="48" r="4" fill="#0b0b0c"/></svg>
+                    <span class="media-player__eq" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></span>
+                  </div>
                   <strong>{{ previewItem.name }}</strong>
                 </div>
               </div>
               <div class="media-player__bar">
-                <button class="media-player__btn media-player__btn--play" type="button" :aria-label="mediaState.playing ? 'Pause' : 'Play'" @click="togglePlay">{{ mediaState.playing ? '❚❚' : '►' }}</button>
-                <span class="media-player__time">{{ formatMediaTime(mediaState.currentTime) }}</span>
-                <span class="media-player__seek">
+                <div class="media-player__progress">
                   <input
+                    class="media-player__seek"
                     type="range"
                     min="0"
                     :max="mediaState.duration || 0"
                     step="0.1"
                     :value="mediaState.currentTime"
+                    :style="{ '--mp-fill': mediaProgressPercent() + '%' }"
                     aria-label="Seek"
                     @input="onMediaSeek"
                   >
-                </span>
-                <span class="media-player__time">{{ formatMediaTime(mediaState.duration) }}</span>
-                <span class="media-player__volume">
-                  <button class="media-player__btn" type="button" :aria-label="mediaState.muted ? 'Unmute' : 'Mute'" @click="toggleMute">{{ mediaState.muted || mediaState.volume === 0 ? '🔇' : '🔊' }}</button>
-                  <input type="range" min="0" max="1" step="0.05" :value="mediaState.muted ? 0 : mediaState.volume" aria-label="Volume" @input="onMediaVolume">
-                </span>
-                <audio
-                  ref="mediaRef"
-                  :src="previewItem.preview_url"
-                  preload="metadata"
-                  @timeupdate="onMediaTimeUpdate"
-                  @loadedmetadata="onMediaLoadedMetadata"
-                  @play="onMediaPlay"
-                  @pause="onMediaPause"
-                  @ended="onMediaPause"
-                ></audio>
+                </div>
+                <div class="media-player__controls">
+                  <button class="media-player__btn media-player__btn--play" type="button" :aria-label="mediaState.playing ? 'Pause' : 'Play'" @click="togglePlay">
+                    <svg class="media-player__icon media-player__icon--play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.14v13.72c0 .8.88 1.3 1.57.88l10.96-6.86a1.04 1.04 0 0 0 0-1.76L9.57 4.26A1.04 1.04 0 0 0 8 5.14Z"/></svg>
+                    <svg class="media-player__icon media-player__icon--pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h3.4c.55 0 1 .45 1 1v12c0 .55-.45 1-1 1H7c-.55 0-1-.45-1-1V6c0-.55.45-1 1-1Zm9.6 0H20c.55 0 1 .45 1 1v12c0 .55-.45 1-1 1h-3.4c-.55 0-1-.45-1-1V6c0-.55.45-1 1-1Z"/></svg>
+                  </button>
+                  <span class="media-player__time">{{ formatMediaTime(mediaState.currentTime) }}</span>
+                  <span class="media-player__spacer"></span>
+                  <span class="media-player__time">{{ formatMediaTime(mediaState.duration) }}</span>
+                  <span class="media-player__volume">
+                    <button class="media-player__btn" type="button" :aria-label="mediaState.muted || mediaState.volume === 0 ? 'Unmute' : 'Mute'" @click="toggleMute">
+                      <svg class="media-player__icon media-player__icon--unmuted" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5c0 .55.45 1 1 1h2.6l3.7 3.1c.66.55 1.65.08 1.65-.77V6.17c0-.85-1-1.32-1.65-.77L7.6 8.5H5c-.55 0-1 .45-1 1Z"/><path d="M15.4 9.3a.9.9 0 0 1 1.26-.14 4.4 4.4 0 0 1 0 5.68.9.9 0 1 1-1.4-1.13 2.6 2.6 0 0 0 0-3.42.9.9 0 0 1 .14-1.13Z"/><path d="M17.6 6.5a.9.9 0 0 1 1.26-.15 7.6 7.6 0 0 1 0 11.3.9.9 0 1 1-1.2-1.34 5.8 5.8 0 0 0 0-8.62.9.9 0 0 1-.06-1.19Z"/></svg>
+                      <svg class="media-player__icon media-player__icon--muted" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5c0 .55.45 1 1 1h2.6l3.7 3.1c.66.55 1.65.08 1.65-.77V6.17c0-.85-1-1.32-1.65-.77L7.6 8.5H5c-.55 0-1 .45-1 1Z"/><path d="M15.3 9.05a.9.9 0 0 1 1.27 0l1.63 1.64 1.63-1.64a.9.9 0 1 1 1.27 1.28L19.47 12l1.63 1.64a.9.9 0 1 1-1.27 1.27L18.2 13.27l-1.63 1.64a.9.9 0 1 1-1.27-1.27L16.93 12 15.3 10.33a.9.9 0 0 1 0-1.28Z"/></svg>
+                    </button>
+                    <input
+                      class="media-player__volume"
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      :value="mediaState.muted ? 0 : mediaState.volume"
+                      :style="{ '--mp-fill': (mediaState.muted ? 0 : mediaState.volume * 100) + '%' }"
+                      aria-label="Volume"
+                      @input="onMediaVolume"
+                    >
+                  </span>
+                  <audio
+                    ref="mediaRef"
+                    :src="previewItem.preview_url"
+                    preload="metadata"
+                    @timeupdate="onMediaTimeUpdate"
+                    @loadedmetadata="onMediaLoadedMetadata"
+                    @durationchange="onMediaLoadedMetadata"
+                    @play="onMediaPlay"
+                    @pause="onMediaPause"
+                    @ended="onMediaPause"
+                  ></audio>
+                </div>
               </div>
             </div>
             <pre v-else-if="previewMode(previewItem) === 'text'">{{ previewText }}</pre>
