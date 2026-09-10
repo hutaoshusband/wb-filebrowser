@@ -1,5 +1,37 @@
 import { describe, expect, it, vi } from 'vitest';
+
+// The default (non-injected) worker factory must be exercised too: it once
+// returned a Promise instead of a Worker, which only reproduced without an
+// injected createWorker.
+vi.mock('../../frontend/src/lib/videoCompression.worker.js?worker', () => {
+  const instances = [];
+
+  class DefaultWorkerStub {
+    constructor() {
+      this.listeners = new Map();
+      this.posted = [];
+      this.terminated = false;
+      instances.push(this);
+    }
+
+    addEventListener(type, handler) {
+      this.listeners.set(type, handler);
+    }
+
+    postMessage(data) {
+      this.posted.push(data);
+    }
+
+    terminate() {
+      this.terminated = true;
+    }
+  }
+
+  return { default: DefaultWorkerStub, __instances: instances };
+});
+
 import { createVideoCompressor } from '../../frontend/src/lib/videoCompressor.js';
+import { __instances as defaultWorkerInstances } from '../../frontend/src/lib/videoCompression.worker.js?worker';
 
 function createFakeWorkerEnvironment() {
   const workers = [];
@@ -56,6 +88,26 @@ function normalizePolicy() {
 }
 
 describe('createVideoCompressor', () => {
+  it('spawns the default worker synchronously and talks to it', async () => {
+    const compressor = createVideoCompressor();
+
+    const supportPromise = compressor.checkSupport();
+    await flushMicrotasks();
+
+    // The factory must have produced a real Worker-like object immediately -
+    // a Promise here is the regression this guards against.
+    const spawned = defaultWorkerInstances.at(-1);
+    expect(spawned).toBeDefined();
+    expect(typeof spawned.addEventListener).toBe('function');
+
+    const request = spawned.posted.find(({ type }) => type === 'inspect-support');
+    expect(request).toBeDefined();
+
+    spawned.listeners.get('message')({ data: { id: request.id, ok: true, result: { supported: true } } });
+
+    await expect(supportPromise).resolves.toEqual({ supported: true });
+  });
+
   it('reports support through the worker probe', async () => {
     const { FakeWorker, workers } = createFakeWorkerEnvironment();
     const compressor = createVideoCompressor({ createWorker: () => new FakeWorker() });

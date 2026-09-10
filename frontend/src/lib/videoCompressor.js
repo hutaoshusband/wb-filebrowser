@@ -1,6 +1,11 @@
 // Main-thread orchestration for the compression worker: job correlation,
 // progress forwarding, and cancellation. Compression jobs run one at a time
 // (the caller sequences them), so a single active-job cancel slot is enough.
+//
+// The worker constructor is imported statically, but it only *spawns* the
+// worker (and downloads the ~1.5 MB bundle) when first used - keep this
+// factory synchronous, callers attach listeners to its result immediately.
+import VideoCompressionWorker from './videoCompression.worker.js?worker';
 
 import {
   computeTargetAudioBitrate,
@@ -21,7 +26,7 @@ export function createVideoCompressor({ createWorker } = {}) {
       return worker;
     }
 
-    const instance = createWorker ? createWorker() : spawnDefaultWorker();
+    const instance = createWorker ? createWorker() : new VideoCompressionWorker();
 
     instance.addEventListener('message', (event) => {
       const { id, type } = event.data ?? {};
@@ -180,9 +185,4 @@ export function createVideoCompressor({ createWorker } = {}) {
       progressHandlers.clear();
     },
   };
-}
-
-async function spawnDefaultWorker() {
-  const module = await import('./videoCompression.worker.js?worker');
-  return new module.default();
 }

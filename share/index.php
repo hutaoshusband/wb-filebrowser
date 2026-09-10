@@ -233,6 +233,7 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
 </head>
 <body class="share-shell">
     <main class="share-layout">
+        <a class="share-back header-button" href="#" data-share-back>Back</a>
         <section class="share-card">
             <?php if ($payload === null && $shareContext === null): ?>
                 <p class="install-kicker">Shared file</p>
@@ -438,6 +439,20 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
         if (el) {
             hljs.highlightElement(el);
         }
+    })();
+    (function() {
+        var back = document.querySelector('[data-share-back]');
+        if (!back) {
+            return;
+        }
+        if (window.history.length <= 1) {
+            back.hidden = true;
+            return;
+        }
+        back.addEventListener('click', function(event) {
+            event.preventDefault();
+            window.history.back();
+        });
     })();
     (function() {
         document.querySelectorAll('[data-copy-target]').forEach(function(btn) {
