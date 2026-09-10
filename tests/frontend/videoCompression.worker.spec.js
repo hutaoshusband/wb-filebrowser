@@ -262,15 +262,42 @@ describe('videoCompression.worker', () => {
   it('reports encoder support from WebCodecs and H.264 encoding', async () => {
     const id = await sendJob({ id: 'support-1', type: 'inspect-support' });
 
-    expect(responsesFor(id)).toEqual([{ id: 'support-1', ok: true, result: { supported: true } }]);
+    expect(responsesFor(id)[0].result).toEqual({
+      supported: true,
+      fallbackCapable: true,
+      reason: null,
+    });
   });
 
-  it('reports no support without WebCodecs encoders', async () => {
+  it('reports no native encoder but a usable fallback (Firefox case)', async () => {
     mediabunnyState.canEncodeVideoResult = false;
 
     const id = await sendJob({ id: 'support-2', type: 'inspect-support' });
 
-    expect(responsesFor(id)[0].result.supported).toBe(false);
+    expect(responsesFor(id)[0].result).toEqual({
+      supported: false,
+      fallbackCapable: true,
+      reason: 'This browser cannot encode H.264 video natively.',
+    });
+  });
+
+  it('reports no fallback either when WebCodecs is missing entirely', async () => {
+    const savedEncoder = self.VideoEncoder;
+    const savedDecoder = self.VideoDecoder;
+    delete self.VideoEncoder;
+    delete self.VideoDecoder;
+
+    try {
+      const id = await sendJob({ id: 'support-2b', type: 'inspect-support' });
+
+      expect(responsesFor(id)[0].result).toMatchObject({
+        supported: false,
+        reason: 'This browser has no WebCodecs support.',
+      });
+    } finally {
+      self.VideoEncoder = savedEncoder;
+      self.VideoDecoder = savedDecoder;
+    }
   });
 
   it('inspects a video and reports its policy-relevant summary', async () => {

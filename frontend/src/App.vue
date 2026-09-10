@@ -1251,7 +1251,11 @@ async function prepareVideosForUpload(items) {
 
   const support = await videoCompressor.checkSupport();
 
-  if (!support.supported) {
+  // Browsers without a native H.264 encoder (e.g. Firefox) can still
+  // compress through the in-browser ffmpeg engine when the admin allows it.
+  const fallbackUsable = policy.ffmpeg_fallback && support.fallbackCapable === true;
+
+  if (!support.supported && !fallbackUsable) {
     if (policy.mode === 'required') {
       throw new Error(
         `This server requires videos to be optimized before upload, but this browser cannot compress them`

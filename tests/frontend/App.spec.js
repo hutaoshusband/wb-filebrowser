@@ -1475,12 +1475,83 @@ describe('Video optimization uploads', () => {
   it('blocks required-mode uploads when the browser cannot compress', async () => {
     compressorMocks.checkSupport.mockImplementation(async () => ({
       supported: false,
+      fallbackCapable: false,
       reason: 'This browser cannot encode H.264 video.',
     }));
 
     const { wrapper, calls } = await mountBrowserApp({
       handlers: {
         'auth.session': () => jsonResponse(sessionPayload(adminUser(), videoCompressionPolicy())),
+        ...uploadHandlers(),
+      },
+    });
+
+    await pickFile(wrapper, new File(['x'.repeat(64)], 'movie.mov', { type: 'video/quicktime' }));
+    await flushPromises();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('requires videos to be optimized');
+    expect(uploadInitBodies(calls)).toEqual([]);
+  });
+
+  it('compresses in required mode through the fallback without a native encoder', async () => {
+    compressorMocks.checkSupport.mockImplementation(async () => ({
+      supported: false,
+      fallbackCapable: true,
+      reason: 'This browser cannot encode H.264 video natively.',
+    }));
+    compressorMocks.inspect.mockImplementation(async () => ({
+      container: 'matroska',
+      videoCodec: 'avc',
+      width: 1280,
+      height: 720,
+      fps: 30,
+      videoBitrate: 8_000_000,
+    }));
+    const compressed = new File(['y'.repeat(12)], 'movie.mp4', { type: 'video/mp4' });
+    compressorMocks.compress.mockImplementation(async () => ({
+      file: compressed,
+      engine: 'ffmpeg-wasm',
+      opfsToken: null,
+      originalSize: 64,
+      newSize: 12,
+    }));
+
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'auth.session': () => jsonResponse(sessionPayload(adminUser(), videoCompressionPolicy())),
+        ...uploadHandlers(),
+      },
+    });
+
+    await pickFile(wrapper, new File(['x'.repeat(64)], 'movie.mov', { type: 'video/quicktime' }));
+    await flushPromises();
+
+    // The dialog appears instead of a hard block.
+    const dialog = wrapper.find('.video-compression-modal');
+    expect(dialog.exists()).toBe(true);
+
+    const confirmButton = dialog.findAll('button').find((button) => button.text() === 'Optimize & upload');
+    await confirmButton.trigger('click');
+    await flushPromises();
+    await flushPromises();
+
+    expect(compressorMocks.compress).toHaveBeenCalledTimes(1);
+    const [initBody] = uploadInitBodies(calls);
+    expect(initBody.original_name).toBe('movie.mp4');
+    expect(initBody.size).toBe(12);
+  });
+
+  it('blocks required mode when the fallback is disabled by policy', async () => {
+    compressorMocks.checkSupport.mockImplementation(async () => ({
+      supported: false,
+      fallbackCapable: true,
+      reason: 'This browser cannot encode H.264 video natively.',
+    }));
+
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'auth.session': () => jsonResponse(sessionPayload(adminUser(), videoCompressionPolicy({ ffmpeg_fallback: false }))),
         ...uploadHandlers(),
       },
     });

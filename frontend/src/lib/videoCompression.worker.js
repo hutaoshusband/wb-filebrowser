@@ -84,19 +84,28 @@ self.addEventListener('message', (event) => {
 // behind by crashed or canceled previous sessions are safe to remove.
 sweepOpfsDirectory().catch(() => {});
 
+/**
+ * Reports what this browser can do. `supported` refers to the fast
+ * WebCodecs path only; `fallbackCapable` says whether the in-browser
+ * ffmpeg.wasm engine could run at all (WebAssembly + worker), which needs
+ * no WebCodecs. Browsers like Firefox without a native H.264 encoder take
+ * the fallback path in required mode.
+ */
 async function checkEncoderSupport() {
-  const supported = typeof self.VideoEncoder !== 'undefined'
+  const hasWebCodecs = typeof self.VideoEncoder !== 'undefined'
     && typeof self.VideoDecoder !== 'undefined';
 
-  if (!supported) {
-    return { supported: false, reason: 'This browser has no WebCodecs support.' };
+  const fallbackCapable = typeof self.WebAssembly !== 'undefined';
+
+  if (!hasWebCodecs) {
+    return { supported: false, fallbackCapable, reason: 'This browser has no WebCodecs support.' };
   }
 
   if (!(await canEncodeVideo('avc'))) {
-    return { supported: false, reason: 'This browser cannot encode H.264 video.' };
+    return { supported: false, fallbackCapable, reason: 'This browser cannot encode H.264 video natively.' };
   }
 
-  return { supported: true };
+  return { supported: true, fallbackCapable, reason: null };
 }
 
 function runJob(id, task) {

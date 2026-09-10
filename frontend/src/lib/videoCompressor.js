@@ -90,15 +90,22 @@ export function createVideoCompressor({ createWorker } = {}) {
 
   return {
     /**
-     * Cheap capability probe: verifies the worker starts and the browser can
-     * encode H.264. Never throws; failures are reported in the result.
+     * Cheap capability probe: verifies the worker starts and reports what
+     * the browser can encode. `supported` covers the fast WebCodecs path;
+     * `fallbackCapable` covers the in-browser ffmpeg engine. Never throws;
+     * failures are reported in the result.
      */
     async checkSupport() {
       try {
         const result = await request('inspect-support');
-        return result ?? { supported: false, reason: 'Unknown compression support.' };
+        return result ?? { supported: false, fallbackCapable: false, reason: 'Unknown compression support.' };
       } catch (error) {
-        return { supported: false, reason: error instanceof Error ? error.message : String(error) };
+        // A worker that cannot start cannot run the ffmpeg fallback either.
+        return {
+          supported: false,
+          fallbackCapable: false,
+          reason: error instanceof Error ? error.message : String(error),
+        };
       }
     },
 
