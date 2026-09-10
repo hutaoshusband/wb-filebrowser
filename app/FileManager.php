@@ -596,6 +596,7 @@ final class FileManager
 
         self::assertDeclaredChunkCountMatchesSize($size, $totalChunks);
         self::assertWithinStorageQuota($user, $size);
+        self::assertVideoUploadCanBeVerified($originalName, $size, $mimeType);
 
         if ($relativePathSegments !== []) {
             $folder = self::ensureFolderPath($user, $folderId, $relativePathSegments);
@@ -760,6 +761,32 @@ final class FileManager
 
             Settings::assertUploadAllowed((string) $metadata['original_name'], $finalSize, $pdo);
             self::assertWithinStorageQuota($user, $finalSize, $token, $pdo);
+
+            try {
+                MediaValidator::assertAcceptedVideoUpload(
+                    $finalPath,
+                    (string) $metadata['original_name'],
+                    $finalSize,
+                    $mimeType,
+                    $pdo
+                );
+            } catch (RuntimeException $exception) {
+                AuditLog::record('file.upload_rejected', 'file_uploads', [
+                    'actor_user' => $user,
+                    'target_type' => 'file',
+                    'target_id' => 0,
+                    'target_label' => (string) $metadata['original_name'],
+                    'summary' => 'Rejected non-compliant video upload ' . $metadata['original_name'],
+                    'metadata' => [
+                        'size' => $finalSize,
+                        'mime_type' => $mimeType,
+                        'reason' => $exception->getMessage(),
+                    ],
+                ], $pdo);
+
+                throw $exception;
+            }
+
             $statement = $pdo->prepare(
                 'INSERT INTO files (folder_id, original_name, disk_name, disk_extension, mime_type, size, checksum, created_by, created_at, updated_at)
                  VALUES (:folder_id, :original_name, :disk_name, :disk_extension, :mime_type, :size, :checksum, :created_by, :created_at, :updated_at)'
@@ -813,6 +840,35 @@ final class FileManager
         }
 
         self::deleteDirectory(wb_storage_path('chunks/' . $token));
+    }
+
+    /**
+     * Rejects required-mode video uploads up front when the server cannot
+     * verify them (ffprobe missing), so nobody transfers gigabytes only for
+     * the final check to fail.
+     */
+    private static function assertVideoUploadCanBeVerified(string $originalName, int $size, string $mimeType): void
+    {
+        $policy = Settings::videoCompressionPolicy();
+
+        if ($policy['mode'] !== 'required') {
+            return;
+        }
+
+        if ($size < $policy['min_source_mb'] * 1024 * 1024) {
+            return;
+        }
+
+        if (!MediaValidator::looksLikeVideo($mimeType, $originalName)) {
+            return;
+        }
+
+        if (!MediaValidator::isAvailable()) {
+            throw new RuntimeException(
+                'This server requires optimized video uploads, but its media verification tool (ffprobe) is unavailable. '
+                . 'Please contact the administrator.'
+            );
+        }
     }
 
     public static function fileDetails(?array $user, int $fileId): array

@@ -452,3 +452,13 @@ input.media-player__volume::-moz-range-thumb{width:10px;height:10px;border-radiu
 .backup-actions button.danger:hover{background:var(--c-danger-soft)}
 .backup-actions button:disabled{opacity:.5;cursor:not-allowed}
 .backup-table code{font-size:.78rem;color:var(--c-text-dim)}
+
+/* Client-side video optimization dialog */
+.video-compression-modal{width:min(560px,100%);display:grid;gap:14px}
+.video-compression-modal h2{margin:0}
+.video-compression-modal__files{margin:0;padding:0;list-style:none;display:grid;gap:6px;max-height:180px;overflow:auto}
+.video-compression-modal__files li{display:flex;justify-content:space-between;gap:16px;padding:8px 12px;border:1px solid var(--c-line);border-radius:var(--r-sm);background:var(--c-surface-2);font-size:.9rem}
+.video-compression-modal__files li span:last-child{color:var(--c-text-dim);white-space:nowrap}
+.video-compression-modal__actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap}
+.video-compression-modal__actions .video-compression-modal__primary{border-color:var(--c-accent);color:var(--c-surface)}
+.video-compression-modal__actions .video-compression-modal__primary:hover{filter:brightness(1.1);color:var(--c-surface)}

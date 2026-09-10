@@ -5,6 +5,12 @@ import { resolve } from 'node:path';
 export default defineConfig({
   base: './',
   plugins: [vue()],
+  // The video compression worker (and the ffmpeg fallback it loads) needs
+  // ES module workers: dynamic imports and import.meta.url asset resolution
+  // don't survive the classic-worker transformation.
+  worker: {
+    format: 'es'
+  },
   test: {
     environment: 'jsdom',
     globals: true

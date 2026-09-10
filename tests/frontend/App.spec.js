@@ -3,7 +3,26 @@ vi.mock('../../frontend/src/lib/thumbnails.js', () => ({
   renderPdfThumbnail: vi.fn(async () => 'data:image/png;base64,pdf-thumb'),
 }));
 
+// The compression orchestrator is module-level inside App.vue, so the mock
+// exposes stable shared spies that each test configures.
+vi.mock('../../frontend/src/lib/videoCompressor.js', () => {
+  const mocks = {
+    checkSupport: vi.fn(async () => ({ supported: false })),
+    inspect: vi.fn(async () => null),
+    compress: vi.fn(),
+    cancelActive: vi.fn(),
+    cleanup: vi.fn(async () => {}),
+    dispose: vi.fn(),
+  };
+
+  return {
+    createVideoCompressor: () => mocks,
+    __mocks: mocks,
+  };
+});
+
 import { renderPdfThumbnail } from '../../frontend/src/lib/thumbnails.js';
+import { __mocks as compressorMocks } from '../../frontend/src/lib/videoCompressor.js';
 import App from '../../frontend/src/App.vue';
 
 function adminUser(role = 'admin') {
@@ -34,7 +53,7 @@ function uploadPolicy() {
   };
 }
 
-function sessionPayload(user = adminUser()) {
+function sessionPayload(user = adminUser(), videoCompression = undefined) {
   return {
     user,
     public_access: false,
@@ -51,7 +70,7 @@ function sessionPayload(user = adminUser()) {
     display: {
       grid_thumbnails_enabled: true,
     },
-    upload_policy: uploadPolicy(),
+    upload_policy: videoCompression === undefined ? uploadPolicy() : { ...uploadPolicy(), video_compression: videoCompression },
     help: { title: 'Help', body: 'Help text' },
   };
 }
@@ -1288,5 +1307,296 @@ describe('Admin app shell', () => {
     await flushPromises();
 
     expect(wrapper.text()).toContain('Uploaded file by admin: brief.txt.');
+  });
+});
+describe('Video optimization uploads', () => {
+  function videoCompressionPolicy(overrides = {}) {
+    return {
+      mode: 'required',
+      max_width: 1920,
+      max_height: 1080,
+      max_fps: 60,
+      max_video_bitrate_kbps: 8000,
+      max_audio_bitrate_kbps: 192,
+      min_source_mb: 0,
+      min_savings_pct: 5,
+      ffmpeg_fallback: true,
+      ...overrides,
+    };
+  }
+
+  function uploadHandlers() {
+    return {
+      'upload.init': () => jsonResponse({
+        data: { upload_token: 'upload-token', chunk_size: 2097152 },
+      }),
+      'upload.chunk': () => jsonResponse({}),
+      'upload.complete': () => jsonResponse({}),
+    };
+  }
+
+  async function pickFile(wrapper, file) {
+    const input = wrapper.find('input[type="file"]');
+    Object.defineProperty(input.element, 'files', { value: [file], configurable: true });
+    await input.trigger('change');
+    await flushPromises();
+  }
+
+  function uploadInitBodies(calls) {
+    return calls
+      .filter((call) => call.action === 'upload.init')
+      .map((call) => JSON.parse(call.init.body));
+  }
+
+  it('skips compression entirely when the policy is off', async () => {
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'auth.session': () => jsonResponse(sessionPayload(adminUser(), videoCompressionPolicy({ mode: 'off' }))),
+        ...uploadHandlers(),
+      },
+    });
+
+    await pickFile(wrapper, new File(['x'.repeat(64)], 'movie.mov', { type: 'video/quicktime' }));
+    await flushPromises();
+
+    expect(compressorMocks.checkSupport).not.toHaveBeenCalled();
+    const [initBody] = uploadInitBodies(calls);
+    expect(initBody.original_name).toBe('movie.mov');
+    expect(initBody.size).toBe(64);
+  });
+
+  it('compresses locally and uploads the optimized file in required mode', async () => {
+    compressorMocks.checkSupport.mockImplementation(async () => ({ supported: true }));
+    compressorMocks.inspect.mockImplementation(async () => ({
+      container: 'matroska',
+      videoCodec: 'avc',
+      width: 1280,
+      height: 720,
+      fps: 30,
+      videoBitrate: 8_000_000,
+      audioCodec: 'aac',
+      audioBitrate: 128_000,
+      decodable: true,
+    }));
+    const compressed = new File(['y'.repeat(16)], 'movie.mp4', { type: 'video/mp4' });
+    compressorMocks.compress.mockImplementation(async () => ({
+      file: compressed,
+      engine: 'mediabunny',
+      opfsToken: null,
+      originalSize: 64,
+      newSize: 16,
+    }));
+
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'auth.session': () => jsonResponse(sessionPayload(adminUser(), videoCompressionPolicy())),
+        ...uploadHandlers(),
+      },
+    });
+
+    await pickFile(wrapper, new File(['x'.repeat(64)], 'movie.mov', { type: 'video/quicktime' }));
+    await flushPromises();
+
+    const dialog = wrapper.findComponent({ name: 'VideoCompressionDialog' });
+    expect(dialog.exists()).toBe(true);
+    expect(wrapper.text()).toContain('Video optimization required');
+
+    const confirmButton = dialog.findAll('button').find((button) => button.text() === 'Optimize & upload');
+    await confirmButton.trigger('click');
+    await flushPromises();
+    await flushPromises();
+
+    expect(compressorMocks.compress).toHaveBeenCalledTimes(1);
+    const [initBody] = uploadInitBodies(calls);
+    expect(initBody.original_name).toBe('movie.mp4');
+    expect(initBody.size).toBe(16);
+    expect(initBody.mime_type).toBe('video/mp4');
+  });
+
+  it('uploads the original when the user declines in optional mode', async () => {
+    compressorMocks.checkSupport.mockImplementation(async () => ({ supported: true }));
+    compressorMocks.inspect.mockImplementation(async () => ({
+      container: 'matroska',
+      videoCodec: 'avc',
+      width: 1280,
+      height: 720,
+      fps: 30,
+      videoBitrate: 8_000_000,
+    }));
+
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'auth.session': () => jsonResponse(sessionPayload(adminUser(), videoCompressionPolicy({ mode: 'optional' }))),
+        ...uploadHandlers(),
+      },
+    });
+
+    await pickFile(wrapper, new File(['x'.repeat(64)], 'movie.mov', { type: 'video/quicktime' }));
+    await flushPromises();
+
+    const dialog = wrapper.findComponent({ name: 'VideoCompressionDialog' });
+    expect(wrapper.text()).toContain('Make these videos smaller?');
+
+    const declineButton = dialog.findAll('button').find((button) => button.text() === 'Upload originals');
+    await declineButton.trigger('click');
+    await flushPromises();
+    await flushPromises();
+
+    expect(compressorMocks.compress).not.toHaveBeenCalled();
+    const [initBody] = uploadInitBodies(calls);
+    expect(initBody.original_name).toBe('movie.mov');
+    expect(initBody.size).toBe(64);
+  });
+
+  it('cancels the whole upload when required mode is declined', async () => {
+    compressorMocks.checkSupport.mockImplementation(async () => ({ supported: true }));
+    compressorMocks.inspect.mockImplementation(async () => ({ container: 'avi' }));
+
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'auth.session': () => jsonResponse(sessionPayload(adminUser(), videoCompressionPolicy())),
+        ...uploadHandlers(),
+      },
+    });
+
+    await pickFile(wrapper, new File(['x'.repeat(64)], 'movie.mov', { type: 'video/quicktime' }));
+    await flushPromises();
+
+    const dialog = wrapper.findComponent({ name: 'VideoCompressionDialog' });
+    const cancelButton = dialog.findAll('button').find((button) => button.text() === 'Cancel upload');
+    await cancelButton.trigger('click');
+    await flushPromises();
+    await flushPromises();
+
+    expect(compressorMocks.compress).not.toHaveBeenCalled();
+    expect(uploadInitBodies(calls)).toEqual([]);
+  });
+
+  it('blocks required-mode uploads when the browser cannot compress', async () => {
+    compressorMocks.checkSupport.mockImplementation(async () => ({
+      supported: false,
+      reason: 'This browser cannot encode H.264 video.',
+    }));
+
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'auth.session': () => jsonResponse(sessionPayload(adminUser(), videoCompressionPolicy())),
+        ...uploadHandlers(),
+      },
+    });
+
+    await pickFile(wrapper, new File(['x'.repeat(64)], 'movie.mov', { type: 'video/quicktime' }));
+    await flushPromises();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('requires videos to be optimized');
+    expect(uploadInitBodies(calls)).toEqual([]);
+  });
+
+  it('uploads originals in optional mode when the browser cannot compress', async () => {
+    compressorMocks.checkSupport.mockImplementation(async () => ({ supported: false }));
+
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'auth.session': () => jsonResponse(sessionPayload(adminUser(), videoCompressionPolicy({ mode: 'optional' }))),
+        ...uploadHandlers(),
+      },
+    });
+
+    await pickFile(wrapper, new File(['x'.repeat(64)], 'movie.mov', { type: 'video/quicktime' }));
+    await flushPromises();
+    await flushPromises();
+
+    const [initBody] = uploadInitBodies(calls);
+    expect(initBody.original_name).toBe('movie.mov');
+  });
+
+  it('skips already compliant videos without compressing them', async () => {
+    compressorMocks.checkSupport.mockImplementation(async () => ({ supported: true }));
+    compressorMocks.inspect.mockImplementation(async () => ({
+      container: 'mp4',
+      videoCodec: 'avc',
+      width: 1280,
+      height: 720,
+      fps: 30,
+      videoBitrate: 2_000_000,
+      audioCodec: 'aac',
+      audioBitrate: 128_000,
+      videoTrackCount: 1,
+      audioTrackCount: 1,
+    }));
+
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'auth.session': () => jsonResponse(sessionPayload(adminUser(), videoCompressionPolicy({ mode: 'optional' }))),
+        ...uploadHandlers(),
+      },
+    });
+
+    await pickFile(wrapper, new File(['x'.repeat(64)], 'movie.mp4', { type: 'video/mp4' }));
+    await flushPromises();
+    await flushPromises();
+
+    expect(wrapper.find('.video-compression-modal').exists()).toBe(false);
+    expect(compressorMocks.compress).not.toHaveBeenCalled();
+    const [initBody] = uploadInitBodies(calls);
+    expect(initBody.original_name).toBe('movie.mp4');
+  });
+
+  it('continues an optional-mode batch when one video fails to compress', async () => {
+    compressorMocks.checkSupport.mockImplementation(async () => ({ supported: true }));
+    compressorMocks.inspect.mockImplementation(async () => ({ container: 'matroska', videoCodec: 'avc', width: 1280, height: 720, fps: 30, videoBitrate: 8_000_000 }));
+    const failure = new Error('The compatibility engine is unavailable.');
+    failure.code = 'UNSUPPORTED';
+    compressorMocks.compress.mockImplementation(async () => {
+      throw failure;
+    });
+
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'auth.session': () => jsonResponse(sessionPayload(adminUser(), videoCompressionPolicy({ mode: 'optional' }))),
+        ...uploadHandlers(),
+      },
+    });
+
+    await pickFile(wrapper, new File(['x'.repeat(64)], 'movie.mov', { type: 'video/quicktime' }));
+    await flushPromises();
+
+    const dialog = wrapper.find('.video-compression-modal');
+    const confirmButton = dialog.findAll('button').find((button) => button.text() === 'Compress & upload');
+    await confirmButton.trigger('click');
+    await flushPromises();
+    await flushPromises();
+
+    // The failed video uploads as its original instead of blocking the batch.
+    const [initBody] = uploadInitBodies(calls);
+    expect(initBody.original_name).toBe('movie.mov');
+    expect(initBody.size).toBe(64);
+  });
+
+  it('submits video compression settings from the uploads tab', async () => {
+    const { wrapper, calls } = await mountAdminApp({ hash: '#/settings' });
+
+    const uploadsTab = wrapper.findAll('.settings-tabs button').find((button) => button.text() === 'Uploads');
+    await uploadsTab.trigger('click');
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Video optimization');
+
+    const pane = wrapper.find('.settings-pane');
+    const modeSelect = pane.findAll('select').find((select) => select.findAll('option').some((option) => option.text().includes('Required')));
+    await modeSelect.setValue('required');
+    await modeSelect.trigger('change');
+
+    await wrapper.find('.primary-button').trigger('click');
+
+    const saveCall = calls.filter((call) => call.action === 'admin.settings.save').at(-1);
+    const body = JSON.parse(saveCall.init.body);
+
+    expect(body.video_compression.mode).toBe('required');
+    expect(body.video_compression.max_height).toBe(1080);
+    expect(body.video_compression.max_fps).toBe(60);
+    expect(body.video_compression.max_video_bitrate_kbps).toBe(8000);
+    expect(body.video_compression.min_source_mb).toBe(20);
   });
 });

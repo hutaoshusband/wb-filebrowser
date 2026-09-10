@@ -72,6 +72,15 @@ final class Settings
             'uploads_max_file_size_mb' => (string) $normalized['uploads']['max_file_size_mb'],
             'uploads_allowed_extensions' => self::implodeExtensions($normalized['uploads']['allowed_extensions']),
             'uploads_stale_upload_ttl_hours' => (string) $normalized['uploads']['stale_upload_ttl_hours'],
+            'video_compression_mode' => $normalized['video_compression']['mode'],
+            'video_max_height' => (string) $normalized['video_compression']['max_height'],
+            'video_max_fps' => (string) $normalized['video_compression']['max_fps'],
+            'video_max_video_bitrate_kbps' => (string) $normalized['video_compression']['max_video_bitrate_kbps'],
+            'video_max_audio_bitrate_kbps' => (string) $normalized['video_compression']['max_audio_bitrate_kbps'],
+            'video_min_source_mb' => (string) $normalized['video_compression']['min_source_mb'],
+            'video_min_savings_pct' => (string) $normalized['video_compression']['min_savings_pct'],
+            'video_ffmpeg_fallback' => $normalized['video_compression']['ffmpeg_fallback'] ? '1' : '0',
+            'media_ffprobe_path' => $normalized['video_compression']['media_ffprobe_path'],
             'automation_runner_enabled' => $normalized['automation']['runner_enabled'] ? '1' : '0',
             'automation_diagnostic_interval_minutes' => (string) $normalized['automation']['diagnostic_interval_minutes'],
             'automation_cleanup_interval_minutes' => (string) $normalized['automation']['cleanup_interval_minutes'],
@@ -123,6 +132,7 @@ final class Settings
                 'allowed_extensions' => implode(', ', self::allowedExtensions($pdo)),
                 'stale_upload_ttl_hours' => self::parseInteger(Database::setting('uploads_stale_upload_ttl_hours', '24'), 'Upload retention window', 1, 720),
             ],
+            'video_compression' => self::videoCompressionGroup(),
             'automation' => [
                 'runner_enabled' => wb_parse_bool(Database::setting('automation_runner_enabled', '1')),
                 'diagnostic_interval_minutes' => self::parseInteger(Database::setting('automation_diagnostic_interval_minutes', '30'), 'Storage shield interval', 5, 1440),
@@ -162,6 +172,7 @@ final class Settings
             'settings' => self::grouped($pdo),
             'diagnostics' => self::diagnosticState(),
             'upload_policy' => self::uploadPolicy($pdo),
+            'media_validation' => MediaValidator::diagnostics($pdo),
             'automation' => [
                 'jobs' => AutomationRunner::jobs($pdo),
                 'runner_enabled' => wb_parse_bool(Database::setting('automation_runner_enabled', '1')),
@@ -193,6 +204,7 @@ final class Settings
     {
         $pdo ??= Database::connection();
         $normalized = self::normalizePayload($payload, self::grouped($pdo));
+        self::assertVideoCompressionPolicyIsEnforceable($normalized['video_compression']);
         $currentShareTerms = self::shareTermsPolicy($pdo);
         $statement = Database::prepareUpsert(
             $pdo,
@@ -221,6 +233,15 @@ final class Settings
             'uploads_max_file_size_mb' => (string) $normalized['uploads']['max_file_size_mb'],
             'uploads_allowed_extensions' => self::implodeExtensions($normalized['uploads']['allowed_extensions']),
             'uploads_stale_upload_ttl_hours' => (string) $normalized['uploads']['stale_upload_ttl_hours'],
+            'video_compression_mode' => $normalized['video_compression']['mode'],
+            'video_max_height' => (string) $normalized['video_compression']['max_height'],
+            'video_max_fps' => (string) $normalized['video_compression']['max_fps'],
+            'video_max_video_bitrate_kbps' => (string) $normalized['video_compression']['max_video_bitrate_kbps'],
+            'video_max_audio_bitrate_kbps' => (string) $normalized['video_compression']['max_audio_bitrate_kbps'],
+            'video_min_source_mb' => (string) $normalized['video_compression']['min_source_mb'],
+            'video_min_savings_pct' => (string) $normalized['video_compression']['min_savings_pct'],
+            'video_ffmpeg_fallback' => $normalized['video_compression']['ffmpeg_fallback'] ? '1' : '0',
+            'media_ffprobe_path' => $normalized['video_compression']['media_ffprobe_path'],
             'automation_runner_enabled' => $normalized['automation']['runner_enabled'] ? '1' : '0',
             'automation_diagnostic_interval_minutes' => (string) $normalized['automation']['diagnostic_interval_minutes'],
             'automation_cleanup_interval_minutes' => (string) $normalized['automation']['cleanup_interval_minutes'],
@@ -289,7 +310,100 @@ final class Settings
                 ? 'Any file type'
                 : implode(', ', array_map(static fn (string $extension): string => '.' . $extension, $allowedExtensions)),
             'stale_upload_ttl_hours' => $staleUploadTtlHours,
+            'video_compression' => self::videoCompressionPolicy($pdo),
         ];
+    }
+
+    /**
+     * The video optimization policy shared with clients and enforced by
+     * MediaValidator. Returned even when compression is disabled so clients can
+     * rely on a stable shape.
+     */
+    public static function videoCompressionPolicy(?PDO $pdo = null): array
+    {
+        $maxHeight = self::parseInteger(Database::setting('video_max_height', '1080'), 'Maximum video resolution', 240, 4320);
+        // The resolution policy is expressed as one "class" height (e.g. 1080p);
+        // the matching 16:9 width is derived so landscape, portrait and other
+        // aspect ratios are judged consistently (see MediaValidator).
+        $maxWidth = (int) (round($maxHeight * 16 / 9 / 2) * 2);
+
+        return [
+            'mode' => self::parseVideoCompressionMode(Database::setting('video_compression_mode', 'off')),
+            'max_height' => $maxHeight,
+            'max_width' => $maxWidth,
+            'max_fps' => self::parseInteger(Database::setting('video_max_fps', '60'), 'Maximum video frame rate', 24, 144),
+            'max_video_bitrate_kbps' => self::parseInteger(Database::setting('video_max_video_bitrate_kbps', '8000'), 'Maximum video bitrate', 500, 100000),
+            'max_audio_bitrate_kbps' => self::parseInteger(Database::setting('video_max_audio_bitrate_kbps', '192'), 'Maximum audio bitrate', 64, 512),
+            'min_source_mb' => self::parseInteger(Database::setting('video_min_source_mb', '20'), 'Video optimization minimum size', 0, 20480),
+            'min_savings_pct' => self::parseInteger(Database::setting('video_min_savings_pct', '5'), 'Minimum video savings', 0, 90),
+            'ffmpeg_fallback' => wb_parse_bool(Database::setting('video_ffmpeg_fallback', '1')),
+        ];
+    }
+
+    private static function videoCompressionGroup(): array
+    {
+        $policy = self::videoCompressionPolicy();
+
+        return [
+            'mode' => $policy['mode'],
+            'max_height' => $policy['max_height'],
+            'max_fps' => $policy['max_fps'],
+            'max_video_bitrate_kbps' => $policy['max_video_bitrate_kbps'],
+            'max_audio_bitrate_kbps' => $policy['max_audio_bitrate_kbps'],
+            'min_source_mb' => $policy['min_source_mb'],
+            'min_savings_pct' => $policy['min_savings_pct'],
+            'ffmpeg_fallback' => $policy['ffmpeg_fallback'],
+            // Stored verbatim: a path that later disappeared must not wedge
+            // every admin save - ffprobe resolution degrades to PATH and the
+            // admin diagnostics surface the stale path instead.
+            'media_ffprobe_path' => trim((string) Database::setting('media_ffprobe_path', '')),
+        ];
+    }
+
+    private static function parseVideoCompressionMode(mixed $value): string
+    {
+        $mode = strtolower(trim((string) $value));
+
+        if (!in_array($mode, ['off', 'optional', 'required'], true)) {
+            throw new InvalidArgumentException('Video optimization mode must be off, optional, or required.');
+        }
+
+        return $mode;
+    }
+
+    private static function parseFfprobePath(mixed $value): string
+    {
+        $path = str_replace(["\r\n", "\r", "\n"], '', trim((string) $value));
+
+        if ($path === '') {
+            return '';
+        }
+
+        if (!is_file($path)) {
+            throw new InvalidArgumentException('The ffprobe path does not point to an existing file.');
+        }
+
+        return $path;
+    }
+
+    /**
+     * "Required" mode is only honest when the server can actually verify video
+     * uploads, so refuse to save it while ffprobe is unavailable rather than
+     * silently accepting unverified videos. The check honors an ffprobe path
+     * submitted in the same payload, which is not stored yet at this point.
+     */
+    private static function assertVideoCompressionPolicyIsEnforceable(array $group): void
+    {
+        if ($group['mode'] !== 'required') {
+            return;
+        }
+
+        if (!MediaValidator::isAvailableWith($group['media_ffprobe_path'])) {
+            throw new InvalidArgumentException(
+                'Required video optimization needs ffprobe on the server so uploads can be verified. '
+                . 'Install ffprobe (or set its path above) before enabling required mode.'
+            );
+        }
     }
 
     public static function assertUploadAllowed(string $originalName, int $size, ?PDO $pdo = null): void
@@ -351,6 +465,12 @@ final class Settings
             'uploads',
             ['max_file_size_mb', 'allowed_extensions', 'stale_upload_ttl_hours'],
             $base['uploads']
+        );
+        $videoInput = self::normalizeGroupInput(
+            $payload,
+            'video_compression',
+            ['mode', 'max_height', 'max_fps', 'max_video_bitrate_kbps', 'max_audio_bitrate_kbps', 'min_source_mb', 'min_savings_pct', 'ffmpeg_fallback', 'media_ffprobe_path'],
+            $base['video_compression']
         );
         $automationInput = self::normalizeGroupInput(
             $payload,
@@ -415,6 +535,51 @@ final class Settings
                     1,
                     720
                 ),
+            ],
+            'video_compression' => [
+                'mode' => self::parseVideoCompressionMode($videoInput['mode'] ?? $base['video_compression']['mode']),
+                'max_height' => self::parseInteger(
+                    $videoInput['max_height'] ?? $base['video_compression']['max_height'],
+                    'Maximum video resolution',
+                    240,
+                    4320
+                ),
+                'max_fps' => self::parseInteger(
+                    $videoInput['max_fps'] ?? $base['video_compression']['max_fps'],
+                    'Maximum video frame rate',
+                    24,
+                    144
+                ),
+                'max_video_bitrate_kbps' => self::parseInteger(
+                    $videoInput['max_video_bitrate_kbps'] ?? $base['video_compression']['max_video_bitrate_kbps'],
+                    'Maximum video bitrate',
+                    500,
+                    100000
+                ),
+                'max_audio_bitrate_kbps' => self::parseInteger(
+                    $videoInput['max_audio_bitrate_kbps'] ?? $base['video_compression']['max_audio_bitrate_kbps'],
+                    'Maximum audio bitrate',
+                    64,
+                    512
+                ),
+                'min_source_mb' => self::parseInteger(
+                    $videoInput['min_source_mb'] ?? $base['video_compression']['min_source_mb'],
+                    'Video optimization minimum size',
+                    0,
+                    20480
+                ),
+                'min_savings_pct' => self::parseInteger(
+                    $videoInput['min_savings_pct'] ?? $base['video_compression']['min_savings_pct'],
+                    'Minimum video savings',
+                    0,
+                    90
+                ),
+                'ffmpeg_fallback' => wb_parse_bool($videoInput['ffmpeg_fallback'] ?? $base['video_compression']['ffmpeg_fallback']),
+                // Strictly validate only a freshly submitted path; a stored
+                // path that later disappeared must not wedge unrelated saves.
+                'media_ffprobe_path' => ($payload['video_compression']['media_ffprobe_path'] ?? $payload['media_ffprobe_path'] ?? null) === null
+                    ? $base['video_compression']['media_ffprobe_path']
+                    : self::parseFfprobePath($payload['video_compression']['media_ffprobe_path'] ?? $payload['media_ffprobe_path']),
             ],
             'automation' => [
                 'runner_enabled' => wb_parse_bool($automationInput['runner_enabled'] ?? $base['automation']['runner_enabled']),
@@ -483,6 +648,17 @@ final class Settings
                 'allowed_extensions' => '',
                 'stale_upload_ttl_hours' => 24,
             ],
+            'video_compression' => [
+                'mode' => 'off',
+                'max_height' => 1080,
+                'max_fps' => 60,
+                'max_video_bitrate_kbps' => 8000,
+                'max_audio_bitrate_kbps' => 192,
+                'min_source_mb' => 20,
+                'min_savings_pct' => 5,
+                'ffmpeg_fallback' => true,
+                'media_ffprobe_path' => '',
+            ],
             'automation' => [
                 'runner_enabled' => true,
                 'diagnostic_interval_minutes' => 30,
@@ -531,6 +707,15 @@ final class Settings
             'uploads_max_file_size_mb' => '0',
             'uploads_allowed_extensions' => '',
             'uploads_stale_upload_ttl_hours' => '24',
+            'video_compression_mode' => 'off',
+            'video_max_height' => '1080',
+            'video_max_fps' => '60',
+            'video_max_video_bitrate_kbps' => '8000',
+            'video_max_audio_bitrate_kbps' => '192',
+            'video_min_source_mb' => '20',
+            'video_min_savings_pct' => '5',
+            'video_ffmpeg_fallback' => '1',
+            'media_ffprobe_path' => '',
             'automation_runner_enabled' => '1',
             'automation_diagnostic_interval_minutes' => '30',
             'automation_cleanup_interval_minutes' => '60',

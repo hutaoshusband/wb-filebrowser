@@ -4,6 +4,16 @@ import { describePermissionPrincipal, filterPermissionRows, filterUsers, getSear
 import { collectDroppedItems } from './lib/folderDrop.js';
 import { renderPdfThumbnail } from './lib/thumbnails.js';
 import { validateUploadCandidate } from './lib/uploadPolicy.js';
+import {
+  compressedFileName,
+  formatBytesPlain,
+  hasSufficientSavings,
+  inspectSummaryIsCompliant,
+  normalizeVideoPolicy,
+  shouldConsiderForCompression,
+} from './lib/videoCompressionPolicy.js';
+import { createVideoCompressor } from './lib/videoCompressor.js';
+import VideoCompressionDialog from './components/VideoCompressionDialog.vue';
 
 const ADMIN_SECTIONS = ['dashboard', 'users', 'permissions', 'settings', 'audit', 'security'];
 const SETTING_TABS = ['access', 'display', 'uploads', 'automation'];
@@ -52,6 +62,17 @@ function createDefaultSettings() {
       max_file_size_mb: 0,
       allowed_extensions: '',
       stale_upload_ttl_hours: 24,
+    },
+    video_compression: {
+      mode: 'off',
+      max_height: 1080,
+      max_fps: 60,
+      max_video_bitrate_kbps: 8000,
+      max_audio_bitrate_kbps: 192,
+      min_source_mb: 20,
+      min_savings_pct: 5,
+      ffmpeg_fallback: true,
+      media_ffprobe_path: '',
     },
     automation: {
       runner_enabled: true,
@@ -129,6 +150,7 @@ const adminState = reactive({
   settings: createDefaultSettings(),
   settingsTab: 'access',
   canManageSettings: false,
+  mediaValidation: null,
   permissionRows: [],
   permissionEntries: {},
   userPermissionRows: [],
@@ -190,6 +212,23 @@ const helpOpen = ref(false);
 const contextMenu = ref(null);
 const statusMessage = ref('');
 const uploadQueue = ref(null);
+const videoCompressor = createVideoCompressor();
+const compressionState = reactive({
+  phase: 'idle', // idle | asking | running
+  currentName: '',
+  currentFileBytes: 0,
+  currentProgress: 0,
+  completedFiles: 0,
+  totalFiles: 0,
+  processedBytes: 0,
+  totalBytes: 0,
+  originalBytes: 0,
+});
+const compressionDialog = reactive({
+  open: false,
+  mode: 'optional',
+  files: [],
+});
 const dragDepth = ref(0);
 const isBooting = ref(true);
 const fileInput = ref(null);
@@ -215,6 +254,7 @@ const blockedState = reactive({
 let searchTimer = 0;
 let automationTimer = 0;
 let blockedTimer = 0;
+let pendingOpfsCleanup = [];
 
 const isAdmin = computed(() => ['admin', 'super_admin'].includes(session.user?.role ?? ''));
 const isSuperAdmin = computed(() => session.user?.role === 'super_admin');
@@ -287,6 +327,20 @@ const uploadQueueCurrentPercent = computed(() => {
 
   return Math.min(100, Math.round((uploadQueue.value.currentFileBytesSent / uploadQueue.value.currentFileBytesTotal) * 100));
 });
+const compressionOverallPercent = computed(() => {
+  if (compressionState.totalBytes === 0) {
+    return 0;
+  }
+
+  const weightedBytes = compressionState.processedBytes + compressionState.currentProgress * compressionState.currentFileBytes;
+
+  return Math.min(100, Math.round((weightedBytes / compressionState.totalBytes) * 100));
+});
+const compressionCurrentPercent = computed(() => Math.min(100, Math.round(compressionState.currentProgress * 100)));
+
+function cancelVideoCompression() {
+  videoCompressor.cancelActive();
+}
 
 function apiUrl(action, params = {}) {
   const url = new URL(`${window.location.origin}${basePath}/api/index.php`);
@@ -434,15 +488,30 @@ function applyAutomationState(payload) {
   }
 }
 
+function mergeSettingsGroups(settings) {
+  const defaults = createDefaultSettings();
+  const incoming = settings ?? {};
+  const merged = { ...defaults, ...incoming };
+
+  for (const group of Object.keys(defaults)) {
+    merged[group] = { ...defaults[group], ...(incoming[group] ?? {}) };
+  }
+
+  return merged;
+}
+
 function applySettingsPayload(payload) {
   if (payload.settings) {
-    adminState.settings = cloneSettings(payload.settings);
+    adminState.settings = mergeSettingsGroups(payload.settings);
   }
   if (payload.can_manage_settings !== undefined) {
     adminState.canManageSettings = Boolean(payload.can_manage_settings);
   }
   if (payload.upload_policy) {
     session.uploadPolicy = payload.upload_policy;
+  }
+  if (payload.media_validation !== undefined) {
+    adminState.mediaValidation = payload.media_validation;
   }
   if (payload.settings?.display) {
     session.display = { ...createDefaultDisplaySettings(), ...payload.settings.display };
@@ -1133,9 +1202,224 @@ async function ensureDroppedDirectories(directories) {
   }
 }
 
+function askCompressionDecision(mode, files) {
+  compressionDialog.mode = mode;
+  compressionDialog.files = files;
+  compressionDialog.open = true;
+
+  return new Promise((resolve) => {
+    compressionDialog.resolve = resolve;
+  });
+}
+
+function settleCompressionDialog(decision) {
+  compressionDialog.open = false;
+  compressionDialog.resolve?.(decision);
+  compressionDialog.resolve = null;
+}
+
+function resetCompressionState() {
+  compressionState.phase = 'idle';
+  compressionState.currentName = '';
+  compressionState.currentFileBytes = 0;
+  compressionState.currentProgress = 0;
+  compressionState.completedFiles = 0;
+  compressionState.totalFiles = 0;
+  compressionState.processedBytes = 0;
+  compressionState.totalBytes = 0;
+  compressionState.originalBytes = 0;
+}
+
+/**
+ * Runs the client-side video compression pipeline over the queued items and
+ * returns the (possibly replaced) item list: compressed files swap in as
+ * normal File objects so the chunked uploader stays untouched. Returns null
+ * when the user canceled the whole upload.
+ */
+async function prepareVideosForUpload(items) {
+  const policy = normalizeVideoPolicy(session.uploadPolicy);
+
+  if (policy.mode === 'off') {
+    return items;
+  }
+
+  const candidates = items.filter((item) => shouldConsiderForCompression(item.file, policy));
+
+  if (candidates.length === 0) {
+    return items;
+  }
+
+  const support = await videoCompressor.checkSupport();
+
+  if (!support.supported) {
+    if (policy.mode === 'required') {
+      throw new Error(
+        `This server requires videos to be optimized before upload, but this browser cannot compress them`
+        + `${support.reason ? ` (${support.reason.replace(/\.$/, '')})` : ''}. Use a current desktop browser and try again.`,
+      );
+    }
+
+    return items;
+  }
+
+  const inspected = [];
+
+  for (const item of candidates) {
+    const info = await videoCompressor.inspect(item.file).catch(() => null);
+    inspected.push({ item, info, compliant: inspectSummaryIsCompliant(info, policy) });
+  }
+
+  const toCompress = inspected.filter((entry) => !entry.compliant);
+  const alreadyOptimized = inspected.length - toCompress.length;
+
+  if (toCompress.length === 0) {
+    if (alreadyOptimized > 0) {
+      showMessage(
+        alreadyOptimized === 1
+          ? 'Skipped optimization: this video already matches the server policy.'
+          : `Skipped optimization: ${alreadyOptimized} videos already match the server policy.`,
+      );
+    }
+
+    return items;
+  }
+
+  const decision = await askCompressionDecision(
+    policy.mode,
+    toCompress.map((entry) => ({ name: entry.item.file.name, size: entry.item.file.size })),
+  );
+
+  if (decision === 'cancel') {
+    return null;
+  }
+
+  if (decision === 'original') {
+    return items;
+  }
+
+  compressionState.phase = 'running';
+  compressionState.totalFiles = toCompress.length;
+  compressionState.completedFiles = 0;
+  compressionState.totalBytes = toCompress.reduce((sum, entry) => sum + entry.item.file.size, 0);
+  compressionState.originalBytes = compressionState.totalBytes;
+  compressionState.processedBytes = 0;
+
+  const replacements = [];
+  let savedBytes = 0;
+  let compressedCount = 0;
+
+  try {
+    for (const entry of toCompress) {
+      const { item, info } = entry;
+      compressionState.currentName = item.file.name;
+      compressionState.currentFileBytes = item.file.size;
+      compressionState.currentProgress = 0;
+
+      let result;
+
+      try {
+        result = await videoCompressor.compress(item.file, policy, {
+          sourceInfo: info,
+          onProgress: (value) => {
+            compressionState.currentProgress = value;
+          },
+        });
+      } catch (compressError) {
+        if (compressError?.code === 'CANCELED') {
+          throw compressError;
+        }
+
+        if (policy.mode === 'optional') {
+          // In optional mode the server accepts originals by design, so one
+          // stubborn video must not block the rest of the batch.
+          showMessage(`${item.file.name} could not be compressed locally (${compressError.message}). Uploading the original.`);
+          compressionState.processedBytes += item.file.size;
+          compressionState.completedFiles += 1;
+          continue;
+        }
+
+        throw compressError;
+      }
+
+      if (result.opfsToken) {
+        pendingOpfsCleanup.push(result.opfsToken);
+      }
+
+      const keepOriginal = policy.mode === 'optional' && !hasSufficientSavings(
+        result.originalSize,
+        result.newSize,
+        policy.min_savings_pct,
+      );
+
+      if (keepOriginal) {
+        // The re-encode barely helped (or grew): keep the untouched original
+        // in optional mode rather than trading quality for nothing.
+        showMessage(`${item.file.name} is already well optimized. Uploading the original.`);
+      } else {
+        replacements.push({ item, result });
+        savedBytes += Math.max(0, result.originalSize - result.newSize);
+        compressedCount += 1;
+      }
+
+      compressionState.processedBytes += item.file.size;
+      compressionState.completedFiles += 1;
+    }
+  } catch (error) {
+    videoCompressor.cancelActive();
+    resetCompressionState();
+
+    if (error?.code === 'CANCELED') {
+      showMessage('Upload canceled during video optimization.');
+      return null;
+    }
+
+    throw error;
+  } finally {
+    resetCompressionState();
+  }
+
+  if (compressedCount > 0) {
+    showMessage(
+      `Optimized ${compressedCount} video${compressedCount === 1 ? '' : 's'} locally`
+      + ` (saving about ${formatBytesPlain(savedBytes)}) before upload.`,
+    );
+  }
+
+  if (replacements.length === 0) {
+    return items;
+  }
+
+  const replacementByItem = new Map(replacements.map(({ item, result }) => [item, result]));
+
+  return items.map((item) => {
+    const result = replacementByItem.get(item);
+
+    if (!result) {
+      return item;
+    }
+
+    const newName = compressedFileName(item.file.name);
+
+    return {
+      file: result.file instanceof File ? result.file : new File([result.file], newName, { type: 'video/mp4' }),
+      relativePathSegments: item.relativePathSegments.length > 0
+        ? [...item.relativePathSegments.slice(0, -1), newName]
+        : item.relativePathSegments,
+      relativePath: item.relativePathSegments.length > 0
+        ? [...item.relativePathSegments.slice(0, -1), newName].join('/')
+        : newName,
+    };
+  });
+}
+
 async function uploadQueuedItems(items, emptyDirectories = []) {
   if (!canUploadHere.value) {
     showMessage('You do not have upload permission in this folder.');
+    return;
+  }
+
+  if (uploadQueue.value || compressionState.phase !== 'idle') {
+    showMessage('An upload or video optimization is already in progress.');
     return;
   }
 
@@ -1156,14 +1440,38 @@ async function uploadQueuedItems(items, emptyDirectories = []) {
     return;
   }
 
-  uploadQueue.value = createUploadQueueState(items);
+  let uploadItems = items;
+
+  try {
+    uploadItems = await prepareVideosForUpload(items);
+  } catch (error) {
+    showMessage(error instanceof Error ? error.message : 'Video optimization failed.');
+    flushOpfsCleanup();
+    return;
+  }
+
+  if (!uploadItems) {
+    flushOpfsCleanup();
+    return;
+  }
+
+  for (const item of uploadItems) {
+    const uploadError = validateUploadCandidate(item.file, session.uploadPolicy);
+
+    if (uploadError) {
+      showMessage(uploadError);
+      return;
+    }
+  }
+
+  uploadQueue.value = createUploadQueueState(uploadItems);
   let completedFiles = 0;
   let completedBytes = 0;
 
   try {
     await ensureDroppedDirectories(emptyDirectories);
 
-    for (const item of items) {
+    for (const item of uploadItems) {
       const { file, relativePath, relativePathSegments } = item;
       const totalChunks = Math.max(1, Math.ceil(file.size / DEFAULT_CHUNK_SIZE));
       uploadQueue.value = {
@@ -1247,7 +1555,16 @@ async function uploadQueuedItems(items, emptyDirectories = []) {
     showMessage(`${failedPath}: ${error instanceof Error ? error.message : 'Upload failed.'}`);
   } finally {
     uploadQueue.value = null;
+    flushOpfsCleanup();
   }
+}
+
+function flushOpfsCleanup() {
+  const opfsTokens = pendingOpfsCleanup;
+  pendingOpfsCleanup = [];
+  opfsTokens.forEach((token) => {
+    videoCompressor.cleanup(token);
+  });
 }
 
 async function createFolder() {
@@ -2486,6 +2803,11 @@ onBeforeUnmount(() => {
   document.body.style.overflow = '';
   stopAutomationPulse();
   stopBlockedTimer();
+  videoCompressor.dispose();
+
+  if (compressionDialog.open) {
+    settleCompressionDialog(compressionDialog.mode === 'required' ? 'cancel' : 'original');
+  }
 });
 </script>
 
@@ -2610,6 +2932,34 @@ onBeforeUnmount(() => {
         {{ session.diagnostic.message }}
       </div>
       <div v-if="statusMessage" class="status-banner">{{ statusMessage }}</div>
+      <section v-if="compressionState.phase === 'running'" class="upload-queue-card">
+        <div class="upload-queue-card__summary">
+          <div>
+            <p class="panel-kicker">Video Optimization</p>
+            <h2>Compressing {{ compressionState.completedFiles + 1 }} of {{ compressionState.totalFiles }} videos</h2>
+            <p class="panel-meta">
+              {{ formatBytes(compressionState.processedBytes) }} of {{ formatBytes(compressionState.totalBytes) }} processed locally
+            </p>
+          </div>
+          <strong>{{ compressionOverallPercent }}%</strong>
+        </div>
+        <div class="upload-meter" aria-hidden="true">
+          <span class="upload-meter__fill" :style="{ width: `${compressionOverallPercent}%` }" />
+        </div>
+        <div class="upload-queue-card__detail">
+          <div>
+            <strong>{{ compressionState.currentName || 'Preparing compression...' }}</strong>
+            <p class="panel-meta">Compressed on this device before anything is uploaded.</p>
+          </div>
+          <span>{{ compressionCurrentPercent }}%</span>
+        </div>
+        <div class="upload-meter upload-meter--file" aria-hidden="true">
+          <span class="upload-meter__fill" :style="{ width: `${compressionCurrentPercent}%` }" />
+        </div>
+        <div>
+          <button type="button" @click="cancelVideoCompression">Cancel</button>
+        </div>
+      </section>
       <section v-if="uploadQueue" class="upload-queue-card">
         <div class="upload-queue-card__summary">
           <div>
@@ -3129,6 +3479,72 @@ onBeforeUnmount(() => {
                 <input v-model.number="adminState.settings.uploads.stale_upload_ttl_hours" type="number" min="1" :disabled="!adminState.canManageSettings">
               </label>
               <p class="panel-meta">Empty extension list means any file type is accepted.</p>
+
+              <h2>Video optimization</h2>
+              <label>
+                <span>Compression policy</span>
+                <select v-model="adminState.settings.video_compression.mode" :disabled="!adminState.canManageSettings">
+                  <option value="off">Disabled - upload originals as-is</option>
+                  <option value="optional">Ask users - offer local compression before upload</option>
+                  <option value="required">Required - videos must comply with the policy below</option>
+                </select>
+              </label>
+              <label>
+                <span>Maximum video resolution</span>
+                <select v-model.number="adminState.settings.video_compression.max_height" :disabled="!adminState.canManageSettings">
+                  <option :value="480">480p</option>
+                  <option :value="720">720p</option>
+                  <option :value="1080">1080p</option>
+                  <option :value="1440">1440p</option>
+                  <option :value="2160">2160p (4K)</option>
+                </select>
+              </label>
+              <label>
+                <span>Maximum frame rate</span>
+                <select v-model.number="adminState.settings.video_compression.max_fps" :disabled="!adminState.canManageSettings">
+                  <option :value="30">30 FPS</option>
+                  <option :value="60">60 FPS</option>
+                  <option :value="120">120 FPS</option>
+                </select>
+              </label>
+              <label>
+                <span>Maximum video bitrate (kbps)</span>
+                <input v-model.number="adminState.settings.video_compression.max_video_bitrate_kbps" type="number" min="500" max="100000" :disabled="!adminState.canManageSettings">
+              </label>
+              <label>
+                <span>Maximum audio bitrate (kbps)</span>
+                <input v-model.number="adminState.settings.video_compression.max_audio_bitrate_kbps" type="number" min="64" max="512" :disabled="!adminState.canManageSettings">
+              </label>
+              <label>
+                <span>Only optimize videos larger than (MB)</span>
+                <input v-model.number="adminState.settings.video_compression.min_source_mb" type="number" min="0" max="20480" :disabled="!adminState.canManageSettings">
+                <small class="panel-meta">Smaller videos are uploaded and stored untouched.</small>
+              </label>
+              <label>
+                <span>Keep original when savings are below (%)</span>
+                <input v-model.number="adminState.settings.video_compression.min_savings_pct" type="number" min="0" max="90" :disabled="!adminState.canManageSettings">
+                <small class="panel-meta">In ask mode, the untouched original is uploaded instead when the compressed copy saves less than this.</small>
+              </label>
+              <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
+                <input v-model="adminState.settings.video_compression.ffmpeg_fallback" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                <span class="checkbox-control__label">Allow the in-browser ffmpeg fallback for exotic formats</span>
+              </label>
+              <label>
+                <span>ffprobe path (optional)</span>
+                <input v-model="adminState.settings.video_compression.media_ffprobe_path" type="text" placeholder="Auto-detect from PATH" :disabled="!adminState.canManageSettings">
+                <small class="panel-meta">
+                  Required for "Required" mode so the server can verify uploads.
+                  <template v-if="adminState.mediaValidation">
+                    {{ adminState.mediaValidation.available ? `Detected: ${adminState.mediaValidation.binary}` : 'Not detected - install ffprobe or set the full path above.' }}
+                  </template>
+                </small>
+              </label>
+              <p class="panel-meta">
+                Compression runs in the user's browser (WebCodecs, with an in-browser ffmpeg fallback for
+                unsupported formats); the server never transcodes. In "Required" mode every video upload is
+                verified with ffprobe against the limits above and rejected when it does not comply.
+              </p>
             </div>
 
             <div v-else-if="adminState.settingsTab === 'automation'" class="settings-pane">
@@ -3755,6 +4171,14 @@ onBeforeUnmount(() => {
         <button type="button" @click="helpOpen = false">Close</button>
       </section>
     </div>
+
+    <VideoCompressionDialog
+      :open="compressionDialog.open"
+      :mode="compressionDialog.mode"
+      :files="compressionDialog.files"
+      @confirm="settleCompressionDialog('compress')"
+      @dismiss="settleCompressionDialog(compressionDialog.mode === 'required' ? 'cancel' : 'original')"
+    />
 
     <aside v-if="infoItem" class="info-drawer">
       <header>

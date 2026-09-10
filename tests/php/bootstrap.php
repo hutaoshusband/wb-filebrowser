@@ -33,6 +33,7 @@ require_once $root . '/app/MaintenanceMode.php';
 require_once $root . '/app/Auth.php';
 require_once $root . '/app/Permissions.php';
 require_once $root . '/app/FileManager.php';
+require_once $root . '/app/MediaValidator.php';
 require_once $root . '/app/FileShares.php';
 require_once $root . '/app/AuditLog.php';
 require_once $root . '/app/IpBanService.php';
