@@ -82,7 +82,9 @@ location ~ ^/(storage|vendor|node_modules|tests|\.git)/ {
 }
 
 # The PHP pages send COOP/COEP for cross-origin isolation (needed by the
-# multithreaded ffmpeg fallback); under COEP every subresource response must
-# declare a Cross-Origin-Resource-Policy, so set it for static files too.
+# multithreaded ffmpeg fallback). Under COEP every subresource response must
+# declare a Cross-Origin-Resource-Policy, and worker scripts must carry
+# their own COEP header to join the isolated context - so set both.
 add_header Cross-Origin-Resource-Policy same-origin always;
+add_header Cross-Origin-Embedder-Policy require-corp always;
 ```

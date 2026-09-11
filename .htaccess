@@ -4,7 +4,10 @@ RedirectMatch 404 /\.env
 # COEP require-corp (sent by the PHP pages for cross-origin isolation)
 # makes the browser reject subresource responses that do not declare a
 # Cross-Origin-Resource-Policy - including same-origin static files like
-# the compression worker. Declare it for everything served from here.
+# the compression worker. Worker scripts additionally need their own COEP
+# header to join the isolated agent cluster, so set both for everything
+# served from here (harmless for non-worker responses).
 <IfModule mod_headers.c>
     Header always set Cross-Origin-Resource-Policy "same-origin"
+    Header always set Cross-Origin-Embedder-Policy "require-corp"
 </IfModule>
