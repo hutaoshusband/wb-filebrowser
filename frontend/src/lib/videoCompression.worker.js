@@ -34,11 +34,13 @@ import { registerAacEncoder } from '@mediabunny/aac-encoder';
 // regenerate). Loaded lazily and only when the primary engine cannot decode
 // the source. The multithreaded core (-mt) is preferred when the page is
 // cross-origin isolated; the single-threaded core remains the last resort.
+// The pthread worker must be a real file (?no-inline): a data:-URL worker
+// is blocked by the CSP and could not receive the SharedArrayBuffer anyway.
 import ffmpegCoreUrl from '@ffmpeg/core?url';
 import ffmpegWasmUrl from '@ffmpeg/core/wasm?url';
 import ffmpegMtCoreUrl from '@ffmpeg/core-mt?url';
 import ffmpegMtWasmUrl from '@ffmpeg/core-mt/wasm?url';
-import ffmpegMtWorkerUrl from '@ffmpeg/core-mt/worker?url';
+import ffmpegMtWorkerUrl from '@ffmpeg/core-mt/worker?url&no-inline';
 import ffmpegHostWorkerUrl from './ffmpeg-host.worker.js?worker&url';
 
 const OPFS_MIN_INPUT_BYTES = 256 * 1024 * 1024;

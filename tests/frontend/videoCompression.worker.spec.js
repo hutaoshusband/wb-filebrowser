@@ -6,7 +6,7 @@ vi.mock('@ffmpeg/core?url', () => ({ default: 'assets/ffmpeg-core.js' }));
 vi.mock('@ffmpeg/core/wasm?url', () => ({ default: 'assets/ffmpeg-core.wasm' }));
 vi.mock('@ffmpeg/core-mt?url', () => ({ default: 'assets/ffmpeg-core-mt.js' }));
 vi.mock('@ffmpeg/core-mt/wasm?url', () => ({ default: 'assets/ffmpeg-core-mt.wasm' }));
-vi.mock('@ffmpeg/core-mt/worker?url', () => ({ default: 'assets/ffmpeg-core-mt.worker.js' }));
+vi.mock('@ffmpeg/core-mt/worker?url&no-inline', () => ({ default: 'assets/ffmpeg-core-mt.worker.js' }));
 vi.mock('../../frontend/src/lib/ffmpeg-host.worker.js?worker&url', () => ({ default: 'assets/ffmpeg-host.worker.js' }));
 
 // Mediabunny is fully mocked; the worker is exercised on the jsdom main
