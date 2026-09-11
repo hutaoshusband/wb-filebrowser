@@ -62,6 +62,13 @@ final class Security
     {
         return self::commonHeaders() + [
             'Cache-Control' => 'no-store, no-cache, must-revalidate, max-age=0',
+            // Cross-origin isolation enables SharedArrayBuffer, which the
+            // multithreaded ffmpeg.wasm fallback needs. Safe here because the
+            // CSP already restricts every subresource to same-origin; adding
+            // these headers to a page that embeds cross-origin resources
+            // would require CORP/CORS on those (review before relaxing CSP).
+            'Cross-Origin-Opener-Policy' => 'same-origin',
+            'Cross-Origin-Embedder-Policy' => 'require-corp',
             'Content-Security-Policy' => "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; worker-src 'self' blob:'",
         ];
     }

@@ -32,9 +32,13 @@ import { registerAacEncoder } from '@mediabunny/aac-encoder';
 // Self-hosted ffmpeg.wasm compatibility pack, emitted into assets/ at build
 // time from node_modules (assets/ is gitignored; run `npm run build` to
 // regenerate). Loaded lazily and only when the primary engine cannot decode
-// the source.
+// the source. The multithreaded core (-mt) is preferred when the page is
+// cross-origin isolated; the single-threaded core remains the last resort.
 import ffmpegCoreUrl from '@ffmpeg/core?url';
 import ffmpegWasmUrl from '@ffmpeg/core/wasm?url';
+import ffmpegMtCoreUrl from '@ffmpeg/core-mt?url';
+import ffmpegMtWasmUrl from '@ffmpeg/core-mt/wasm?url';
+import ffmpegMtWorkerUrl from '@ffmpeg/core-mt/worker?url';
 import ffmpegHostWorkerUrl from './ffmpeg-host.worker.js?worker&url';
 
 const OPFS_MIN_INPUT_BYTES = 256 * 1024 * 1024;
@@ -317,15 +321,16 @@ async function compressWithMediabunny(file, options, cancelSignal, jobId) {
 }
 
 async function compressWithFfmpeg(file, options, cancelSignal, jobId, primaryError) {
-  const { FFmpeg } = await import('@ffmpeg/ffmpeg');
-  const ffmpeg = new FFmpeg();
+  const { FFmpeg, FFFSType } = await import('@ffmpeg/ffmpeg');
+
+  let activeFfmpeg = null;
   let canceled = false;
 
   cancelSignal(async (cancelError) => {
     canceled = true;
 
     try {
-      ffmpeg.terminate();
+      activeFfmpeg?.terminate();
     } catch {
       // The worker may already be gone.
     }
@@ -333,21 +338,47 @@ async function compressWithFfmpeg(file, options, cancelSignal, jobId, primaryErr
     throw cancelError;
   });
 
-  await ffmpeg.load({
-    // The library spawns its own module worker; give it the bundled,
-    // self-contained copy so it does not rely on this worker's URL context.
-    classWorkerURL: resolveAsset(ffmpegHostWorkerUrl),
-    coreURL: resolveAsset(ffmpegCoreUrl),
-    wasmURL: resolveAsset(ffmpegWasmUrl),
-  });
+  function createEngine() {
+    const instance = new FFmpeg();
+    activeFfmpeg = instance;
+    instance.on('progress', ({ progress }) => {
+      if (Number.isFinite(progress)) {
+        postMessage({ id: jobId, type: 'progress', value: Math.min(1, Math.max(0, progress)) });
+      }
+    });
+    return instance;
+  }
 
-  ffmpeg.on('progress', ({ progress }) => {
-    if (Number.isFinite(progress)) {
-      postMessage({ id: jobId, type: 'progress', value: Math.min(1, Math.max(0, progress)) });
+  // Multithreaded core needs SharedArrayBuffer and therefore cross-origin
+  // isolation; load it when available and fall back to the single-threaded
+  // core if it cannot start (e.g. headers missing after all).
+  let ffmpeg = createEngine();
+  let engine = 'ffmpeg-wasm-mt';
+
+  if (self.crossOriginIsolated === true) {
+    try {
+      await ffmpeg.load({
+        classWorkerURL: resolveAsset(ffmpegHostWorkerUrl),
+        coreURL: resolveAsset(ffmpegMtCoreUrl),
+        wasmURL: resolveAsset(ffmpegMtWasmUrl),
+        workerURL: resolveAsset(ffmpegMtWorkerUrl),
+      });
+    } catch {
+      ffmpeg = createEngine();
+      engine = 'ffmpeg-wasm';
     }
-  });
+  } else {
+    engine = 'ffmpeg-wasm';
+  }
 
-  const inputName = `input${file.name && file.name.includes('.') ? file.name.slice(file.name.lastIndexOf('.')) : ''}`;
+  if (engine === 'ffmpeg-wasm') {
+    await ffmpeg.load({
+      classWorkerURL: resolveAsset(ffmpegHostWorkerUrl),
+      coreURL: resolveAsset(ffmpegCoreUrl),
+      wasmURL: resolveAsset(ffmpegWasmUrl),
+    });
+  }
+
   const outputName = 'output.mp4';
   const filters = [`scale='min(iw,${options.width})':'min(ih,${options.height})':force_original_aspect_ratio=decrease:force_divisible_by=2`];
 
@@ -357,12 +388,32 @@ async function compressWithFfmpeg(file, options, cancelSignal, jobId, primaryErr
 
   const maxVideoBitrate = Math.round(options.videoBitrate / 0.8);
 
-  await ffmpeg.writeFile(inputName, new Uint8Array(await file.arrayBuffer()));
+  // WORKERFS lets the encoder stream the input straight from the File handle
+  // instead of copying the whole file onto the WASM heap first. Falls back
+  // to a MEMFS copy when mounting is unavailable.
+  const mountDir = '/wb-input';
+  let inputPath = null;
+
+  try {
+    ffmpeg.createDir(mountDir);
+    ffmpeg.mount(FFFSType.WORKERFS, { files: [file] }, mountDir);
+    inputPath = `${mountDir}/${file.name}`;
+  } catch {
+    inputPath = null;
+  }
+
+  if (inputPath === null) {
+    const inputName = `input${file.name && file.name.includes('.') ? file.name.slice(file.name.lastIndexOf('.')) : ''}`;
+    await ffmpeg.writeFile(inputName, new Uint8Array(await file.arrayBuffer()));
+    inputPath = inputName;
+  }
 
   const returnCode = await ffmpeg.exec([
-    '-i', inputName,
+    '-i', inputPath,
     '-map', '0:v:0', '-map', '0:a:0?',
-    '-c:v', 'libx264', '-preset', 'veryfast', '-profile:v', 'high', '-pix_fmt', 'yuv420p',
+    // This is the rescue path, not the quality path: the bitrate policy
+    // bounds the output size, so spend CPU as little as possible.
+    '-c:v', 'libx264', '-preset', 'ultrafast', '-profile:v', 'high', '-pix_fmt', 'yuv420p',
     '-b:v', String(options.videoBitrate),
     '-maxrate', String(maxVideoBitrate),
     '-bufsize', String(maxVideoBitrate * 2),
@@ -394,15 +445,16 @@ async function compressWithFfmpeg(file, options, cancelSignal, jobId, primaryErr
   await assertOutputIsPlayable(outputFile, file.name);
 
   try {
-    await ffmpeg.deleteFile(inputName);
-    await ffmpeg.deleteFile(outputName);
+    ffmpeg.unmount(mountDir);
+    ffmpeg.deleteDir(mountDir);
+    ffmpeg.deleteFile(outputName);
   } catch {
-    // Best-effort MEMFS cleanup; the worker is discarded anyway.
+    // Best-effort filesystem cleanup; the engine worker is discarded anyway.
   }
 
   return {
     file: outputFile,
-    engine: 'ffmpeg-wasm',
+    engine,
     opfsToken: null,
     sourceFps: options.sourceFps ?? null,
     sourceBitrate: null,

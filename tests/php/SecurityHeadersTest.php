@@ -17,6 +17,10 @@ final class SecurityHeadersTest extends TestCase
         $this->assertStringContainsString("frame-ancestors 'none'", $headers['Content-Security-Policy']);
         $this->assertSame('no-referrer', $headers['Referrer-Policy']);
         $this->assertSame('nosniff', $headers['X-Content-Type-Options']);
+        // Cross-origin isolation is required for the multithreaded ffmpeg
+        // fallback (SharedArrayBuffer) and is safe under the self-only CSP.
+        $this->assertSame('same-origin', $headers['Cross-Origin-Opener-Policy']);
+        $this->assertSame('require-corp', $headers['Cross-Origin-Embedder-Policy']);
     }
 
     public function testApiHeadersExposeStrictBrowserPolicies(): void

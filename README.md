@@ -59,7 +59,7 @@ Uploads can be transcoded to a normalized, policy-compliant MP4 (H.264 video, AA
 
 How it works:
 
-- The primary engine is [Mediabunny](https://mediabunny.dev/) on top of WebCodecs (hardware accelerated where available), running in a dedicated module worker. Sources the browser cannot decode fall back to a self-hosted, single-threaded ffmpeg.wasm build (`assets/ffmpeg-core.*`, emitted by `npm run build` from node_modules; nothing is loaded from CDNs). AAC gaps are covered by the `@mediabunny/aac-encoder` WASM encoder.
+- The primary engine is [Mediabunny](https://mediabunny.dev/) on top of WebCodecs (hardware accelerated where available), running in a dedicated module worker. Sources the browser cannot decode (or browsers without a native H.264 encoder, like Firefox) fall back to a self-hosted ffmpeg.wasm build: the **multithreaded core** when the page is cross-origin isolated (`Cross-Origin-Opener-Policy`/`Cross-Origin-Embedder-Policy` are sent because the self-only CSP makes isolation safe), otherwise the single-threaded core. All core files are emitted by `npm run build` from node_modules; nothing is loaded from CDNs. AAC gaps are covered by the `@mediabunny/aac-encoder` WASM encoder.
 - Large outputs stream into the browser's OPFS instead of RAM; small ones stay in memory. Temporary files are removed after upload.
 - Videos that already match the policy are skipped without re-encoding.
 

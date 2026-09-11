@@ -4,6 +4,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // replace them so the spec can run under jsdom without bundling wasm.
 vi.mock('@ffmpeg/core?url', () => ({ default: 'assets/ffmpeg-core.js' }));
 vi.mock('@ffmpeg/core/wasm?url', () => ({ default: 'assets/ffmpeg-core.wasm' }));
+vi.mock('@ffmpeg/core-mt?url', () => ({ default: 'assets/ffmpeg-core-mt.js' }));
+vi.mock('@ffmpeg/core-mt/wasm?url', () => ({ default: 'assets/ffmpeg-core-mt.wasm' }));
+vi.mock('@ffmpeg/core-mt/worker?url', () => ({ default: 'assets/ffmpeg-core-mt.worker.js' }));
 vi.mock('../../frontend/src/lib/ffmpeg-host.worker.js?worker&url', () => ({ default: 'assets/ffmpeg-host.worker.js' }));
 
 // Mediabunny is fully mocked; the worker is exercised on the jsdom main
@@ -133,6 +136,10 @@ vi.mock('@mediabunny/aac-encoder', () => ({
 
 vi.mock('@ffmpeg/ffmpeg', () => {
   const instances = [];
+  const engineState = {
+    loadFailureFor: null, // core URL substring that makes load() reject
+    mountFails: false,
+  };
 
   class FakeFFmpeg {
     constructor() {
@@ -141,10 +148,15 @@ vi.mock('@ffmpeg/ffmpeg', () => {
       this.loadConfig = null;
       this.execArgs = null;
       this.terminated = false;
+      this.mounted = null;
       instances.push(this);
     }
 
     async load(config) {
+      if (engineState.loadFailureFor && config.coreURL?.includes(engineState.loadFailureFor)) {
+        throw new Error('core failed to start');
+      }
+
       this.loadConfig = config;
     }
 
@@ -155,6 +167,20 @@ vi.mock('@ffmpeg/ffmpeg', () => {
     async writeFile(name, data) {
       this.files.set(name, data);
     }
+
+    createDir() {}
+
+    mount(type, options, mountPoint) {
+      if (engineState.mountFails) {
+        throw new Error('WORKERFS unavailable');
+      }
+
+      this.mounted = { type, options, mountPoint };
+    }
+
+    unmount() {}
+
+    deleteDir() {}
 
     async exec(args) {
       this.execArgs = args;
@@ -173,7 +199,12 @@ vi.mock('@ffmpeg/ffmpeg', () => {
     }
   }
 
-  return { FFmpeg: FakeFFmpeg, __instances: instances };
+  return {
+    FFmpeg: FakeFFmpeg,
+    FFFSType: { WORKERFS: 'WORKERFS' },
+    __instances: instances,
+    __engineState: engineState,
+  };
 });
 
 // jsdom does not implement Blob.arrayBuffer; polyfill it via FileReader so
@@ -448,13 +479,16 @@ describe('videoCompression.worker', () => {
   });
 
   it('falls back to the bundled ffmpeg engine for undecodable sources', async () => {
-    const { __instances: ffmpegInstances } = await import('@ffmpeg/ffmpeg');
+    const { __instances: ffmpegInstances, __engineState } = await import('@ffmpeg/ffmpeg');
+    __engineState.loadFailureFor = null;
+    __engineState.mountFails = false;
     mediabunnyState.canDecodeVideoResult = false;
 
+    const file = new File(['legacy'], 'legacy.avi', { type: 'video/x-msvideo' });
     const id = await sendJob({
       id: 'compress-8',
       type: 'compress',
-      file: new File(['legacy'], 'legacy.avi', { type: 'video/x-msvideo' }),
+      file,
       options: compressOptions({ ffmpegFallback: true, sourceFps: 90, outputName: 'legacy.mp4' }),
     });
 
@@ -464,15 +498,23 @@ describe('videoCompression.worker', () => {
     expect(response.result.engine).toBe('ffmpeg-wasm');
 
     const ffmpeg = ffmpegInstances.at(-1);
+    // Not cross-origin isolated in jsdom: single-threaded core, no workerURL.
     expect(ffmpeg.loadConfig).toMatchObject({
       classWorkerURL: expect.stringContaining('ffmpeg-host'),
-      coreURL: expect.any(String),
+      coreURL: expect.stringContaining('ffmpeg-core'),
       wasmURL: expect.any(String),
     });
+    expect(ffmpeg.loadConfig.workerURL).toBeUndefined();
+
+    // WORKERFS mount streams the input instead of copying it onto the heap.
+    expect(ffmpeg.mounted).toMatchObject({ mountPoint: '/wb-input' });
+    expect(ffmpeg.mounted.options.files[0]).toBe(file);
 
     const args = ffmpeg.execArgs;
+    expect(args[args.indexOf('-i') + 1]).toBe('/wb-input/legacy.avi');
     expect(args).toContain('-c:v');
     expect(args[args.indexOf('-c:v') + 1]).toBe('libx264');
+    expect(args[args.indexOf('-preset') + 1]).toBe('ultrafast');
     expect(args).toContain('-map_metadata');
     expect(args[args.indexOf('-map_metadata') + 1]).toBe('-1');
     expect(args.join(' ')).toContain('fps=60');
@@ -483,6 +525,92 @@ describe('videoCompression.worker', () => {
       .map(([message]) => message)
       .filter((message) => message.id === id && message.type === 'progress');
     expect(progress.map((message) => message.value)).toEqual([0.5]);
+  });
+
+  it('prefers the multithreaded core when cross-origin isolated', async () => {
+    const { __instances: ffmpegInstances, __engineState } = await import('@ffmpeg/ffmpeg');
+    __engineState.loadFailureFor = null;
+    __engineState.mountFails = false;
+    mediabunnyState.canDecodeVideoResult = false;
+
+    self.crossOriginIsolated = true;
+
+    try {
+      const id = await sendJob({
+        id: 'compress-mt',
+        type: 'compress',
+        file: new File(['legacy'], 'legacy.avi', { type: 'video/x-msvideo' }),
+        options: compressOptions({ ffmpegFallback: true }),
+      });
+
+      const response = responsesFor(id)[0];
+
+      expect(response.ok).toBe(true);
+      expect(response.result.engine).toBe('ffmpeg-wasm-mt');
+
+      const ffmpeg = ffmpegInstances.at(-1);
+      expect(ffmpeg.loadConfig).toMatchObject({
+        coreURL: expect.stringContaining('ffmpeg-core-mt'),
+        wasmURL: expect.stringContaining('ffmpeg-core-mt'),
+        workerURL: expect.stringContaining('ffmpeg-core-mt.worker'),
+      });
+    } finally {
+      delete self.crossOriginIsolated;
+    }
+  });
+
+  it('falls back to the single-threaded core when the MT core cannot start', async () => {
+    const { __instances: ffmpegInstances, __engineState } = await import('@ffmpeg/ffmpeg');
+    __engineState.loadFailureFor = 'ffmpeg-core-mt';
+    __engineState.mountFails = false;
+    mediabunnyState.canDecodeVideoResult = false;
+
+    self.crossOriginIsolated = true;
+
+    try {
+      const id = await sendJob({
+        id: 'compress-mt-fail',
+        type: 'compress',
+        file: new File(['legacy'], 'legacy.avi', { type: 'video/x-msvideo' }),
+        options: compressOptions({ ffmpegFallback: true }),
+      });
+
+      const response = responsesFor(id)[0];
+
+      expect(response.ok).toBe(true);
+      expect(response.result.engine).toBe('ffmpeg-wasm');
+
+      const coreURL = ffmpegInstances.at(-1).loadConfig.coreURL;
+      expect(coreURL).toContain('ffmpeg-core');
+      expect(coreURL).not.toContain('ffmpeg-core-mt');
+    } finally {
+      delete self.crossOriginIsolated;
+      __engineState.loadFailureFor = null;
+    }
+  });
+
+  it('copies the input through MEMFS when WORKERFS mounting fails', async () => {
+    const { __instances: ffmpegInstances, __engineState } = await import('@ffmpeg/ffmpeg');
+    __engineState.loadFailureFor = null;
+    __engineState.mountFails = true;
+    mediabunnyState.canDecodeVideoResult = false;
+
+    const id = await sendJob({
+      id: 'compress-memfs',
+      type: 'compress',
+      file: new File(['legacy'], 'legacy.avi', { type: 'video/x-msvideo' }),
+      options: compressOptions({ ffmpegFallback: true }),
+    });
+
+    const response = responsesFor(id)[0];
+
+    expect(response.ok).toBe(true);
+
+    const ffmpeg = ffmpegInstances.at(-1);
+    expect(ffmpeg.files.has('input.avi')).toBe(true);
+    expect(ffmpeg.execArgs[ffmpeg.execArgs.indexOf('-i') + 1]).toBe('input.avi');
+
+    __engineState.mountFails = false;
   });
 
   it('refuses oversized inputs for the in-browser compatibility engine', async () => {
