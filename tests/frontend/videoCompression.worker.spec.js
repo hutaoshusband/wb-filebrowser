@@ -13,7 +13,7 @@ vi.mock('mediabunny', () => {
     videoTrack: null,
     audioTrack: null,
     verifyVideoTrack: undefined,
-    format: { name: 'mp4' },
+    format: { name: 'MP4' },
     inputCount: 0,
     bufferTarget: null,
     conversionInit: null,
@@ -251,7 +251,7 @@ describe('videoCompression.worker', () => {
     mediabunnyState.videoTrack = makeVideoTrack();
     mediabunnyState.audioTrack = makeAudioTrack();
     mediabunnyState.verifyVideoTrack = undefined;
-    mediabunnyState.format = { name: 'mp4' };
+    mediabunnyState.format = { name: 'MP4' };
     mediabunnyState.inputCount = 0;
     mediabunnyState.bufferTarget = null;
     mediabunnyState.conversionInit = null;
@@ -304,7 +304,7 @@ describe('videoCompression.worker', () => {
     const id = await sendJob({ id: 'inspect-1', type: 'inspect', file: new File(['abc'], 'v.mov', { type: 'video/quicktime' }) });
 
     expect(responsesFor(id)[0].result).toMatchObject({
-      container: 'mp4',
+      container: 'MP4',
       videoCodec: 'avc',
       width: 1280,
       height: 720,

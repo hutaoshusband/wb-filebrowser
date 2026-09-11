@@ -31,7 +31,7 @@ function policy(overrides = {}) {
 
 function compliantInfo(overrides = {}) {
   return {
-    container: 'mp4',
+    container: 'MP4',
     videoCodec: 'avc',
     width: 1920,
     height: 1080,
@@ -93,6 +93,7 @@ describe('inspectSummaryIsCompliant', () => {
   it('rejects wrong container, codec, resolution, frame rate, and bitrates', () => {
     const p = policy();
     expect(inspectSummaryIsCompliant(compliantInfo({ container: 'matroska' }), p)).toBe(false);
+    expect(inspectSummaryIsCompliant(compliantInfo({ container: 'QuickTime File Format' }), p)).toBe(false);
     expect(inspectSummaryIsCompliant(compliantInfo({ videoCodec: 'vp9' }), p)).toBe(false);
     expect(inspectSummaryIsCompliant(compliantInfo({ audioCodec: 'opus' }), p)).toBe(false);
     expect(inspectSummaryIsCompliant(compliantInfo({ width: 3840, height: 2160 }), p)).toBe(false);

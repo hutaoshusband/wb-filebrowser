@@ -95,7 +95,9 @@ export function inspectSummaryIsCompliant(info, policy) {
     return false;
   }
 
-  if (info.container !== 'mp4') {
+  // Mediabunny reports the container as "MP4" (capitalized); MOV reports as
+  // "QuickTime File Format" and stays non-compliant under this rule.
+  if (String(info.container ?? '').toLowerCase() !== 'mp4') {
     return false;
   }
 

@@ -418,7 +418,9 @@ async function assertOutputIsPlayable(outputFile, originalName) {
   const videoTrack = await verifyInput.getPrimaryVideoTrack();
   const format = await verifyInput.getFormat();
 
-  if (videoTrack === null || format?.name !== 'mp4') {
+  // Mediabunny names the format "MP4" (and "QuickTime File Format" for MOV),
+  // so compare case-insensitively: only the MP4 family passes.
+  if (videoTrack === null || format?.name?.toLowerCase() !== 'mp4') {
     throw jobError(`The compressed copy of ${originalName} failed the local integrity check.`, 'FAILED');
   }
 }

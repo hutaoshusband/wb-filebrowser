@@ -1585,7 +1585,7 @@ describe('Video optimization uploads', () => {
   it('skips already compliant videos without compressing them', async () => {
     compressorMocks.checkSupport.mockImplementation(async () => ({ supported: true }));
     compressorMocks.inspect.mockImplementation(async () => ({
-      container: 'mp4',
+      container: 'MP4',
       videoCodec: 'avc',
       width: 1280,
       height: 720,
