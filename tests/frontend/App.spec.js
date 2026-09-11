@@ -1660,6 +1660,10 @@ describe('Video optimization uploads', () => {
     expect(banner.exists()).toBe(true);
     expect(banner.text()).toContain('The security token is invalid');
 
+    // The failure is mirrored to the server log for diagnosability.
+    await flushPromises();
+    expect(calls.some((call) => call.action === 'client.log')).toBe(true);
+
     await banner.find('button').trigger('click');
     await flushPromises();
 
