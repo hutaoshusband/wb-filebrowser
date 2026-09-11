@@ -498,7 +498,13 @@ async function createOutputDestination(inputSize, cancelSignal) {
         token,
         target: new StreamTarget(writable),
         finish: async () => {
-          await writable.close();
+          try {
+            await writable.close();
+          } catch {
+            // Mediabunny closes (and flushes) the stream itself when the
+            // output finalizes; closing again throws, which is harmless.
+          }
+
           return handle.getFile();
         },
         discard: async () => {

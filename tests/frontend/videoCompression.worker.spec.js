@@ -472,6 +472,48 @@ describe('videoCompression.worker', () => {
     expect(responsesFor(id)[0]).toMatchObject({ ok: false, error: { code: 'FAILED' } });
   });
 
+  it('finishes large outputs through OPFS even when mediabunny already closed the stream', async () => {
+    const fakeWritable = {
+      close: async () => {
+        throw new DOMException('Cannot close a locked stream');
+      },
+      abort: async () => {},
+    };
+    const fakeFile = new Blob(['0123456789'], { type: 'video/mp4' });
+    const storage = {
+      getDirectory: async () => ({
+        getDirectoryHandle: async () => ({
+          getFileHandle: async () => ({
+            createWritable: async () => fakeWritable,
+            getFile: async () => fakeFile,
+          }),
+          removeEntry: async () => {},
+        }),
+      }),
+    };
+    Object.defineProperty(self.navigator, 'storage', { value: storage, configurable: true });
+
+    try {
+      const file = new File(['x'], 'big.mp4', { type: 'video/mp4' });
+      Object.defineProperty(file, 'size', { value: 300 * 1024 * 1024 });
+
+      const id = await sendJob({
+        id: 'compress-opfs',
+        type: 'compress',
+        file,
+        options: compressOptions({ outputName: 'big.mp4' }),
+      });
+
+      const response = responsesFor(id)[0];
+
+      expect(response.ok).toBe(true);
+      expect(response.result.file.size).toBe(10);
+      expect(response.result.opfsToken).toMatch(/^wb-compress-/);
+    } finally {
+      delete self.navigator.storage;
+    }
+  });
+
   it('acknowledges cleanup jobs for OPFS temp files', async () => {
     const id = await sendJob({ id: 'cleanup-1', type: 'cleanup', token: 'wb-compress-token.mp4' });
 
