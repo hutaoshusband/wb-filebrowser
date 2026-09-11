@@ -465,8 +465,27 @@ function showMessage(message) {
 
 // Upload and optimization failures must outlive a 4-second toast: they can
 // end a multi-minute transfer whose error the user would otherwise miss.
+// Every sticky error is also mirrored to the server log so client-side
+// failures (which never reach the API) stay diagnosable.
+const reportedClientErrors = new Set();
+
 function showStickyMessage(message) {
   stickyMessage.value = message;
+
+  const text = String(message);
+
+  if (reportedClientErrors.has(text)) {
+    return;
+  }
+
+  reportedClientErrors.add(text);
+  api('client.log', {
+    method: 'POST',
+    body: {
+      message: text,
+      context: `surface=${shell}`,
+    },
+  }).catch(() => {});
 }
 
 function dismissStickyMessage() {

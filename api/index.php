@@ -68,6 +68,39 @@ try {
                 'redirect' => wb_url('/admin/#/dashboard'),
             ], 201);
 
+        case 'client.log':
+            // Sink for client-side upload/optimization failures so problems
+            // that never reach the server are still diagnosable from the
+            // PHP error log. Authenticated + CSRF + rate limited; content is
+            // capped and stripped to a single line.
+            $requireCsrf();
+            $user = Auth::requireUser();
+            $logRateLimitBuckets = [
+                [
+                    'scope' => 'client-log-user',
+                    'identifier' => (string) $user['id'],
+                    'limit' => 30,
+                    'window' => 10 * 60,
+                ],
+            ];
+            Security::assertRateLimitAvailable($logRateLimitBuckets, 'Too many reports. Slow down.');
+            Security::consumeRateLimit($logRateLimitBuckets);
+
+            $message = mb_substr(str_replace(["\r", "\n"], ' ', trim((string) ($requestData['message'] ?? ''))), 0, 500);
+            $context = mb_substr(str_replace(["\r", "\n"], ' ', trim((string) ($requestData['context'] ?? ''))), 0, 300);
+
+            if ($message !== '') {
+                error_log(sprintf(
+                    '[wb-client] user=%s ip=%s%s: %s',
+                    (string) $user['username'],
+                    Security::clientIp(),
+                    $context !== '' ? " context={$context}" : '',
+                    $message
+                ));
+            }
+
+            wb_json_response(['ok' => true]);
+
         case 'auth.session':
             if (!$installed) {
                 wb_json_response([
