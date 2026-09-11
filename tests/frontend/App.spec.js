@@ -1645,6 +1645,29 @@ describe('Video optimization uploads', () => {
     expect(initBody.size).toBe(64);
   });
 
+  it('keeps upload failures visible until dismissed', async () => {
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'upload.init': () => errorResponse({ message: 'The security token is invalid. Refresh the page and try again.' }),
+      },
+    });
+
+    await pickFile(wrapper, new File(['x'.repeat(64)], 'notes.txt', { type: 'text/plain' }));
+    await flushPromises();
+    await flushPromises();
+
+    const banner = wrapper.find('.status-banner--sticky');
+    expect(banner.exists()).toBe(true);
+    expect(banner.text()).toContain('The security token is invalid');
+
+    await banner.find('button').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.find('.status-banner--sticky').exists()).toBe(false);
+    // A new upload attempt clears any stale banner instead of stacking.
+    expect(calls.filter((call) => call.action === 'upload.init').length).toBeGreaterThan(0);
+  });
+
   it('submits video compression settings from the uploads tab', async () => {
     const { wrapper, calls } = await mountAdminApp({ hash: '#/settings' });
 

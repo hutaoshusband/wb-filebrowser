@@ -38,7 +38,10 @@ import ffmpegWasmUrl from '@ffmpeg/core/wasm?url';
 import ffmpegHostWorkerUrl from './ffmpeg-host.worker.js?worker&url';
 
 const OPFS_MIN_INPUT_BYTES = 256 * 1024 * 1024;
-const FFMPEG_MAX_INPUT_BYTES = 512 * 1024 * 1024;
+// The single-threaded wasm engine holds input + output + encoder working
+// set on the WASM heap (~2 GB ceiling); larger inputs die mid-encode after
+// many minutes, so refuse them up front with an actionable message.
+const FFMPEG_MAX_INPUT_BYTES = 256 * 1024 * 1024;
 const OPFS_DIRECTORY = 'video-compression';
 
 const runningJobs = new Map();

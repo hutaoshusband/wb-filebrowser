@@ -464,3 +464,7 @@ input.media-player__volume::-moz-range-thumb{width:10px;height:10px;border-radiu
 .video-compression-modal__actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap}
 .video-compression-modal__actions .video-compression-modal__primary{border-color:var(--c-accent);color:var(--c-surface)}
 .video-compression-modal__actions .video-compression-modal__primary:hover{filter:brightness(1.1);color:var(--c-surface)}
+
+/* Sticky upload/optimization failure banner */
+.status-banner--sticky{display:flex;justify-content:space-between;align-items:center;gap:16px;border-color:var(--c-danger-line);background:var(--c-danger-soft)}
+.status-banner--sticky button{flex:none;padding:6px 12px;border-radius:var(--r-sm);border:1px solid var(--c-line);background:var(--c-surface-2);font-weight:600;cursor:pointer}

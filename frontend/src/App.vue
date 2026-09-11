@@ -211,6 +211,7 @@ const infoItem = ref(null);
 const helpOpen = ref(false);
 const contextMenu = ref(null);
 const statusMessage = ref('');
+const stickyMessage = ref('');
 const uploadQueue = ref(null);
 const videoCompressor = createVideoCompressor();
 const compressionState = reactive({
@@ -460,6 +461,32 @@ function showMessage(message) {
   showMessage.timer = window.setTimeout(() => {
     statusMessage.value = '';
   }, 4200);
+}
+
+// Upload and optimization failures must outlive a 4-second toast: they can
+// end a multi-minute transfer whose error the user would otherwise miss.
+function showStickyMessage(message) {
+  stickyMessage.value = message;
+}
+
+function dismissStickyMessage() {
+  stickyMessage.value = '';
+}
+
+let compressionHeartbeat = 0;
+
+// A long local transcode sends no requests; keep the server-side session
+// fresh so the upload that follows is not rejected as expired.
+function startCompressionHeartbeat() {
+  stopCompressionHeartbeat();
+  compressionHeartbeat = window.setInterval(() => {
+    api('auth.session', { params: { surface: shell } }).catch(() => {});
+  }, 4 * 60 * 1000);
+}
+
+function stopCompressionHeartbeat() {
+  window.clearInterval(compressionHeartbeat);
+  compressionHeartbeat = 0;
 }
 
 function setSearchForSection(section) {
@@ -1219,6 +1246,7 @@ function settleCompressionDialog(decision) {
 }
 
 function resetCompressionState() {
+  stopCompressionHeartbeat();
   compressionState.phase = 'idle';
   compressionState.currentName = '';
   compressionState.currentFileBytes = 0;
@@ -1302,6 +1330,7 @@ async function prepareVideosForUpload(items) {
   }
 
   compressionState.phase = 'running';
+  startCompressionHeartbeat();
   compressionState.totalFiles = toCompress.length;
   compressionState.completedFiles = 0;
   compressionState.totalBytes = toCompress.reduce((sum, entry) => sum + entry.item.file.size, 0);
@@ -1445,11 +1474,12 @@ async function uploadQueuedItems(items, emptyDirectories = []) {
   }
 
   let uploadItems = items;
+  dismissStickyMessage();
 
   try {
     uploadItems = await prepareVideosForUpload(items);
   } catch (error) {
-    showMessage(error instanceof Error ? error.message : 'Video optimization failed.');
+    showStickyMessage(error instanceof Error ? error.message : 'Video optimization failed.');
     flushOpfsCleanup();
     return;
   }
@@ -1556,7 +1586,7 @@ async function uploadQueuedItems(items, emptyDirectories = []) {
     );
   } catch (error) {
     const failedPath = uploadQueue.value?.currentFilePath || uploadedFileName;
-    showMessage(`${failedPath}: ${error instanceof Error ? error.message : 'Upload failed.'}`);
+    showStickyMessage(`${failedPath}: ${error instanceof Error ? error.message : 'Upload failed.'}`);
   } finally {
     uploadQueue.value = null;
     flushOpfsCleanup();
@@ -2807,6 +2837,7 @@ onBeforeUnmount(() => {
   document.body.style.overflow = '';
   stopAutomationPulse();
   stopBlockedTimer();
+  stopCompressionHeartbeat();
   videoCompressor.dispose();
 
   if (compressionDialog.open) {
@@ -2936,6 +2967,10 @@ onBeforeUnmount(() => {
         {{ session.diagnostic.message }}
       </div>
       <div v-if="statusMessage" class="status-banner">{{ statusMessage }}</div>
+      <div v-if="stickyMessage" class="status-banner status-banner--sticky">
+        <span>{{ stickyMessage }}</span>
+        <button type="button" @click="dismissStickyMessage">Dismiss</button>
+      </div>
       <section v-if="compressionState.phase === 'running'" class="upload-queue-card">
         <div class="upload-queue-card__summary">
           <div>
