@@ -1310,6 +1310,11 @@ async function prepareVideosForUpload(items) {
       );
     }
 
+    showMessage(
+      `Video optimization is unavailable in this browser${support.reason ? ` (${support.reason.replace(/\.$/, '')})` : ''}. `
+      + 'Uploading the original files.',
+    );
+
     return items;
   }
 

@@ -80,4 +80,9 @@ location ~ ^/(storage|vendor|node_modules|tests|\.git)/ {
     deny all;
     return 404;
 }
+
+# The PHP pages send COOP/COEP for cross-origin isolation (needed by the
+# multithreaded ffmpeg fallback); under COEP every subresource response must
+# declare a Cross-Origin-Resource-Policy, so set it for static files too.
+add_header Cross-Origin-Resource-Policy same-origin always;
 ```

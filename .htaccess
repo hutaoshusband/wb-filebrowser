@@ -1,2 +1,10 @@
 RedirectMatch 404 /\.git
 RedirectMatch 404 /\.env
+
+# COEP require-corp (sent by the PHP pages for cross-origin isolation)
+# makes the browser reject subresource responses that do not declare a
+# Cross-Origin-Resource-Policy - including same-origin static files like
+# the compression worker. Declare it for everything served from here.
+<IfModule mod_headers.c>
+    Header always set Cross-Origin-Resource-Policy "same-origin"
+</IfModule>

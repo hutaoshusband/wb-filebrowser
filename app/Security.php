@@ -69,7 +69,7 @@ final class Security
             // would require CORP/CORS on those (review before relaxing CSP).
             'Cross-Origin-Opener-Policy' => 'same-origin',
             'Cross-Origin-Embedder-Policy' => 'require-corp',
-            'Content-Security-Policy' => "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; worker-src 'self' blob:'",
+            'Content-Security-Policy' => "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; worker-src 'self' blob:",
         ];
     }
 
@@ -396,6 +396,10 @@ final class Security
         $headers = [
             'Referrer-Policy' => 'no-referrer',
             'X-Content-Type-Options' => 'nosniff',
+            // Companion to the COOP/COEP isolation headers: under
+            // require-corp, browsers reject subresource responses (API JSON,
+            // streamed files, worker scripts) that declare no CORP.
+            'Cross-Origin-Resource-Policy' => 'same-origin',
             'Permissions-Policy' => 'accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()',
         ];
 

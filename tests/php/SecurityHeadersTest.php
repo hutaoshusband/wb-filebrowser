@@ -21,6 +21,11 @@ final class SecurityHeadersTest extends TestCase
         // fallback (SharedArrayBuffer) and is safe under the self-only CSP.
         $this->assertSame('same-origin', $headers['Cross-Origin-Opener-Policy']);
         $this->assertSame('require-corp', $headers['Cross-Origin-Embedder-Policy']);
+        // COEP require-corp rejects subresource responses without CORP, so
+        // every PHP response must declare it.
+        $this->assertSame('same-origin', $headers['Cross-Origin-Resource-Policy']);
+        // The worker-src list must stay parseable (blob: unquoted, 'self' quoted).
+        $this->assertStringContainsString("worker-src 'self' blob:", $headers['Content-Security-Policy']);
     }
 
     public function testApiHeadersExposeStrictBrowserPolicies(): void
