@@ -17,7 +17,12 @@ export default defineConfig({
   },
   build: {
     outDir: resolve(__dirname, 'assets'),
-    emptyOutDir: true,
+    // Keep previous builds' hashed assets: tabs that still run an older
+    // app.js keep referencing old worker/wasm hashes, and deleting those
+    // files mid-session breaks running uploads with bare worker 404s.
+    // Unhashed files (app.js, app.css, fonts) are overwritten in place;
+    // prune stale hashed files manually once in a while.
+    emptyOutDir: false,
     cssCodeSplit: false,
     rollupOptions: {
       input: resolve(__dirname, 'frontend/src/main.js'),
