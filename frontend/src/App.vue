@@ -816,6 +816,17 @@ function syncDescriptionDraft(item = infoItem.value) {
   descriptionDraft.value = item ? String(item.description ?? '') : '';
 }
 
+function contextMenuPoint(event) {
+  const estimatedWidth = 200;
+  const estimatedHeight = 240;
+  const margin = 8;
+
+  return {
+    x: Math.max(margin, Math.min(event.clientX, window.innerWidth - estimatedWidth - margin)),
+    y: Math.max(margin, Math.min(event.clientY, window.innerHeight - estimatedHeight - margin)),
+  };
+}
+
 function handleContextMenu(event, item) {
   if (shell !== 'app' || !canShowItemActions(item)) {
     return;
@@ -823,7 +834,7 @@ function handleContextMenu(event, item) {
 
   event.preventDefault();
   selectEntry(item);
-  contextMenu.value = { kind: 'item', x: event.clientX, y: event.clientY, item };
+  contextMenu.value = { kind: 'item', ...contextMenuPoint(event), item };
 }
 
 function handleWorkspaceContextMenu(event) {
@@ -832,7 +843,7 @@ function handleWorkspaceContextMenu(event) {
   }
 
   event.preventDefault();
-  contextMenu.value = { kind: 'workspace', x: event.clientX, y: event.clientY };
+  contextMenu.value = { kind: 'workspace', ...contextMenuPoint(event) };
 }
 
 function previewMode(item) {
