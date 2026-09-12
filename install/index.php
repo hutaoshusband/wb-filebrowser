@@ -276,6 +276,6 @@ $hasBlockingIssues = $hasBlockingIssues || !$hasAvailableDriver;
         </section>
     </main>
     <?= wb_bootstrap_script_tag($bootstrap) ?>
-    <script src="<?= wb_h(wb_url('/install/install.js')) ?>" defer></script>
+    <script type="module" src="<?= wb_h(wb_url('/install/install.js')) ?>"></script>
 </body>
 </html>
