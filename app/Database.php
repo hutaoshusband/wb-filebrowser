@@ -63,7 +63,7 @@ final class Database
 
     public static function setting(string $key, ?string $default = null): ?string
     {
-        $statement = self::connection()->prepare('SELECT value FROM settings WHERE key = :key LIMIT 1');
+        $statement = self::connection()->prepare('SELECT value FROM settings WHERE ' . DatabasePlatform::quoteIdentifier(self::driver(), 'key') . ' = :key LIMIT 1');
         $statement->execute([':key' => $key]);
         $value = $statement->fetchColumn();
 

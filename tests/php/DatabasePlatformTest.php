@@ -62,9 +62,10 @@ final class DatabasePlatformTest extends TestCase
             ['key']
         );
 
-        $this->assertStringContainsString('ON CONFLICT(key) DO UPDATE', $sqlite);
+        $this->assertStringContainsString('ON CONFLICT("key") DO UPDATE', $sqlite);
         $this->assertStringContainsString('ON DUPLICATE KEY UPDATE', $mysql);
-        $this->assertStringContainsString('ON CONFLICT(key) DO UPDATE', $pgsql);
+        $this->assertStringContainsString('`key`', $mysql);
+        $this->assertStringContainsString('ON CONFLICT("key") DO UPDATE', $pgsql);
     }
 
     public function testBuildsDriverSpecificColumnInspectionQueries(): void

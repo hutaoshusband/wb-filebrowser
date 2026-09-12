@@ -14,7 +14,7 @@ final class Settings
     {
         $pdo ??= Database::connection();
         $settings = array_merge(self::defaultMap(), $overrides);
-        $existing = $pdo->query('SELECT key FROM settings')->fetchAll(PDO::FETCH_COLUMN) ?: [];
+        $existing = $pdo->query('SELECT ' . DatabasePlatform::quoteIdentifier(Database::driver(), 'key') . ' FROM settings')->fetchAll(PDO::FETCH_COLUMN) ?: [];
         $existingMap = array_flip(array_map('strval', $existing));
         $statement = Database::prepareUpsert(
             $pdo,

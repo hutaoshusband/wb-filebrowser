@@ -426,7 +426,7 @@ final class AutomationRunner
         $pdo->beginTransaction();
 
         try {
-            $statement = $pdo->prepare('SELECT value FROM settings WHERE key = :key LIMIT 1');
+            $statement = $pdo->prepare('SELECT value FROM settings WHERE ' . DatabasePlatform::quoteIdentifier(Database::driver(), 'key') . ' = :key LIMIT 1');
             $statement->execute([':key' => 'automation_lock_until']);
             $lockUntil = (string) ($statement->fetchColumn() ?: '');
             $lockTimestamp = strtotime($lockUntil);
@@ -471,7 +471,7 @@ final class AutomationRunner
 
     private static function releaseLock(PDO $pdo, string $token): void
     {
-        $statement = $pdo->prepare('SELECT value FROM settings WHERE key = :key LIMIT 1');
+        $statement = $pdo->prepare('SELECT value FROM settings WHERE ' . DatabasePlatform::quoteIdentifier(Database::driver(), 'key') . ' = :key LIMIT 1');
         $statement->execute([':key' => 'automation_lock_token']);
         $currentToken = (string) ($statement->fetchColumn() ?: '');
 

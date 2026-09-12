@@ -101,34 +101,33 @@ final class DatabasePlatform
         array $conflictColumns
     ): string {
         $driver = self::normalizeDriver($driver);
-        $quotedColumns = implode(', ', $insertColumns);
         $placeholders = implode(', ', array_map(static fn (string $column): string => ':' . $column, $insertColumns));
 
         if ($driver === 'mysql') {
             $assignments = implode(', ', array_map(
-                static fn (string $column): string => $column . ' = VALUES(' . $column . ')',
+                static fn (string $column): string => self::quoteIdentifier($driver, $column) . ' = VALUES(' . self::quoteIdentifier($driver, $column) . ')',
                 $updateColumns
             ));
 
             return sprintf(
                 'INSERT INTO %s (%s) VALUES (%s) ON DUPLICATE KEY UPDATE %s',
                 $table,
-                $quotedColumns,
+                implode(', ', array_map(static fn (string $column): string => self::quoteIdentifier($driver, $column), $insertColumns)),
                 $placeholders,
                 $assignments
             );
         }
 
-        $conflict = implode(', ', $conflictColumns);
+        $conflict = implode(', ', array_map(static fn (string $column): string => self::quoteIdentifier($driver, $column), $conflictColumns));
         $assignments = implode(', ', array_map(
-            static fn (string $column): string => $column . ' = excluded.' . $column,
+            static fn (string $column): string => self::quoteIdentifier($driver, $column) . ' = excluded.' . self::quoteIdentifier($driver, $column),
             $updateColumns
         ));
 
         return sprintf(
             'INSERT INTO %s (%s) VALUES (%s) ON CONFLICT(%s) DO UPDATE SET %s',
             $table,
-            $quotedColumns,
+            implode(', ', array_map(static fn (string $column): string => self::quoteIdentifier($driver, $column), $insertColumns)),
             $placeholders,
             $conflict,
             $assignments
@@ -236,6 +235,9 @@ final class DatabasePlatform
         $description = $driver === 'sqlite' ? 'TEXT' : 'VARCHAR(1000)';
         $messageText = 'TEXT';
         $engine = $driver === 'mysql' ? ' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci' : '';
+        // "key" is a reserved word on MySQL/MariaDB and must be quoted; SQLite
+        // and PostgreSQL accept the double-quoted ISO form.
+        $keyColumn = self::quoteIdentifier($driver, 'key');
 
         return [
             'CREATE TABLE IF NOT EXISTS users (
@@ -252,25 +254,27 @@ final class DatabasePlatform
                 last_login_at ' . $timestamp . ' NULL
             )' . $engine,
             'CREATE TABLE IF NOT EXISTS settings (
-                key ' . $shortText . ' PRIMARY KEY,
+                ' . $keyColumn . ' ' . $shortText . ' PRIMARY KEY,
                 value TEXT NOT NULL,
                 updated_at ' . $timestamp . ' NOT NULL
             )' . $engine,
             'CREATE TABLE IF NOT EXISTS folders (
                 id ' . $id . ',
-                parent_id ' . $refId . ' NULL REFERENCES folders(id) ON DELETE CASCADE,
+                parent_id ' . $refId . ' NULL,
                 name ' . $shortText . ' NOT NULL,
                 description ' . $description . ' NOT NULL DEFAULT \'\',
                 cached_size_bytes ' . $bytes . ' NULL,
                 cached_size_calculated_at ' . $timestamp . ' NULL,
-                created_by ' . $refId . ' NULL REFERENCES users(id) ON DELETE SET NULL,
+                created_by ' . $refId . ' NULL,
                 created_at ' . $timestamp . ' NOT NULL,
                 updated_at ' . $timestamp . ' NOT NULL,
+                FOREIGN KEY (parent_id) REFERENCES folders(id) ON DELETE CASCADE,
+                FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
                 UNIQUE (parent_id, name)
             )' . $engine,
             'CREATE TABLE IF NOT EXISTS files (
                 id ' . $id . ',
-                folder_id ' . $refId . ' NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+                folder_id ' . $refId . ' NOT NULL,
                 original_name ' . $shortText . ' NOT NULL,
                 disk_name ' . $tokenText . ' NOT NULL UNIQUE,
                 disk_extension ' . $shortText . ' NOT NULL,
@@ -278,16 +282,18 @@ final class DatabasePlatform
                 size ' . $bytes . ' NOT NULL,
                 description ' . $description . ' NOT NULL DEFAULT \'\',
                 checksum ' . $tokenText . ' NOT NULL,
-                created_by ' . $refId . ' NULL REFERENCES users(id) ON DELETE SET NULL,
+                created_by ' . $refId . ' NULL,
                 created_at ' . $timestamp . ' NOT NULL,
-                updated_at ' . $timestamp . ' NOT NULL
+                updated_at ' . $timestamp . ' NOT NULL,
+                FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE CASCADE,
+                FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
             )' . $engine,
             'CREATE TABLE IF NOT EXISTS file_shares (
                 id ' . $id . ',
-                file_id ' . $refId . ' NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+                file_id ' . $refId . ' NOT NULL,
                 active_file_id ' . $refId . ' NULL,
                 token ' . $tokenText . ' NOT NULL UNIQUE,
-                created_by ' . $refId . ' NULL REFERENCES users(id) ON DELETE SET NULL,
+                created_by ' . $refId . ' NULL,
                 expires_at ' . $timestamp . ' NULL,
                 max_views INTEGER NULL,
                 view_count INTEGER NOT NULL DEFAULT 0,
@@ -295,11 +301,13 @@ final class DatabasePlatform
                 password_version INTEGER NOT NULL DEFAULT 0,
                 created_at ' . $timestamp . ' NOT NULL,
                 updated_at ' . $timestamp . ' NOT NULL,
-                revoked_at ' . $timestamp . ' NULL
+                revoked_at ' . $timestamp . ' NULL,
+                FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
+                FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
             )' . $engine,
             'CREATE TABLE IF NOT EXISTS folder_permissions (
                 id ' . $id . ',
-                folder_id ' . $refId . ' NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+                folder_id ' . $refId . ' NOT NULL,
                 principal_type ' . $shortText . ' NOT NULL CHECK (principal_type IN (\'user\', \'guest\')),
                 principal_id ' . $refId . ' NOT NULL DEFAULT 0,
                 can_view ' . $bool . ' NOT NULL DEFAULT 0,
@@ -309,6 +317,7 @@ final class DatabasePlatform
                 can_create_folders ' . $bool . ' NOT NULL DEFAULT 0,
                 created_at ' . $timestamp . ' NOT NULL,
                 updated_at ' . $timestamp . ' NOT NULL,
+                FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE CASCADE,
                 UNIQUE (folder_id, principal_type, principal_id)
             )' . $engine,
             'CREATE TABLE IF NOT EXISTS login_attempts (
@@ -330,29 +339,32 @@ final class DatabasePlatform
                 id ' . $id . ',
                 event_type ' . $shortText . ' NOT NULL,
                 category ' . $shortText . ' NOT NULL,
-                actor_user_id ' . $refId . ' NULL REFERENCES users(id) ON DELETE SET NULL,
+                actor_user_id ' . $refId . ' NULL,
                 actor_username ' . $shortText . ' NULL,
                 ip_address ' . $ipText . ' NOT NULL,
                 target_type ' . $shortText . ' NULL,
                 target_id ' . $refId . ' NULL,
                 target_label ' . $description . ' NULL,
                 metadata_json TEXT NOT NULL,
-                created_at ' . $timestamp . ' NOT NULL
+                created_at ' . $timestamp . ' NOT NULL,
+                FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE SET NULL
             )' . $engine,
             'CREATE TABLE IF NOT EXISTS ip_bans (
                 id ' . $id . ',
                 ip_address ' . $ipText . ' NOT NULL,
                 active_ip_address ' . $ipText . ' NULL,
                 reason ' . $description . ' NOT NULL,
-                created_by ' . $refId . ' NULL REFERENCES users(id) ON DELETE SET NULL,
+                created_by ' . $refId . ' NULL,
                 created_by_username ' . $shortText . ' NULL,
                 created_at ' . $timestamp . ' NOT NULL,
                 expires_at ' . $timestamp . ' NULL,
                 revoked_at ' . $timestamp . ' NULL,
-                revoked_by ' . $refId . ' NULL REFERENCES users(id) ON DELETE SET NULL,
+                revoked_by ' . $refId . ' NULL,
                 revoked_by_username ' . $shortText . ' NULL,
                 revoked_reason ' . $shortText . ' NULL CHECK (revoked_reason IN (\'manual\', \'expired\')),
-                updated_at ' . $timestamp . ' NOT NULL
+                updated_at ' . $timestamp . ' NOT NULL,
+                FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+                FOREIGN KEY (revoked_by) REFERENCES users(id) ON DELETE SET NULL
             )' . $engine,
             'CREATE TABLE IF NOT EXISTS automation_jobs (
                 job_key ' . $shortText . ' PRIMARY KEY,
@@ -379,6 +391,21 @@ final class DatabasePlatform
             'CREATE INDEX IF NOT EXISTS idx_ip_bans_history ON ip_bans(ip_address, revoked_at, expires_at)',
             'CREATE INDEX IF NOT EXISTS idx_automation_jobs_next_run ON automation_jobs(next_run_at)',
         ];
+    }
+
+    /**
+     * Quote an SQL identifier for the target platform: backticks on
+     * MySQL/MariaDB (reserved words such as settings.key), the ISO
+     * double-quoted form on SQLite and PostgreSQL.
+     */
+    public static function quoteIdentifier(string $driver, string $name): string
+    {
+        self::assertIdentifier($name);
+
+        return match (self::normalizeDriver($driver)) {
+            'mysql' => '`' . $name . '`',
+            default => '"' . $name . '"',
+        };
     }
 
     private static function assertIdentifier(string $value): string
