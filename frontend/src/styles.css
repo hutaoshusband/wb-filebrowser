@@ -103,9 +103,9 @@ a{color:var(--c-accent);text-decoration:none;transition:color var(--ease)}
 .auth-form.compact{width:100%}
 .auth-form label,.panel label{display:grid;gap:8px}
 .auth-form label.checkbox-control,.panel label.checkbox-control{gap:12px}
-.auth-form input,.panel input,.panel select,.panel textarea,.install-form input{width:100%;padding:9px 12px;border-radius:var(--r-sm);border:1px solid var(--c-line);background:var(--c-bg);color:var(--c-text);outline:0}
-.auth-form input:focus,.panel input:focus,.panel select:focus,.panel textarea:focus,.install-form input:focus{border-color:var(--c-accent);box-shadow:0 0 0 2px hsla(135,64%,50%,.3)}
-.auth-form input::placeholder,.panel input::placeholder{color:var(--c-text-dim)}
+.auth-form input,.panel input,.help-modal input,.panel select,.panel textarea,.install-form input{width:100%;padding:9px 12px;border-radius:var(--r-sm);border:1px solid var(--c-line);background:var(--c-bg);color:var(--c-text);outline:0}
+.auth-form input:focus,.panel input:focus,.help-modal input:focus,.panel select:focus,.panel textarea:focus,.install-form input:focus{border-color:var(--c-accent);box-shadow:0 0 0 2px hsla(135,64%,50%,.3)}
+.auth-form input::placeholder,.panel input::placeholder,.help-modal input::placeholder{color:var(--c-text-dim)}
 .panel textarea{resize:vertical;min-height:110px}
 .auth-form button,.panel button,.drawer-actions button,.empty-state button,.help-modal button,.install-form button,.context-menu button{padding:9px 16px;border-radius:var(--r-sm);border:1px solid var(--c-line);background:var(--c-surface-2);box-shadow:none;color:var(--c-text);font-weight:600;letter-spacing:.2px;transition:all var(--ease)}
 .auth-form button:hover,.panel button:hover,.drawer-actions button:hover,.empty-state button:hover,.help-modal button:hover,.install-form button:hover,.context-menu button:hover{border-color:#3a3a3e;color:var(--c-title);background:var(--c-surface-2)}

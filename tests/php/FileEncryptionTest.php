@@ -88,6 +88,19 @@ final class FileEncryptionTest extends DatabaseTestCase
         self::assertSame(FileEncryption::FORMAT, Database::connection()->query('SELECT encryption_format FROM files WHERE id = ' . $id)->fetchColumn());
     }
 
+    public function testEncryptedPreviewKeepsTheOriginalFileIcon(): void
+    {
+        Settings::saveAdminSettings(['uploads' => ['encryption_mode' => 'required']]);
+        $bytes = $this->container();
+        $upload = FileManager::uploadInit($this->superAdmin(), Database::rootFolderId(), 'aiworx.exe', strlen($bytes), 'application/octet-stream', 1, [], FileEncryption::FORMAT);
+        file_put_contents(wb_storage_path('chunks/' . $upload['upload_token'] . '/0.part'), $bytes);
+        $file = FileManager::uploadComplete($this->superAdmin(), $upload['upload_token']);
+        self::assertSame('download', $file['preview_mode']);
+        self::assertSame('Windows executable', $file['fallback_label']);
+        self::assertStringContainsString('exe.svg', (string) $file['fallback_icon_url']);
+        self::assertSame(FileEncryption::FORMAT, $file['encryption_format']);
+    }
+
     public function testMalformedCiphertextIsNotStored(): void
     {
         Settings::saveAdminSettings(['uploads' => ['encryption_mode' => 'optional']]);

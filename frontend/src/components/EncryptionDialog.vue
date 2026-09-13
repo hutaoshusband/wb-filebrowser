@@ -1,7 +1,7 @@
 <script setup>
 import { ref } from 'vue';
 
-const props = defineProps({ required: Boolean, decrypt: Boolean, name: String });
+const props = defineProps({ required: Boolean, decrypt: Boolean, name: String, downloadUrl: String });
 const emit = defineEmits(['answer']);
 const password = ref('');
 const confirmation = ref('');
@@ -27,17 +27,19 @@ function answer(choice) {
 </script>
 
 <template>
-  <div class="encryption-overlay" @keydown.esc.prevent.stop="answer('cancel')">
-    <form class="encryption-dialog" role="dialog" aria-modal="true" aria-labelledby="encryption-title" @submit.prevent="answer('encrypt')">
+  <div class="modal-scrim" @click.self="answer('cancel')">
+    <form class="help-modal encryption-dialog" role="dialog" aria-modal="true" aria-labelledby="encryption-title" @submit.prevent="answer('encrypt')" @keydown.esc.prevent.stop="answer('cancel')">
+      <p class="panel-kicker">{{ decrypt ? 'Local decryption' : 'Local encryption' }}</p>
       <h2 id="encryption-title">{{ decrypt ? 'Decrypt file locally' : 'Encrypt before uploading?' }}</h2>
-      <p>{{ name }}</p>
+      <p class="encryption-dialog__name">{{ name }}</p>
       <p>{{ decrypt ? 'The password and the complete file are verified on your computer before a download is offered.' : 'AES-256 encryption runs on your computer. The server receives only encrypted contents. Keep your password: it cannot be recovered.' }}</p>
       <p v-if="!decrypt">File names and sizes remain visible. {{ required ? 'Encryption is required by the administrator.' : 'You can also upload without encryption.' }}</p>
-      <label>Password<input v-model="password" type="password" autocomplete="off" autofocus :minlength="decrypt ? undefined : 12" maxlength="1024" required></label>
-      <label v-if="!decrypt">Confirm password<input v-model="confirmation" type="password" autocomplete="off" maxlength="1024" required></label>
-      <p v-if="error" role="alert">{{ error }}</p>
-      <div class="quick-actions">
+      <label class="encryption-dialog__field">Password<input v-model="password" type="password" autocomplete="off" autofocus :minlength="decrypt ? undefined : 12" maxlength="1024" required></label>
+      <label v-if="!decrypt" class="encryption-dialog__field">Confirm password<input v-model="confirmation" type="password" autocomplete="off" maxlength="1024" required></label>
+      <p v-if="error" class="encryption-dialog__error" role="alert">{{ error }}</p>
+      <div class="encryption-dialog__actions">
         <button class="header-button primary-button" type="submit">{{ decrypt ? 'Verify and decrypt' : 'Encrypt and upload' }}</button>
+        <button v-if="decrypt && downloadUrl" class="header-button" type="button" @click="answer('download')">Download anyway</button>
         <button v-if="!required && !decrypt" class="header-button" type="button" @click="answer('plain')">Upload without encryption</button>
         <button class="header-button" type="button" @click="answer('cancel')">Cancel</button>
       </div>
@@ -46,8 +48,9 @@ function answer(choice) {
 </template>
 
 <style scoped>
-.encryption-overlay { position: fixed; inset: 0; z-index: 10000; background: #000b; display: grid; place-items: center; padding: 24px; }
-.encryption-dialog { width: min(540px, 100%); max-height: 90vh; overflow: auto; padding: 28px; border: 1px solid #64748b; border-radius: 16px; background: #151923; color: #f1f5f9; }
-.encryption-dialog label { display: grid; gap: 8px; margin: 16px 0; }
-.encryption-dialog input { width: 100%; padding: 10px; color: #f1f5f9; background: #0f172a; border: 1px solid #64748b; border-radius: 6px; }
+.encryption-dialog { width: min(540px, 100%); display: grid; gap: 14px; }
+.encryption-dialog__name { margin: 0; padding: 8px 12px; border: 1px solid var(--c-line); border-radius: var(--r-sm); background: var(--c-surface-2); font-weight: 600; color: var(--c-title); overflow-wrap: anywhere; }
+.encryption-dialog__field { display: grid; gap: 8px; font-size: .95rem; font-weight: 600; margin: 4px 0; }
+.encryption-dialog__error { color: var(--c-danger); }
+.encryption-dialog__actions { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
 </style>

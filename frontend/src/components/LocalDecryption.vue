@@ -8,17 +8,28 @@ const dialog = ref(false);
 const busy = ref(false);
 const error = ref('');
 const progress = ref(0);
-const readyUrl = ref('');
 const name = ref('');
 let source;
 let controller;
 let item;
+let revokeTimer = null;
+const liveUrls = new Set();
+
+function triggerDownload(target, downloadName) {
+  const anchor = document.createElement('a');
+  anchor.href = target;
+  anchor.download = downloadName ?? '';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+}
 
 function reset() {
   controller?.abort();
   controller = null;
-  if (readyUrl.value) URL.revokeObjectURL(readyUrl.value);
-  readyUrl.value = '';
+  if (revokeTimer) { clearTimeout(revokeTimer); revokeTimer = null; }
+  for (const url of liveUrls) URL.revokeObjectURL(url);
+  liveUrls.clear();
   source = null;
   error.value = '';
 }
@@ -51,6 +62,12 @@ function pickLocal() {
 async function answer(result) {
   dialog.value = false;
   if (result.choice === 'cancel') { reset(); return; }
+  if (result.choice === 'download') {
+    const target = item?.download_url;
+    reset();
+    if (target) triggerDownload(target, '');
+    return;
+  }
   busy.value = true;
   error.value = '';
   progress.value = 0;
@@ -71,8 +88,13 @@ async function answer(result) {
     result.password = '';
     const plain = await pending;
     operation.signal.throwIfAborted();
-    readyUrl.value = URL.createObjectURL(plain);
+    // Verified: hand the plaintext straight to the browser's download flow.
+    const ready = URL.createObjectURL(plain);
+    liveUrls.add(ready);
+    const timer = setTimeout(() => { URL.revokeObjectURL(ready); liveUrls.delete(ready); if (revokeTimer === timer) revokeTimer = null; }, 60000);
+    revokeTimer = timer;
     source = null;
+    triggerDownload(ready, item.name || name.value);
   } catch (failure) {
     if (failure.name !== 'AbortError') error.value = failure.message || 'Unable to decrypt this file.';
   } finally {
@@ -87,12 +109,10 @@ onBeforeUnmount(reset);
 
 <template>
   <button v-if="url" class="header-button primary-button" type="button" :disabled="busy" @click="open()">Decrypt locally</button>
-  <EncryptionDialog v-if="dialog" decrypt :name="name" @answer="answer" />
-  <section v-if="busy || error || readyUrl" class="upload-queue-card" aria-live="polite">
+  <EncryptionDialog v-if="dialog" decrypt :name="name" :download-url="(dialog && item && item.download_url) || url || ''" @answer="answer" />
+  <section v-if="busy || error" class="upload-queue-card" aria-live="polite">
     <p v-if="busy">Downloading, verifying and decrypting {{ name }} locally: {{ progress }}%</p>
     <p v-if="error" role="alert">{{ error }}</p>
-    <p v-if="readyUrl">Password and file integrity verified. Your decrypted file is ready.</p>
-    <a v-if="readyUrl" class="header-button primary-button" :href="readyUrl" :download="name">Save decrypted file</a>
     <button v-if="error" class="header-button" type="button" @click="dialog = true">Retry password</button>
     <button class="header-button" type="button" @click="reset">{{ busy ? 'Cancel' : 'Dismiss' }}</button>
   </section>

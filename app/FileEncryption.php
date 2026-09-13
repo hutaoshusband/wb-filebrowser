@@ -64,13 +64,21 @@ final class FileEncryption
 
     public static function preview(array $file): array
     {
+        $metadata = wb_file_preview_metadata(
+            (string) $file['mime_type'],
+            strtolower(pathinfo((string) $file['original_name'], PATHINFO_EXTENSION))
+        );
+
         if (($file['encryption_format'] ?? '') !== '') {
-            return array_merge(wb_file_preview_metadata('application/octet-stream', 'wbencrypted'), [
+            // The stored bytes are ciphertext, so nothing can be previewed or
+            // probed — but the fallback icon must still describe the original
+            // file, not the encryption container.
+            return array_merge($metadata, [
                 'preview_mode' => 'download',
                 'encryption_format' => (string) $file['encryption_format'],
             ]);
         }
 
-        return wb_file_preview_metadata((string) $file['mime_type'], strtolower(pathinfo((string) $file['original_name'], PATHINFO_EXTENSION)));
+        return $metadata;
     }
 }
