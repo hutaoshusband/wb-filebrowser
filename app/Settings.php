@@ -72,6 +72,7 @@ final class Settings
             'uploads_max_file_size_mb' => (string) $normalized['uploads']['max_file_size_mb'],
             'uploads_allowed_extensions' => self::implodeExtensions($normalized['uploads']['allowed_extensions']),
             'uploads_stale_upload_ttl_hours' => (string) $normalized['uploads']['stale_upload_ttl_hours'],
+            'dedup_enabled' => $normalized['uploads']['dedup_enabled'] ? '1' : '0',
             'video_compression_mode' => $normalized['video_compression']['mode'],
             'video_max_height' => (string) $normalized['video_compression']['max_height'],
             'video_max_fps' => (string) $normalized['video_compression']['max_fps'],
@@ -86,6 +87,7 @@ final class Settings
             'automation_cleanup_interval_minutes' => (string) $normalized['automation']['cleanup_interval_minutes'],
             'automation_storage_alert_threshold_pct' => (string) $normalized['automation']['storage_alert_threshold_pct'],
             'automation_folder_size_interval_minutes' => (string) $normalized['automation']['folder_size_interval_minutes'],
+            'automation_share_deletion_interval_minutes' => (string) $normalized['automation']['share_deletion_interval_minutes'],
             'audit_enabled' => $normalized['security']['audit_enabled'] ? '1' : '0',
             'audit_retention_days' => (string) $normalized['security']['audit_retention_days'],
             'log_auth_success' => $normalized['security']['log_auth_success'] ? '1' : '0',
@@ -131,6 +133,7 @@ final class Settings
                 'max_file_size_mb' => self::parseUploadLimitMb(Database::setting('uploads_max_file_size_mb', '0')),
                 'allowed_extensions' => implode(', ', self::allowedExtensions($pdo)),
                 'stale_upload_ttl_hours' => self::parseInteger(Database::setting('uploads_stale_upload_ttl_hours', '24'), 'Upload retention window', 1, 720),
+                'dedup_enabled' => wb_parse_bool(Database::setting('dedup_enabled', '0')),
             ],
             'video_compression' => self::videoCompressionGroup(),
             'automation' => [
@@ -143,6 +146,12 @@ final class Settings
                     'Folder size refresh interval',
                     60,
                     10080
+                ),
+                'share_deletion_interval_minutes' => self::parseInteger(
+                    Database::setting('automation_share_deletion_interval_minutes', '15'),
+                    'Share deletion interval',
+                    5,
+                    1440
                 ),
             ],
             'security' => [
@@ -160,6 +169,12 @@ final class Settings
             ],
             'display' => [
                 'grid_thumbnails_enabled' => wb_parse_bool(Database::setting('display_grid_thumbnails_enabled', '1')),
+            ],
+            'spaces' => [
+                'enabled' => wb_parse_bool(Database::setting('spaces_enabled', '0')),
+                'sharing_allowed' => wb_parse_bool(Database::setting('spaces_user_sharing_allowed', '1')),
+                'max_grant_level' => Database::setting('spaces_max_grant_level', 'write') === 'view' ? 'view' : 'write',
+                'auto_create' => wb_parse_bool(Database::setting('spaces_auto_create_on_user_create', '0')),
             ],
         ];
     }
@@ -202,6 +217,7 @@ final class Settings
 
     public static function saveAdminSettings(array $payload, ?PDO $pdo = null): array
     {
+        $storageLock = new StorageLock();
         $pdo ??= Database::connection();
         $normalized = self::normalizePayload($payload, self::grouped($pdo));
         self::assertVideoCompressionPolicyIsEnforceable($normalized['video_compression']);
@@ -233,6 +249,7 @@ final class Settings
             'uploads_max_file_size_mb' => (string) $normalized['uploads']['max_file_size_mb'],
             'uploads_allowed_extensions' => self::implodeExtensions($normalized['uploads']['allowed_extensions']),
             'uploads_stale_upload_ttl_hours' => (string) $normalized['uploads']['stale_upload_ttl_hours'],
+            'dedup_enabled' => $normalized['uploads']['dedup_enabled'] ? '1' : '0',
             'video_compression_mode' => $normalized['video_compression']['mode'],
             'video_max_height' => (string) $normalized['video_compression']['max_height'],
             'video_max_fps' => (string) $normalized['video_compression']['max_fps'],
@@ -247,6 +264,7 @@ final class Settings
             'automation_cleanup_interval_minutes' => (string) $normalized['automation']['cleanup_interval_minutes'],
             'automation_storage_alert_threshold_pct' => (string) $normalized['automation']['storage_alert_threshold_pct'],
             'automation_folder_size_interval_minutes' => (string) $normalized['automation']['folder_size_interval_minutes'],
+            'automation_share_deletion_interval_minutes' => (string) $normalized['automation']['share_deletion_interval_minutes'],
             'audit_enabled' => $normalized['security']['audit_enabled'] ? '1' : '0',
             'audit_retention_days' => (string) $normalized['security']['audit_retention_days'],
             'log_auth_success' => $normalized['security']['log_auth_success'] ? '1' : '0',
@@ -259,6 +277,10 @@ final class Settings
             'log_admin_actions' => $normalized['security']['log_admin_actions'] ? '1' : '0',
             'log_security_actions' => $normalized['security']['log_security_actions'] ? '1' : '0',
             'display_grid_thumbnails_enabled' => $normalized['display']['grid_thumbnails_enabled'] ? '1' : '0',
+            'spaces_enabled' => $normalized['spaces']['enabled'] ? '1' : '0',
+            'spaces_user_sharing_allowed' => $normalized['spaces']['sharing_allowed'] ? '1' : '0',
+            'spaces_max_grant_level' => $normalized['spaces']['max_grant_level'],
+            'spaces_auto_create_on_user_create' => $normalized['spaces']['auto_create'] ? '1' : '0',
         ];
 
         $inTransaction = $pdo->inTransaction();
@@ -290,6 +312,11 @@ final class Settings
         AutomationRunner::syncJobs($pdo);
 
         return $normalized;
+    }
+
+    public static function dedupEnabled(?PDO $pdo = null): bool
+    {
+        return wb_parse_bool(Database::setting('dedup_enabled', '0'));
     }
 
     public static function uploadPolicy(?PDO $pdo = null): array
@@ -463,7 +490,7 @@ final class Settings
         $uploadInput = self::normalizeGroupInput(
             $payload,
             'uploads',
-            ['max_file_size_mb', 'allowed_extensions', 'stale_upload_ttl_hours'],
+            ['max_file_size_mb', 'allowed_extensions', 'stale_upload_ttl_hours', 'dedup_enabled'],
             $base['uploads']
         );
         $videoInput = self::normalizeGroupInput(
@@ -475,7 +502,7 @@ final class Settings
         $automationInput = self::normalizeGroupInput(
             $payload,
             'automation',
-            ['runner_enabled', 'diagnostic_interval_minutes', 'cleanup_interval_minutes', 'storage_alert_threshold_pct', 'folder_size_interval_minutes'],
+            ['runner_enabled', 'diagnostic_interval_minutes', 'cleanup_interval_minutes', 'storage_alert_threshold_pct', 'folder_size_interval_minutes', 'share_deletion_interval_minutes'],
             $base['automation']
         );
         $securityInput = self::normalizeGroupInput(
@@ -501,6 +528,12 @@ final class Settings
             'display',
             ['grid_thumbnails_enabled'],
             $base['display']
+        );
+        $spacesInput = self::normalizeGroupInput(
+            $payload,
+            'spaces',
+            ['enabled', 'sharing_allowed', 'max_grant_level', 'auto_create'],
+            $base['spaces']
         );
 
         return [
@@ -535,6 +568,7 @@ final class Settings
                     1,
                     720
                 ),
+                'dedup_enabled' => wb_parse_bool($uploadInput['dedup_enabled'] ?? $base['uploads']['dedup_enabled']),
             ],
             'video_compression' => [
                 'mode' => self::parseVideoCompressionMode($videoInput['mode'] ?? $base['video_compression']['mode']),
@@ -607,6 +641,12 @@ final class Settings
                     60,
                     10080
                 ),
+                'share_deletion_interval_minutes' => self::parseInteger(
+                    $automationInput['share_deletion_interval_minutes'] ?? $base['automation']['share_deletion_interval_minutes'],
+                    'Share deletion interval',
+                    5,
+                    1440
+                ),
             ],
             'security' => [
                 'audit_enabled' => wb_parse_bool($securityInput['audit_enabled'] ?? $base['security']['audit_enabled']),
@@ -629,7 +669,24 @@ final class Settings
             'display' => [
                 'grid_thumbnails_enabled' => wb_parse_bool($displayInput['grid_thumbnails_enabled'] ?? $base['display']['grid_thumbnails_enabled']),
             ],
+            'spaces' => [
+                'enabled' => wb_parse_bool($spacesInput['enabled'] ?? $base['spaces']['enabled']),
+                'sharing_allowed' => wb_parse_bool($spacesInput['sharing_allowed'] ?? $base['spaces']['sharing_allowed']),
+                'max_grant_level' => self::parseSpaceGrantLevel($spacesInput['max_grant_level'] ?? $base['spaces']['max_grant_level']),
+                'auto_create' => wb_parse_bool($spacesInput['auto_create'] ?? $base['spaces']['auto_create']),
+            ],
         ];
+    }
+
+    private static function parseSpaceGrantLevel(mixed $value): string
+    {
+        $level = strtolower(trim((string) $value));
+
+        if (!in_array($level, ['view', 'write'], true)) {
+            throw new InvalidArgumentException('Space grant level must be view or write.');
+        }
+
+        return $level;
     }
 
     public static function defaultGrouped(): array
@@ -647,6 +704,7 @@ final class Settings
                 'max_file_size_mb' => 0,
                 'allowed_extensions' => '',
                 'stale_upload_ttl_hours' => 24,
+                'dedup_enabled' => false,
             ],
             'video_compression' => [
                 'mode' => 'off',
@@ -665,6 +723,7 @@ final class Settings
                 'cleanup_interval_minutes' => 60,
                 'storage_alert_threshold_pct' => 85,
                 'folder_size_interval_minutes' => 1440,
+                'share_deletion_interval_minutes' => 15,
             ],
             'security' => [
                 'audit_enabled' => false,
@@ -681,6 +740,12 @@ final class Settings
             ],
             'display' => [
                 'grid_thumbnails_enabled' => true,
+            ],
+            'spaces' => [
+                'enabled' => false,
+                'sharing_allowed' => true,
+                'max_grant_level' => 'write',
+                'auto_create' => false,
             ],
         ];
     }
@@ -707,6 +772,7 @@ final class Settings
             'uploads_max_file_size_mb' => '0',
             'uploads_allowed_extensions' => '',
             'uploads_stale_upload_ttl_hours' => '24',
+            'dedup_enabled' => '0',
             'video_compression_mode' => 'off',
             'video_max_height' => '1080',
             'video_max_fps' => '60',
@@ -721,6 +787,7 @@ final class Settings
             'automation_cleanup_interval_minutes' => '60',
             'automation_storage_alert_threshold_pct' => '85',
             'automation_folder_size_interval_minutes' => '1440',
+            'automation_share_deletion_interval_minutes' => '15',
             'audit_enabled' => '0',
             'audit_retention_days' => '30',
             'log_auth_success' => '1',
@@ -733,8 +800,13 @@ final class Settings
             'log_admin_actions' => '1',
             'log_security_actions' => '1',
             'display_grid_thumbnails_enabled' => '1',
+            'spaces_enabled' => '0',
+            'spaces_user_sharing_allowed' => '1',
+            'spaces_max_grant_level' => 'write',
+            'spaces_auto_create_on_user_create' => '0',
             'audit_last_pruned_at' => '',
             'ip_bans_last_pruned_at' => '',
+            'file_blobs_backfill_v1' => '0',
             'automation_lock_token' => '',
             'automation_lock_until' => '',
         ];

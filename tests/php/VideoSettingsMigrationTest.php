@@ -27,6 +27,13 @@ final class VideoSettingsMigrationTest extends DatabaseTestCase
         'video_min_savings_pct',
         'video_ffmpeg_fallback',
         'media_ffprobe_path',
+        'dedup_enabled',
+        'file_blobs_backfill_v1',
+        'automation_share_deletion_interval_minutes',
+        'spaces_enabled',
+        'spaces_user_sharing_allowed',
+        'spaces_max_grant_level',
+        'spaces_auto_create_on_user_create',
     ];
 
     protected function tearDown(): void
@@ -88,6 +95,15 @@ final class VideoSettingsMigrationTest extends DatabaseTestCase
             'video_min_savings_pct' => '5',
             'video_ffmpeg_fallback' => '1',
             'media_ffprobe_path' => '',
+            'dedup_enabled' => '0',
+            // The backfill runs to completion inside the same migration, so
+            // the flag is already flipped afterwards.
+            'file_blobs_backfill_v1' => '1',
+            'automation_share_deletion_interval_minutes' => '15',
+            'spaces_enabled' => '0',
+            'spaces_user_sharing_allowed' => '1',
+            'spaces_max_grant_level' => 'write',
+            'spaces_auto_create_on_user_create' => '0',
         ];
 
         foreach ($expectedNew as $key => $value) {

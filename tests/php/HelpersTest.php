@@ -10,6 +10,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 
 class PhpInputStreamMock
 {
+    public $context;
     public static string $data = '';
     private int $position = 0;
 

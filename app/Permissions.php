@@ -57,6 +57,18 @@ final class Permissions
             $childrenMap[$parentId ?? 0][] = $id;
         }
 
+        $spacePolicy = SpaceService::policy($pdo);
+        $spaceByFolder = [];
+        foreach ($pdo->query('SELECT folder_id, status FROM spaces')->fetchAll() as $spaceRow) {
+            $root = (int) $spaceRow['folder_id'];
+            foreach (self::expandDescendants([$root], $childrenMap) as $id) {
+                $spaceByFolder[$id] = $spaceRow;
+            }
+            // Grants above a private space must never propagate into it.
+            $parent = $folderMap[$root]['parent_id'] ?? 0;
+            $childrenMap[$parent] = array_values(array_diff($childrenMap[$parent] ?? [], [$root]));
+        }
+
         $statement = $pdo->prepare(
             'SELECT folder_id, can_view, can_upload, can_edit, can_delete, can_create_folders
              FROM folder_permissions
@@ -75,6 +87,17 @@ final class Permissions
 
         foreach ($statement->fetchAll() as $permission) {
             $folderId = (int) $permission['folder_id'];
+            $registeredSpace = $spaceByFolder[$folderId] ?? null;
+            if ($registeredSpace !== null) {
+                if ($user === null || !$spacePolicy['enabled'] || !$spacePolicy['sharing_allowed'] || $registeredSpace['status'] !== 'active') {
+                    continue;
+                }
+                if ($spacePolicy['max_grant_level'] === 'view') {
+                    foreach (['can_upload', 'can_edit', 'can_delete', 'can_create_folders'] as $field) {
+                        $permission[$field] = 0;
+                    }
+                }
+            }
             $canUpload = $user !== null && (int) $permission['can_upload'] === 1;
             $canEdit = $user !== null && (int) $permission['can_edit'] === 1;
             $canDelete = $user !== null && (int) $permission['can_delete'] === 1;
@@ -117,7 +140,7 @@ final class Permissions
 
         $dedupe = static fn (array $values): array => array_values(array_unique(array_map('intval', $values)));
 
-        return [
+        $scope = [
             'all' => false,
             'ancestors' => $dedupe($ancestors),
             'content' => $dedupe($content),
@@ -126,6 +149,118 @@ final class Permissions
             'delete' => $dedupe($delete),
             'create' => $dedupe($create),
         ];
+
+        return self::applySpaces($user, $scope, $folderMap, $childrenMap, $pdo);
+    }
+
+    /**
+     * Scope for logged-in users with per-user spaces factored in: the owner
+     * holds implicit full rights inside their space subtree, and the
+     * "Spaces" container plus the global-root auto-grant stay invisible to
+     * space-only users. Called after the plain folder_permissions scope is
+     * computed; space-less users pass through unchanged.
+     */
+    private static function applySpaces(?array $user, array $scope, array $folderMap, array $childrenMap, PDO $pdo): array
+    {
+        if ($user === null || !SpaceService::featureEnabled($pdo)) {
+            return $scope;
+        }
+
+        $space = SpaceService::findForUser((int) $user['id'], true, $pdo);
+        $containerId = SpaceService::containerFolderId($pdo);
+
+        if ($space === null && $containerId === null) {
+            return $scope;
+        }
+
+        // Registry folders must never be reachable through scope lists for
+        // non-admins, even when a grant chain touches them.
+        $pruneContainer = static function (array $values) use ($containerId): array {
+            if ($containerId === null) {
+                return $values;
+            }
+
+            return array_values(array_filter(
+                $values,
+                static fn (int $folderId): bool => $folderId !== $containerId
+            ));
+        };
+
+        $scope['ancestors'] = $pruneContainer($scope['ancestors']);
+        $scope['content'] = $pruneContainer($scope['content']);
+        $scope['upload'] = $pruneContainer($scope['upload']);
+        $scope['edit'] = $pruneContainer($scope['edit']);
+        $scope['delete'] = $pruneContainer($scope['delete']);
+        $scope['create'] = $pruneContainer($scope['create']);
+
+        $space = $user === null ? null : SpaceService::findForUser((int) $user['id'], true, $pdo);
+
+        if ($space !== null) {
+            $spaceRootId = (int) $space['folder_id'];
+            $spaceSubtree = self::expandDescendants([$spaceRootId], $childrenMap);
+
+            $scope['content'] = array_values(array_unique(array_merge($scope['content'], $spaceSubtree)));
+            $scope['upload'] = array_values(array_unique(array_merge($scope['upload'], $spaceSubtree)));
+            $scope['edit'] = array_values(array_unique(array_merge($scope['edit'], $spaceSubtree)));
+            $scope['delete'] = array_values(array_unique(array_merge($scope['delete'], $spaceSubtree)));
+            $scope['create'] = array_values(array_unique(array_merge($scope['create'], $spaceSubtree)));
+            $scope['ancestors'] = array_values(array_unique(array_merge($scope['ancestors'], $spaceSubtree)));
+
+            // Consumed by serializeFile to flag files the owner may publish
+            // via public share links.
+            $scope['own_space_root'] = $spaceRootId;
+            $scope['own_space_ids'] = $spaceSubtree;
+        }
+
+        $hasGlobalGrants = false;
+        $spaceRoots = [];
+
+        $statement = $pdo->query('SELECT folder_id FROM spaces');
+        foreach ($statement->fetchAll(PDO::FETCH_COLUMN) as $spaceFolderId) {
+            $spaceRoots[(int) $spaceFolderId] = true;
+        }
+
+        if ($space === null) {
+            // Space-less users keep the global root as their navigation
+            // anchor (legacy behaviour): grants inside other people's
+            // spaces render as extra roots in their folder tree.
+            $hasGlobalGrants = true;
+        } else {
+            foreach ($scope['content'] as $folderId) {
+                $current = $folderId;
+
+                while (isset($folderMap[$current])) {
+                    if (isset($spaceRoots[$current])) {
+                        continue 2;
+                    }
+
+                    $parent = $folderMap[$current]['parent_id'];
+
+                    if ($parent === null) {
+                        $hasGlobalGrants = true;
+                        continue 2;
+                    }
+
+                    $current = $parent;
+                }
+            }
+        }
+
+        $rootId = Database::rootFolderId();
+        $rootIndex = array_search($rootId, $scope['ancestors'], true);
+
+        if ($hasGlobalGrants) {
+            if ($rootIndex === false) {
+                $scope['ancestors'][] = $rootId;
+            }
+        } elseif ($rootIndex !== false) {
+            // Grants that live entirely inside spaces must not unlock the
+            // global root.
+            unset($scope['ancestors'][$rootIndex]);
+            $scope['ancestors'] = array_values($scope['ancestors']);
+        }
+
+        return $scope;
     }
 
     public static function canOpenFolder(int $folderId, ?array $user, ?PDO $pdo = null, ?array $scope = null): bool
@@ -181,6 +316,7 @@ final class Permissions
     public static function matrix(array $actor, string $principalType, int $principalId, ?PDO $pdo = null): array
     {
         $pdo ??= Database::connection();
+        $storageLock = new StorageLock();
         self::assertPrincipalAccess($actor, $principalType, $principalId, $pdo);
         $statement = $pdo->prepare(
             'SELECT folder_id, can_view, can_upload, can_edit, can_delete, can_create_folders
@@ -209,6 +345,7 @@ final class Permissions
             throw new RuntimeException('Permission entries must be an array.');
         }
 
+        $storageLock = new StorageLock();
         self::assertPrincipalAccess($actor, $principalType, $principalId, $pdo);
         $pdo->beginTransaction();
 

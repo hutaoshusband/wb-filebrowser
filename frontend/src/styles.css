@@ -488,3 +488,7 @@ input.media-player__volume::-moz-range-thumb{width:10px;height:10px;border-radiu
 /* Sticky upload/optimization failure banner */
 .status-banner--sticky{display:flex;justify-content:space-between;align-items:center;gap:16px;border-color:var(--c-danger-line);background:var(--c-danger-soft)}
 .status-banner--sticky button{flex:none;padding:6px 12px;border-radius:var(--r-sm);border:1px solid var(--c-line);background:var(--c-surface-2);font-weight:600;cursor:pointer}
+
+/* Space sharing (info drawer) */
+.space-share-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--c-line)}
+.space-share-row:last-of-type{border-bottom:0}

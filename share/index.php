@@ -302,6 +302,9 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
                             <div><dt>Size</dt><dd><?= wb_h($file['size_label']) ?></dd></div>
                             <div><dt>Updated</dt><dd><?= wb_h($file['updated_relative']) ?></dd></div>
                             <div><dt>Shared</dt><dd><?= wb_h(wb_relative_time($share['created_at'])) ?></dd></div>
+                            <?php if (!empty($share['delete_after'])): ?>
+                                <div><dt>Removed after</dt><dd><?= wb_h(gmdate('Y-m-d H:i', (int) strtotime((string) $share['delete_after'])) . ' UTC') ?></dd></div>
+                            <?php endif; ?>
                         </dl>
                     </aside>
                 </div>
@@ -413,6 +416,9 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
                             <div><dt>Size</dt><dd><?= wb_h($file['size_label']) ?></dd></div>
                             <div><dt>Updated</dt><dd><?= wb_h($file['updated_relative']) ?></dd></div>
                             <div><dt>Shared</dt><dd><?= wb_h(wb_relative_time($share['created_at'])) ?></dd></div>
+                            <?php if (!empty($share['delete_after'])): ?>
+                                <div><dt>Removed after</dt><dd><?= wb_h(gmdate('Y-m-d H:i', (int) strtotime((string) $share['delete_after'])) . ' UTC') ?></dd></div>
+                            <?php endif; ?>
                             <div><dt>Checksum</dt><dd><?= wb_h($file['checksum']) ?></dd></div>
                         </dl>
                         <div class="share-direct-link">

@@ -38,8 +38,8 @@ final class FileNotesAndListingTest extends DatabaseTestCase
     public function testDescriptionWritesRequireEditPermission(): void
     {
         $folder = $this->createFolder('Private docs');
-        $file = $this->createFile('secret.txt', 'secret', 'text/plain', (int) $folder['id']);
         $member = $this->createUser('member');
+        $file = $this->createFile('secret.txt', 'secret', 'text/plain', (int) $folder['id'], $member);
 
         Permissions::saveMatrix($this->superAdmin(), 'user', (int) $member['id'], [
             [

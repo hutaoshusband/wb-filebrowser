@@ -6,6 +6,7 @@ namespace WbFileBrowser;
 
 use InvalidArgumentException;
 use PDO;
+use PDOException;
 use RuntimeException;
 
 final class FileManager
@@ -235,6 +236,7 @@ final class FileManager
     public static function renameFolder(array $user, int $folderId, string $name): void
     {
         self::assertEditableFolder($user, $folderId);
+        SpaceService::assertNotSpaceRoot($folderId, 'rename');
         $pdo = Database::connection();
         $folder = self::folderById($folderId, $pdo);
 
@@ -266,7 +268,10 @@ final class FileManager
 
     public static function moveFolder(array $user, int $folderId, int $targetParentId): void
     {
+        $storageLock = new StorageLock();
         self::assertEditableFolder($user, $folderId);
+        SpaceService::assertNotSpaceRoot($folderId, 'move');
+        SpaceService::assertSameSpaceOrAdmin($folderId, $targetParentId, $user);
         $pdo = Database::connection();
         $folder = self::folderById($folderId, $pdo);
 
@@ -288,12 +293,31 @@ final class FileManager
             throw new RuntimeException('You do not have permission to move items into that folder.');
         }
 
-        $statement = $pdo->prepare('UPDATE folders SET parent_id = :parent_id, updated_at = :updated_at WHERE id = :id');
-        $statement->execute([
-            ':parent_id' => $targetParentId,
-            ':updated_at' => wb_now(),
-            ':id' => $folderId,
-        ]);
+        $crossSpace = SpaceService::spaceRootIdForFolder($folderId, $pdo) !== SpaceService::spaceRootIdForFolder($targetParentId, $pdo);
+        if ($crossSpace) {
+            SpaceService::assertWithinSpaceQuota($targetParentId, SpaceService::transferBytes($folderId, $pdo), $pdo);
+        }
+
+        $pdo->beginTransaction();
+        try {
+            $statement = $pdo->prepare('UPDATE folders SET parent_id = :parent_id, updated_at = :updated_at WHERE id = :id');
+            $statement->execute([
+                ':parent_id' => $targetParentId,
+                ':updated_at' => wb_now(),
+                ':id' => $folderId,
+            ]);
+            if ($crossSpace) {
+                $placeholders = implode(',', array_fill(0, count($descendants), '?'));
+                $pdo->prepare('DELETE FROM folder_permissions WHERE folder_id IN (' . $placeholders . ')')->execute($descendants);
+                $pdo->prepare('DELETE FROM file_shares WHERE file_id IN (SELECT id FROM files WHERE folder_id IN (' . $placeholders . '))')->execute($descendants);
+            }
+            $pdo->commit();
+        } catch (\Throwable $exception) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $exception;
+        }
         $updatedFolder = self::folderById($folderId, $pdo);
 
         if ($updatedFolder !== null) {
@@ -310,25 +334,60 @@ final class FileManager
         }
     }
 
-    public static function deleteFolder(array $user, int $folderId): void
+    public static function deleteFolder(array $user, int $folderId, bool $systemPurge = false): void
     {
+        $storageLock = new StorageLock();
         self::assertDeletableFolder($user, $folderId);
+
+        if ($systemPurge && ($user['role'] ?? '') !== 'super_admin') {
+            throw new RuntimeException('Only the Super-Admin can purge spaces.');
+        }
+        if (!$systemPurge) {
+            SpaceService::assertNotSpaceRoot($folderId, 'delete');
+        }
+
         $pdo = Database::connection();
         $folder = self::folderById($folderId, $pdo);
         $descendants = self::descendantFolderIds($folderId, $pdo);
         $folderLabel = $folder === null ? 'Unknown folder' : self::folderPathLabelFromRow($folder, $pdo);
         $placeholders = implode(',', array_fill(0, count($descendants), '?'));
         $fileStatement = $pdo->prepare(
-            'SELECT disk_name, disk_extension FROM files WHERE folder_id IN (' . $placeholders . ')'
+            'SELECT * FROM files WHERE folder_id IN (' . $placeholders . ')'
         );
         $fileStatement->execute($descendants);
+        $fileRows = $fileStatement->fetchAll();
 
-        foreach ($fileStatement->fetchAll() as $file) {
-            self::deleteBlob((string) $file['disk_name'], (string) $file['disk_extension']);
+        // Rows first (cascades included), blob unlinks after the commit.
+        $pdo->beginTransaction();
+
+        try {
+            $blobReferences = [];
+
+            foreach ($fileRows as $file) {
+                foreach (self::detachFileReference($pdo, $file) as $reference) {
+                    $blobReferences[] = $reference;
+                }
+            }
+
+            $statement = $pdo->prepare('DELETE FROM folders WHERE id = :id');
+            $statement->execute([':id' => $folderId]);
+            $pdo->commit();
+        } catch (\Throwable $exception) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+
+            throw $exception;
         }
 
-        $statement = $pdo->prepare('DELETE FROM folders WHERE id = :id');
-        $statement->execute([':id' => $folderId]);
+        foreach ($blobReferences as $reference) {
+            $path = self::blobPath((string) $reference['disk_name'], (string) $reference['disk_extension']);
+
+            if (is_file($path)) {
+                @unlink($path);
+            }
+        }
+
         AuditLog::record('folder.delete', 'deletions', [
             'actor_user' => $user,
             'target_type' => 'folder',
@@ -455,6 +514,7 @@ final class FileManager
 
     public static function moveFile(array $user, int $fileId, int $targetFolderId): void
     {
+        $storageLock = new StorageLock();
         $pdo = Database::connection();
         $file = self::fileById($fileId, $pdo);
 
@@ -475,12 +535,31 @@ final class FileManager
             throw new RuntimeException('You do not have permission to move items into that folder.');
         }
 
-        $statement = $pdo->prepare('UPDATE files SET folder_id = :folder_id, updated_at = :updated_at WHERE id = :id');
-        $statement->execute([
-            ':folder_id' => $targetFolderId,
-            ':updated_at' => wb_now(),
-            ':id' => $fileId,
-        ]);
+        SpaceService::assertSameSpaceOrAdmin((int) $file['folder_id'], $targetFolderId, $user);
+
+        $crossSpace = SpaceService::spaceRootIdForFolder((int) $file['folder_id'], $pdo) !== SpaceService::spaceRootIdForFolder($targetFolderId, $pdo);
+        if ($crossSpace) {
+            SpaceService::assertWithinSpaceQuota($targetFolderId, (int) $file['size'], $pdo);
+        }
+
+        $pdo->beginTransaction();
+        try {
+            $statement = $pdo->prepare('UPDATE files SET folder_id = :folder_id, updated_at = :updated_at WHERE id = :id');
+            $statement->execute([
+                ':folder_id' => $targetFolderId,
+                ':updated_at' => wb_now(),
+                ':id' => $fileId,
+            ]);
+            if ($crossSpace) {
+                $pdo->prepare('DELETE FROM file_shares WHERE file_id = :id')->execute([':id' => $fileId]);
+            }
+            $pdo->commit();
+        } catch (\Throwable $exception) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $exception;
+        }
         $updatedFile = self::fileById($fileId, $pdo);
 
         if ($updatedFile !== null) {
@@ -499,6 +578,7 @@ final class FileManager
 
     public static function deleteFile(array $user, int $fileId): void
     {
+        $storageLock = new StorageLock();
         $pdo = Database::connection();
         $file = self::fileById($fileId, $pdo);
 
@@ -512,10 +592,30 @@ final class FileManager
         self::assertFileNotLockedFor($file, $user, $pdo);
 
         $fileLabel = self::filePathLabel($file, $pdo);
-        self::deleteBlob((string) $file['disk_name'], (string) $file['disk_extension']);
 
-        $statement = $pdo->prepare('DELETE FROM files WHERE id = :id');
-        $statement->execute([':id' => $fileId]);
+        // The blob unlink happens after the transaction commits so a rollback
+        // can never leave a committed row without its bytes.
+        $pdo->beginTransaction();
+
+        try {
+            $blobReferences = self::detachFileReference($pdo, $file);
+            $pdo->commit();
+        } catch (\Throwable $exception) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+
+            throw $exception;
+        }
+
+        foreach ($blobReferences as $reference) {
+            $path = self::blobPath((string) $reference['disk_name'], (string) $reference['disk_extension']);
+
+            if (is_file($path)) {
+                @unlink($path);
+            }
+        }
+
         AuditLog::record('file.delete', 'deletions', [
             'actor_user' => $user,
             'target_type' => 'file',
@@ -523,6 +623,125 @@ final class FileManager
             'target_label' => $fileLabel,
             'summary' => 'Deleted file ' . $file['original_name'],
         ], $pdo);
+    }
+
+    /**
+     * Deletes a files row without permission checks, transaction handling or
+     * filesystem work and returns the physical blob references that were
+     * attached to it. Callers unlink the returned entries only after their
+     * own surrounding transaction has committed. Rows that share a
+     * deduplicated blob only release their reference here; the blob row and
+     * its file disappear when the last reference is gone.
+     *
+     * @return array<int, array{disk_name: string, disk_extension: string, deduped: bool}>
+     */
+    public static function detachFileReference(PDO $pdo, array $file): array
+    {
+        $statement = $pdo->prepare('DELETE FROM files WHERE id = :id');
+        $statement->execute([':id' => (int) $file['id']]);
+
+        if ($statement->rowCount() === 0) {
+            return [];
+        }
+
+        $blobId = $file['blob_id'] ?? null;
+
+        if ($blobId !== null) {
+            return self::decrementBlobReference($pdo, (int) $blobId);
+        }
+
+        return [
+            [
+                'disk_name' => (string) $file['disk_name'],
+                'disk_extension' => (string) $file['disk_extension'],
+                'deduped' => false,
+            ],
+        ];
+    }
+
+    /**
+     * Decrements a blob's reference count and deletes the blob row once the
+     * last reference is gone. The UPDATE/DELETE pair is atomic per row, so
+     * exactly one concurrent deleter observes the zero count.
+     *
+     * @return array<int, array{disk_name: string, disk_extension: string, deduped: bool}>
+     */
+    private static function decrementBlobReference(PDO $pdo, int $blobId): array
+    {
+        $statement = $pdo->prepare(
+            'UPDATE file_blobs SET ref_count = ref_count - 1 WHERE id = :id'
+        );
+        $statement->execute([':id' => $blobId]);
+
+        $select = $pdo->prepare('SELECT ref_count, disk_name, disk_extension FROM file_blobs WHERE id = :id LIMIT 1');
+        $select->execute([':id' => $blobId]);
+        $blob = $select->fetch();
+
+        if ($blob === false) {
+            return [];
+        }
+
+        if ((int) $blob['ref_count'] > 0) {
+            return [];
+        }
+
+        $delete = $pdo->prepare('DELETE FROM file_blobs WHERE id = :id AND ref_count <= 0');
+        $delete->execute([':id' => $blobId]);
+
+        return [
+            [
+                'disk_name' => (string) $blob['disk_name'],
+                'disk_extension' => (string) $blob['disk_extension'],
+                'deduped' => true,
+            ],
+        ];
+    }
+
+    /**
+     * Resolves the physical location for a files row: deduplicated rows read
+     * through their file_blobs record, classic rows own their blob. Falls
+     * back to the row's own disk name when the blob record is missing, so a
+     * damaged blob row cannot hide an otherwise readable classic file.
+     *
+     * @return array{disk_name: string, disk_extension: string}
+     */
+    public static function blobLocation(PDO $pdo, array $file): array
+    {
+        $blobId = $file['blob_id'] ?? null;
+
+        if ($blobId !== null) {
+            $select = $pdo->prepare('SELECT disk_name, disk_extension FROM file_blobs WHERE id = :id LIMIT 1');
+            $select->execute([':id' => (int) $blobId]);
+            $blob = $select->fetch();
+
+            if ($blob !== false) {
+                return [
+                    'disk_name' => (string) $blob['disk_name'],
+                    'disk_extension' => (string) $blob['disk_extension'],
+                ];
+            }
+        }
+
+        return [
+            'disk_name' => (string) $file['disk_name'],
+            'disk_extension' => (string) $file['disk_extension'],
+        ];
+    }
+
+    public static function blobPathFor(string $diskName, string $diskExtension): string
+    {
+        return self::blobPath($diskName, $diskExtension);
+    }
+
+    /**
+     * Public wrapper around the descendant walk, used by SpaceService for
+     * space-scoped aggregates.
+     *
+     * @return array<int, int>
+     */
+    public static function descendantFolderIdsForSpace(int $folderId, ?PDO $pdo = null): array
+    {
+        return self::descendantFolderIds($folderId, $pdo ?? Database::connection());
     }
 
     public static function saveFileDescription(array $user, int $fileId, string $description): array
@@ -579,6 +798,7 @@ final class FileManager
         array $relativePathSegments = []
     ): array
     {
+        $storageLock = new StorageLock();
         if (!Permissions::canUploadToFolder($folderId, $user)) {
             throw new RuntimeException('You do not have permission to upload to this folder.');
         }
@@ -596,6 +816,7 @@ final class FileManager
 
         self::assertDeclaredChunkCountMatchesSize($size, $totalChunks);
         self::assertWithinStorageQuota($user, $size);
+        SpaceService::assertWithinSpaceQuota($folderId, $size);
         self::assertVideoUploadCanBeVerified($originalName, $size, $mimeType);
 
         if ($relativePathSegments !== []) {
@@ -702,6 +923,8 @@ final class FileManager
         }
 
         $finalPath = $finalDirectory . DIRECTORY_SEPARATOR . $diskName . '.' . $diskExtension;
+        $selfHealedBlobPath = null;
+        $committed = false;
         $output = fopen($finalPath, 'wb');
 
         if ($output === false) {
@@ -760,7 +983,6 @@ final class FileManager
             }
 
             Settings::assertUploadAllowed((string) $metadata['original_name'], $finalSize, $pdo);
-            self::assertWithinStorageQuota($user, $finalSize, $token, $pdo);
 
             try {
                 MediaValidator::assertAcceptedVideoUpload(
@@ -787,26 +1009,129 @@ final class FileManager
                 throw $exception;
             }
 
-            $statement = $pdo->prepare(
-                'INSERT INTO files (folder_id, original_name, disk_name, disk_extension, mime_type, size, checksum, created_by, created_at, updated_at)
-                 VALUES (:folder_id, :original_name, :disk_name, :disk_extension, :mime_type, :size, :checksum, :created_by, :created_at, :updated_at)'
-            );
-            $statement->execute([
-                ':folder_id' => $folderId,
-                ':original_name' => $metadata['original_name'],
-                ':disk_name' => $diskName,
-                ':disk_extension' => $diskExtension,
-                ':mime_type' => $mimeType,
-                ':size' => $finalSize,
-                ':checksum' => hash_final($hash),
-                ':created_by' => $user['id'],
-                ':created_at' => wb_now(),
-                ':updated_at' => wb_now(),
-            ]);
+            $storageLock = new StorageLock();
+            // Another completion may have consumed this token while bytes were assembled.
+            self::readUploadMetadata($token);
+            if (!Permissions::canUploadToFolder($folderId, $user, $pdo)) {
+                throw new RuntimeException('You no longer have permission to upload here.');
+            }
+            self::assertWithinStorageQuota($user, $finalSize, $token, $pdo);
+            SpaceService::assertWithinSpaceQuota($folderId, $finalSize, $pdo, $token);
+            $checksum = hash_final($hash);
+            $dedupEnabled = Settings::dedupEnabled($pdo);
+
+            // Deduplication: DB work happens in one short transaction; the
+            // staged file at $finalPath either becomes the blob (new content)
+            // or is unlinked (duplicate). The catch-all below must only
+            // unlink paths that are not yet committed as a shared blob.
+            $selfHealedBlobPath = null;
+
+            if ($dedupEnabled) {
+                $attempts = 0;
+                $reusedExistingBlob = false;
+
+                while (true) {
+                    $attempts++;
+                    $pdo->beginTransaction();
+
+                    try {
+                        $select = $pdo->prepare(
+                            'SELECT id, disk_name, disk_extension FROM file_blobs
+                             WHERE checksum = :checksum AND size = :size LIMIT 1'
+                        );
+                        $select->execute([':checksum' => $checksum, ':size' => $finalSize]);
+                        $existingBlob = $select->fetch();
+
+                        if ($existingBlob !== false) {
+                            $blobId = (int) $existingBlob['id'];
+                            $existingPath = self::blobPath(
+                                (string) $existingBlob['disk_name'],
+                                (string) $existingBlob['disk_extension']
+                            );
+
+                            if (!is_file($existingPath)) {
+                                // Self-heal: the blob record outlived its
+                                // file (crash or failed unlink). Adopt the
+                                // freshly assembled copy and keep it even if
+                                // this upload later fails — it repairs the
+                                // broken references.
+                                if (!@rename($finalPath, $existingPath)) {
+                                    throw new RuntimeException('Unable to restore the deduplicated file.');
+                                }
+
+                                $selfHealedBlobPath = $existingPath;
+                                $reusedExistingBlob = true;
+                                $pdo->prepare(
+                                    'UPDATE file_blobs SET ref_count = ref_count + 1 WHERE id = :id'
+                                )->execute([':id' => $blobId]);
+                            } else {
+                                $reusedExistingBlob = true;
+                                $pdo->prepare(
+                                    'UPDATE file_blobs SET ref_count = ref_count + 1 WHERE id = :id'
+                                )->execute([':id' => $blobId]);
+                            }
+
+                            $fileId = self::insertFileRow($pdo, $user, $folderId, $metadata, $mimeType, $finalSize, $checksum, $blobId, null);
+                        } else {
+                            $pdo->prepare(
+                                'INSERT INTO file_blobs (checksum, disk_name, disk_extension, size, ref_count, created_at)
+                                 VALUES (:checksum, :disk_name, :disk_extension, :size, 1, :created_at)'
+                            )->execute([
+                                ':checksum' => $checksum,
+                                ':disk_name' => $diskName,
+                                ':disk_extension' => $diskExtension,
+                                ':size' => $finalSize,
+                                ':created_at' => wb_now(),
+                            ]);
+
+                            $blobId = Database::lastInsertId($pdo, 'file_blobs');
+                            $fileId = self::insertFileRow($pdo, $user, $folderId, $metadata, $mimeType, $finalSize, $checksum, $blobId, $diskName);
+                        }
+
+                        $pdo->commit();
+                        $committed = true;
+                        break;
+                    } catch (\Throwable $exception) {
+                        if ($pdo->inTransaction()) {
+                            $pdo->rollBack();
+                        }
+
+                        $duplicateBlob = $exception instanceof PDOException
+                            && $selfHealedBlobPath === null
+                            && self::isUniqueConstraintViolation($exception);
+
+                        if ($duplicateBlob && $attempts < 3) {
+                            // Keep the staged bytes until a retry has committed.
+                            continue;
+                        }
+
+                        throw $exception;
+                    }
+                }
+
+                if ($reusedExistingBlob && $selfHealedBlobPath === null) {
+                    // The duplicate copy we assembled is unreferenced now.
+                    @unlink($finalPath);
+                }
+            } else {
+                $pdo->beginTransaction();
+
+                try {
+                    $fileId = self::insertFileRow($pdo, $user, $folderId, $metadata, $mimeType, $finalSize, $checksum, null, $diskName);
+                    $pdo->commit();
+                    $committed = true;
+                } catch (\Throwable $exception) {
+                    if ($pdo->inTransaction()) {
+                        $pdo->rollBack();
+                    }
+
+                    throw $exception;
+                }
+            }
 
             self::deleteDirectory($chunkDirectory);
 
-            $file = self::fileById(Database::lastInsertId($pdo, 'files'), $pdo);
+            $file = self::fileById($fileId, $pdo);
 
             if ($file !== null) {
                 AuditLog::record('file.upload', 'file_uploads', [
@@ -818,17 +1143,69 @@ final class FileManager
                     'metadata' => [
                         'size' => (int) $file['size'],
                         'mime_type' => (string) $file['mime_type'],
+                        'deduplicated' => $dedupEnabled && $file['blob_id'] !== null && (int) $file['blob_id'] !== 0,
                     ],
                 ], $pdo);
 
                 return self::serializeFile($file, $user, $pdo, Permissions::scope($user, $pdo));
             }
         } catch (\Throwable $exception) {
-            @unlink($finalPath);
+            if (!$committed && $selfHealedBlobPath === null) {
+                @unlink($finalPath);
+            }
             throw $exception;
         }
 
         throw new RuntimeException('Upload failed.');
+    }
+
+    private static function insertFileRow(
+        PDO $pdo,
+        array $user,
+        int $folderId,
+        array $metadata,
+        string $mimeType,
+        int $finalSize,
+        string $checksum,
+        ?int $blobId,
+        ?string $diskName
+    ): int {
+        $statement = $pdo->prepare(
+            'INSERT INTO files (folder_id, original_name, disk_name, disk_extension, mime_type, size, checksum, blob_id, created_by, created_at, updated_at)
+             VALUES (:folder_id, :original_name, :disk_name, :disk_extension, :mime_type, :size, :checksum, :blob_id, :created_by, :created_at, :updated_at)'
+        );
+        $statement->execute([
+            ':folder_id' => $folderId,
+            ':original_name' => $metadata['original_name'],
+            // Deduplicated rows read their bytes through the blob record, so
+            // this fresh name stays vestigial for them.
+            ':disk_name' => $diskName ?? wb_random_token(16),
+            ':disk_extension' => 'blob',
+            ':mime_type' => $mimeType,
+            ':size' => $finalSize,
+            ':checksum' => $checksum,
+            ':blob_id' => $blobId,
+            ':created_by' => $user['id'],
+            ':created_at' => wb_now(),
+            ':updated_at' => wb_now(),
+        ]);
+        return Database::lastInsertId($pdo, 'files');
+    }
+
+    private static function isUniqueConstraintViolation(PDOException $exception): bool
+    {
+        $driver = Database::driver();
+        $code = (string) $exception->getCode();
+
+        if ($driver === 'mysql') {
+            return $code === '23000' && (int) ($exception->errorInfo[1] ?? 0) === 1062;
+        }
+
+        if ($driver === 'pgsql') {
+            return $code === '23505';
+        }
+
+        return $code === '23000' || str_contains($exception->getMessage(), 'UNIQUE constraint failed');
     }
 
     public static function uploadCancel(array $user, string $token): void
@@ -911,8 +1288,10 @@ final class FileManager
             'summary' => ($dispositionType === 'attachment' ? 'Downloaded file ' : 'Viewed file ') . $file['original_name'],
         ], $pdo);
 
+        $location = self::blobLocation($pdo, $file);
+
         Security::sendFile(
-            self::blobPath((string) $file['disk_name'], (string) $file['disk_extension']),
+            self::blobPath((string) $location['disk_name'], (string) $location['disk_extension']),
             (string) $file['mime_type'],
             (string) $file['original_name'],
             $disposition
@@ -923,8 +1302,25 @@ final class FileManager
     {
         $pdo = Database::connection();
         $used = (int) $pdo->query('SELECT COALESCE(SUM(size), 0) FROM files')->fetchColumn();
+        $dedupEnabled = Settings::dedupEnabled($pdo);
+
+        // Physical footprint: classic rows own their blob, deduplicated
+        // rows share theirs through file_blobs.
+        $legacyBytes = (int) $pdo->query(
+            'SELECT COALESCE(SUM(size), 0) FROM files WHERE blob_id IS NULL'
+        )->fetchColumn();
+        $blobBytes = 0;
+        $hasBlobTable = in_array('file_blobs', DatabasePlatform::tableNames($pdo, Database::driver()), true);
+
+        if ($hasBlobTable) {
+            $blobBytes = (int) $pdo->query('SELECT COALESCE(SUM(size), 0) FROM file_blobs')->fetchColumn();
+        }
+
+        $physical = $legacyBytes + $blobBytes;
+        $saved = max(0, $used - $physical);
+
         $total = @disk_total_space(wb_storage_path());
-        
+
         if ($total === false) {
             $total = @disk_total_space(WB_ROOT);
         }
@@ -940,6 +1336,153 @@ final class FileManager
             'used_label' => wb_format_bytes($used),
             'total_bytes' => $total === false ? null : (int) $total,
             'total_label' => $total === false ? 'Unknown' : wb_format_bytes((int) $total),
+            'physical_bytes' => $physical,
+            'physical_label' => wb_format_bytes($physical),
+            'saved_bytes' => $saved,
+            'saved_label' => wb_format_bytes($saved),
+            'dedup_enabled' => $dedupEnabled,
+        ];
+    }
+
+    /**
+     * Reconciles the file_blobs ledger with reality: recomputes reference
+     * counts, removes drained blob rows (unlinks their files), reports
+     * blob records whose file vanished, and reclaims orphaned physical
+     * files that no row references anymore. Orphan cleanup skips files
+     * touched recently so an in-flight upload completion is never collected.
+     *
+     * @return array{repaired: int, removed_blobs: int, removed_orphans: int, missing: int}
+     */
+    public static function reconcileFileBlobs(?PDO $pdo = null, int $orphanGraceHours = 24): array
+    {
+        $storageLock = new StorageLock();
+        $pdo ??= Database::connection();
+
+        if (!in_array('file_blobs', DatabasePlatform::tableNames($pdo, Database::driver()), true)) {
+            return ['repaired' => 0, 'removed_blobs' => 0, 'removed_orphans' => 0, 'missing' => 0];
+        }
+
+        $repaired = 0;
+        $removedBlobs = 0;
+        $missing = 0;
+        $pathsToUnlink = [];
+
+        $pdo->beginTransaction();
+
+        try {
+            $blobs = $pdo->query('SELECT b.*, COALESCE(c.actual, 0) AS actual FROM file_blobs b LEFT JOIN (SELECT blob_id, COUNT(*) AS actual FROM files WHERE blob_id IS NOT NULL GROUP BY blob_id) c ON c.blob_id = b.id')->fetchAll();
+
+            foreach ($blobs as $blob) {
+                $blobId = (int) $blob['id'];
+                $actual = (int) $blob['actual'];
+
+                if ($actual !== (int) $blob['ref_count']) {
+                    $repaired++;
+                }
+
+                if ($actual === 0) {
+                    $pdo->prepare('DELETE FROM file_blobs WHERE id = :id')->execute([':id' => $blobId]);
+                    $pathsToUnlink[] = [(string) $blob['disk_name'], (string) $blob['disk_extension']];
+                    $removedBlobs++;
+                } else {
+                    if ($actual !== (int) $blob['ref_count']) {
+                        $pdo->prepare('UPDATE file_blobs SET ref_count = :count WHERE id = :id')
+                            ->execute([':count' => $actual, ':id' => $blobId]);
+                    }
+
+                    $path = self::blobPath((string) $blob['disk_name'], (string) $blob['disk_extension']);
+
+                    if (!is_file($path)) {
+                        $missing++;
+                    }
+                }
+            }
+
+            $pdo->commit();
+        } catch (\Throwable $exception) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+
+            throw $exception;
+        }
+
+        foreach ($pathsToUnlink as [$name, $extension]) {
+            @unlink(self::blobPath($name, $extension));
+        }
+
+        // Orphan sweep: physical files under uploads/ referenced by no row.
+        $referenced = [];
+        $statement = $pdo->query('SELECT disk_name FROM file_blobs');
+        foreach ($statement->fetchAll(PDO::FETCH_COLUMN) as $diskName) {
+            $referenced[(string) $diskName] = true;
+        }
+        $statement = $pdo->query('SELECT disk_name FROM files WHERE blob_id IS NULL');
+        foreach ($statement->fetchAll(PDO::FETCH_COLUMN) as $diskName) {
+            $referenced[(string) $diskName] = true;
+        }
+
+        $removedOrphans = 0;
+        $graceCutoff = time() - (max(1, $orphanGraceHours) * 3600);
+        $uploadsRoot = wb_storage_path('uploads');
+
+        if (is_dir($uploadsRoot)) {
+            foreach (scandir($uploadsRoot) ?: [] as $levelOne) {
+                if ($levelOne === '.' || $levelOne === '..' || strlen($levelOne) !== 2) {
+                    continue;
+                }
+
+                $levelOnePath = $uploadsRoot . DIRECTORY_SEPARATOR . $levelOne;
+
+                if (!is_dir($levelOnePath)) {
+                    continue;
+                }
+
+                foreach (scandir($levelOnePath) ?: [] as $levelTwo) {
+                    if ($levelTwo === '.' || $levelTwo === '..' || strlen($levelTwo) !== 2) {
+                        continue;
+                    }
+
+                    $levelTwoPath = $levelOnePath . DIRECTORY_SEPARATOR . $levelTwo;
+
+                    if (!is_dir($levelTwoPath)) {
+                        continue;
+                    }
+
+                    foreach (scandir($levelTwoPath) ?: [] as $item) {
+                        if ($item === '.' || $item === '..') {
+                            continue;
+                        }
+
+                        $diskName = pathinfo($item, PATHINFO_FILENAME);
+
+                        if (isset($referenced[$diskName])) {
+                            continue;
+                        }
+
+                        $path = $levelTwoPath . DIRECTORY_SEPARATOR . $item;
+                        $mtime = filemtime($path) ?: 0;
+
+                        if ($mtime > $graceCutoff) {
+                            continue;
+                        }
+
+                        if (@unlink($path)) {
+                            $removedOrphans++;
+                        }
+                    }
+
+                    // Prune empty shard directories left behind by cleanup.
+                    @rmdir($levelTwoPath);
+                }
+            }
+        }
+
+        return [
+            'repaired' => $repaired,
+            'removed_blobs' => $removedBlobs,
+            'removed_orphans' => $removedOrphans,
+            'missing' => $missing,
         ];
     }
 
@@ -1188,6 +1731,7 @@ final class FileManager
 
         $isRoot = $folderId === Database::rootFolderId();
         $cachedSize = $folder['cached_size_bytes'] === null ? null : (int) $folder['cached_size_bytes'];
+        $ownSpaceRoot = $scope['own_space_root'] ?? null;
 
         return [
             'id' => $folderId,
@@ -1207,6 +1751,8 @@ final class FileManager
             'can_create_folders' => Permissions::canCreateFoldersIn($folderId, $user, $pdo, $scope),
             'can_edit' => !$isRoot && Permissions::canEditFolder($folderId, $user, $pdo, $scope),
             'can_delete' => !$isRoot && Permissions::canDeleteFolder($folderId, $user, $pdo, $scope),
+            'can_manage_sharing' => $scope['all']
+                || ($ownSpaceRoot !== null && in_array($folderId, $scope['own_space_ids'] ?? [], true)),
         ];
     }
 
@@ -1215,6 +1761,9 @@ final class FileManager
         $extension = strtolower(pathinfo((string) $file['original_name'], PATHINFO_EXTENSION));
         $folderId = (int) $file['folder_id'];
         $preview = wb_file_preview_metadata((string) $file['mime_type'], $extension);
+        $ownSpaceRoot = $scope['own_space_root'] ?? null;
+        $inOwnSpace = $ownSpaceRoot !== null && in_array($folderId, $scope['own_space_ids'] ?? [], true);
+        $locked = self::fileIsLockedFor($file, $user, $pdo);
 
         return array_merge([
             'id' => (int) $file['id'],
@@ -1229,9 +1778,10 @@ final class FileManager
             'updated_relative' => wb_relative_time($file['updated_at']),
             'checksum' => $file['checksum'],
             'extension' => $extension,
-            'locked' => self::fileIsLockedFor($file, $user, $pdo),
-            'can_edit' => !self::fileIsLockedFor($file, $user, $pdo) && Permissions::canEditFolder($folderId, $user, $pdo, $scope),
-            'can_delete' => !self::fileIsLockedFor($file, $user, $pdo) && Permissions::canDeleteFolder($folderId, $user, $pdo, $scope),
+            'locked' => $locked,
+            'can_share' => $scope['all'] || $inOwnSpace,
+            'can_edit' => !$locked && Permissions::canEditFolder($folderId, $user, $pdo, $scope),
+            'can_delete' => !$locked && Permissions::canDeleteFolder($folderId, $user, $pdo, $scope),
             'preview_url' => wb_url('/api/index.php?action=files.stream&id=' . (int) $file['id'] . '&disposition=inline'),
             'download_url' => wb_url('/api/index.php?action=files.stream&id=' . (int) $file['id'] . '&disposition=attachment'),
         ], $preview);
@@ -1518,15 +2068,6 @@ final class FileManager
     private static function blobPath(string $diskName, string $diskExtension): string
     {
         return wb_storage_path('uploads/' . substr($diskName, 0, 2) . '/' . substr($diskName, 2, 2) . '/' . $diskName . '.' . $diskExtension);
-    }
-
-    private static function deleteBlob(string $diskName, string $diskExtension): void
-    {
-        $path = self::blobPath($diskName, $diskExtension);
-
-        if (is_file($path)) {
-            @unlink($path);
-        }
     }
 
     private static function deleteDirectory(string $path): void

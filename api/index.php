@@ -16,6 +16,7 @@ use WbFileBrowser\MaintenanceModeException;
 use WbFileBrowser\Permissions;
 use WbFileBrowser\Security;
 use WbFileBrowser\Settings;
+use WbFileBrowser\SpaceService;
 
 require __DIR__ . '/../app/bootstrap.php';
 
@@ -124,6 +125,8 @@ try {
                 'public_access' => Permissions::publicAccessEnabled(),
                 'scope' => Permissions::scope($user),
                 'root_folder_id' => Database::rootFolderId(),
+                'home_folder_id' => SpaceService::homeFolderIdFor($user),
+                'space' => SpaceService::sessionContextFor($user),
                 'app_version' => Database::setting('app_version', Installer::VERSION),
                 'storage' => FileManager::storageStats(),
                 'diagnostic' => Settings::diagnosticState(),
@@ -318,6 +321,7 @@ try {
                 'ok' => true,
                 'share' => FileShares::create($user, (int) ($requestData['file_id'] ?? 0), [
                     'expires_at' => $requestData['expires_at'] ?? null,
+                    'delete_after' => $requestData['delete_after'] ?? null,
                     'max_views' => $requestData['max_views'] ?? null,
                     'password' => $requestData['password'] ?? null,
                     'clear_password' => $requestData['clear_password'] ?? false,
@@ -472,13 +476,17 @@ try {
                     users.created_at,
                     users.updated_at,
                     users.last_login_at,
-                    COALESCE(file_usage.used_bytes, 0) AS storage_used_bytes
+                    COALESCE(file_usage.used_bytes, 0) AS storage_used_bytes,
+                    spaces.folder_id AS space_folder_id,
+                    spaces.status AS space_status,
+                    spaces.size_limit_bytes AS space_size_limit_bytes
                  FROM users
                  LEFT JOIN (
                     SELECT created_by, SUM(size) AS used_bytes
                     FROM files
                     GROUP BY created_by
                  ) AS file_usage ON file_usage.created_by = users.id
+                 LEFT JOIN spaces ON spaces.user_id = users.id
                  ORDER BY role DESC, username ASC'
             )->fetchAll();
             wb_json_response([
@@ -493,6 +501,11 @@ try {
                     $user['storage_quota_label'] = $user['storage_quota_bytes'] === null
                         ? 'Unlimited'
                         : wb_format_bytes($user['storage_quota_bytes']);
+                    $user['space'] = [
+                        'status' => $user['space_folder_id'] === null ? 'none' : (string) $user['space_status'],
+                        'folder_id' => $user['space_folder_id'] === null ? null : (int) $user['space_folder_id'],
+                        'size_limit_bytes' => $user['space_size_limit_bytes'] === null ? null : (int) $user['space_size_limit_bytes'],
+                    ];
 
                     return $user;
                 }, $users),
@@ -517,30 +530,49 @@ try {
                 wb_error_response('Passwords must be at least 12 characters long.', 422);
             }
 
-            $statement = Database::connection()->prepare(
-                'INSERT INTO users (username, password_hash, role, status, force_password_reset, is_immutable, created_at, updated_at)
-                 VALUES (:username, :password_hash, :role, :status, :force_password_reset, 0, :created_at, :updated_at)'
-            );
-            $statement->execute([
-                ':username' => wb_validate_entry_name((string) ($requestData['username'] ?? ''), 'username'),
-                ':password_hash' => Security::hashPassword($password),
-                ':role' => $role,
-                ':status' => 'active',
-                ':force_password_reset' => wb_parse_bool($requestData['force_password_reset'] ?? false) ? 1 : 0,
-                ':created_at' => wb_now(),
-                ':updated_at' => wb_now(),
-            ]);
-            $createdUserId = (int) Database::connection()->lastInsertId();
-            AuditLog::record('admin.user.create', 'admin_actions', [
-                'actor_user' => $actor,
-                'target_type' => 'user',
-                'target_id' => $createdUserId,
-                'target_label' => wb_validate_entry_name((string) ($requestData['username'] ?? ''), 'username'),
-                'summary' => 'Created user ' . (string) ($requestData['username'] ?? ''),
-                'metadata' => [
-                    'role' => $role,
-                ],
-            ]);
+            $storageLock = new WbFileBrowser\StorageLock();
+            $pdo = Database::connection();
+            $pdo->beginTransaction();
+            try {
+                $statement = Database::connection()->prepare(
+                    'INSERT INTO users (username, password_hash, role, status, force_password_reset, is_immutable, created_at, updated_at)
+                     VALUES (:username, :password_hash, :role, :status, :force_password_reset, 0, :created_at, :updated_at)'
+                );
+                $statement->execute([
+                    ':username' => wb_validate_entry_name((string) ($requestData['username'] ?? ''), 'username'),
+                    ':password_hash' => Security::hashPassword($password),
+                    ':role' => $role,
+                    ':status' => 'active',
+                    ':force_password_reset' => wb_parse_bool($requestData['force_password_reset'] ?? false) ? 1 : 0,
+                    ':created_at' => wb_now(),
+                    ':updated_at' => wb_now(),
+                ]);
+                $createdUserId = Database::lastInsertId($pdo, 'users');
+                AuditLog::record('admin.user.create', 'admin_actions', [
+                    'actor_user' => $actor,
+                    'target_type' => 'user',
+                    'target_id' => $createdUserId,
+                    'target_label' => wb_validate_entry_name((string) ($requestData['username'] ?? ''), 'username'),
+                    'summary' => 'Created user ' . (string) ($requestData['username'] ?? ''),
+                    'metadata' => [
+                        'role' => $role,
+                    ],
+                ]);
+
+                $spacePolicy = SpaceService::policy();
+                $wantsSpace = wb_parse_bool($requestData['space_enabled'] ?? false);
+
+                if ($role === 'user' && ($wantsSpace || $spacePolicy['auto_create'])) {
+                    SpaceService::provisionForUser($actor, $createdUserId);
+                }
+
+                $pdo->commit();
+            } catch (\Throwable $exception) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+                throw $exception;
+            }
             wb_json_response(['ok' => true], 201);
 
         case 'admin.users.update':
@@ -571,7 +603,7 @@ try {
             }
 
             $storageQuotaBytes = null;
-            $storageQuotaInput = $requestData['storage_quota_bytes'] ?? $target['storage_quota_bytes'];
+            $storageQuotaInput = array_key_exists('storage_quota_bytes', $requestData) ? $requestData['storage_quota_bytes'] : $target['storage_quota_bytes'];
 
             if ($role === 'user' && $storageQuotaInput !== null && $storageQuotaInput !== '') {
                 $storageQuotaBytes = filter_var($storageQuotaInput, FILTER_VALIDATE_INT);
@@ -581,35 +613,127 @@ try {
                 }
             }
 
-            $update = $pdo->prepare(
-                'UPDATE users
-                 SET role = :role,
-                     status = :status,
-                     force_password_reset = :force_password_reset,
-                     storage_quota_bytes = :storage_quota_bytes,
-                     updated_at = :updated_at
-                 WHERE id = :id'
-            );
-            $update->execute([
-                ':role' => $role,
-                ':status' => in_array((string) ($requestData['status'] ?? $target['status']), ['active', 'suspended'], true) ? $requestData['status'] : $target['status'],
-                ':force_password_reset' => wb_parse_bool($requestData['force_password_reset'] ?? $target['force_password_reset']) ? 1 : 0,
-                ':storage_quota_bytes' => $role === 'user' ? $storageQuotaBytes : null,
-                ':updated_at' => wb_now(),
-                ':id' => $targetId,
+            if (!in_array($role, ['user', 'admin', 'super_admin'], true)) {
+                wb_error_response('Invalid role.', 422);
+            }
+            $spaceLimit = null;
+            if (array_key_exists('space_size_limit_bytes', $requestData)) {
+                $input = $requestData['space_size_limit_bytes'];
+                if ($input !== null && $input !== '') {
+                    $spaceLimit = filter_var($input, FILTER_VALIDATE_INT);
+                    if ($spaceLimit === false || $spaceLimit < 1) {
+                        wb_error_response('Space size limit must be a positive whole number of bytes, or null for unlimited.', 422);
+                    }
+                }
+            }
+            $storageLock = new WbFileBrowser\StorageLock();
+            $pdo->beginTransaction();
+            try {
+                $update = $pdo->prepare(
+                    'UPDATE users
+                     SET role = :role,
+                         status = :status,
+                         force_password_reset = :force_password_reset,
+                         storage_quota_bytes = :storage_quota_bytes,
+                         updated_at = :updated_at
+                     WHERE id = :id'
+                );
+                $update->execute([
+                    ':role' => $role,
+                    ':status' => in_array((string) ($requestData['status'] ?? $target['status']), ['active', 'suspended'], true) ? ($requestData['status'] ?? $target['status']) : $target['status'],
+                    ':force_password_reset' => wb_parse_bool($requestData['force_password_reset'] ?? $target['force_password_reset']) ? 1 : 0,
+                    ':storage_quota_bytes' => $role === 'user' ? $storageQuotaBytes : null,
+                    ':updated_at' => wb_now(),
+                    ':id' => $targetId,
+                ]);
+                AuditLog::record('admin.user.update', 'admin_actions', [
+                    'actor_user' => $actor,
+                    'target_type' => 'user',
+                    'target_id' => $targetId,
+                    'target_label' => (string) $target['username'],
+                    'summary' => 'Updated user ' . $target['username'],
+                    'metadata' => [
+                        'role' => $role,
+                        'status' => (string) ($requestData['status'] ?? $target['status']),
+                        'force_password_reset' => wb_parse_bool($requestData['force_password_reset'] ?? $target['force_password_reset']),
+                    ],
+                ], $pdo);
+
+                // Space administration (standard users only).
+                if ($role === 'user') {
+                    $spaceEnabledInput = $requestData['space_enabled'] ?? null;
+
+                    if ($spaceEnabledInput !== null) {
+                        $existingSpace = SpaceService::findForUser($targetId, false, $pdo);
+
+                        if (wb_parse_bool($spaceEnabledInput) && $existingSpace === null) {
+                            SpaceService::provisionForUser($actor, $targetId, $pdo);
+                        } elseif (wb_parse_bool($spaceEnabledInput) && $existingSpace !== null && (string) $existingSpace['status'] !== SpaceService::STATUS_ACTIVE) {
+                            SpaceService::setStatusForUser($actor, $targetId, SpaceService::STATUS_ACTIVE, $pdo);
+                        } elseif (!wb_parse_bool($spaceEnabledInput) && $existingSpace !== null && (string) $existingSpace['status'] === SpaceService::STATUS_ACTIVE) {
+                            SpaceService::setStatusForUser($actor, $targetId, SpaceService::STATUS_DISABLED, $pdo);
+                        }
+                    }
+
+                    if (array_key_exists('space_size_limit_bytes', $requestData) && SpaceService::findForUser($targetId, false, $pdo) !== null) {
+                        SpaceService::setSizeLimitForUser($targetId, $spaceLimit, $pdo);
+                    }
+                }
+
+                $pdo->commit();
+            } catch (\Throwable $exception) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+                throw $exception;
+            }
+            wb_json_response(['ok' => true]);
+
+        case 'admin.users.space.purge':
+            $requireCsrf();
+            $actor = Auth::requireSuperAdmin();
+            SpaceService::purgeForUser($actor, (int) ($requestData['user_id'] ?? 0));
+            wb_json_response(['ok' => true]);
+
+        case 'space.permissions.get':
+            $actor = Auth::requireUser();
+            $folderId = (int) ($_GET['folder_id'] ?? 0);
+
+            if ($folderId === 0) {
+                $space = SpaceService::findForUser((int) $actor['id'], true);
+                $folderId = $space === null ? 0 : (int) $space['folder_id'];
+            }
+
+            if (!SpaceService::canManageSpaceSharing($actor, $folderId)) {
+                wb_error_response('You do not have permission to manage sharing for this folder.', 403);
+            }
+
+            $users = Database::connection()->query(
+                "SELECT id, username FROM users WHERE role = 'user' AND status = 'active' AND id != " . (int) $actor['id'] . ' ORDER BY username ASC'
+            )->fetchAll();
+
+            wb_json_response([
+                'ok' => true,
+                'grants' => SpaceService::folderGrants($folderId),
+                'users' => $users,
+                'sharing_allowed' => SpaceService::policy()['sharing_allowed'],
+                'max_grant_level' => SpaceService::policy()['max_grant_level'],
             ]);
-            AuditLog::record('admin.user.update', 'admin_actions', [
-                'actor_user' => $actor,
-                'target_type' => 'user',
-                'target_id' => $targetId,
-                'target_label' => (string) $target['username'],
-                'summary' => 'Updated user ' . $target['username'],
-                'metadata' => [
-                    'role' => $role,
-                    'status' => (string) ($requestData['status'] ?? $target['status']),
-                    'force_password_reset' => wb_parse_bool($requestData['force_password_reset'] ?? $target['force_password_reset']),
-                ],
-            ], $pdo);
+
+        case 'space.permissions.save':
+            $requireCsrf();
+            $actor = Auth::requireUser();
+            $folderId = (int) ($requestData['folder_id'] ?? 0);
+            $grants = $requestData['grants'] ?? [];
+
+            if (!SpaceService::canManageSpaceSharing($actor, $folderId)) {
+                wb_error_response('You do not have permission to manage sharing for this folder.', 403);
+            }
+
+            if (!is_array($grants)) {
+                wb_error_response('Grants must be an array.', 422);
+            }
+            SpaceService::saveFolderGrants($actor, $folderId, $grants);
             wb_json_response(['ok' => true]);
 
         case 'admin.users.password':

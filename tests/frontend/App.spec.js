@@ -58,6 +58,8 @@ function sessionPayload(user = adminUser(), videoCompression = undefined) {
     user,
     public_access: false,
     root_folder_id: 1,
+    home_folder_id: 1,
+    space: null,
     app_version: '1.0.0-alpha',
     storage: { used_label: '0 B', total_label: '100 GB' },
     diagnostic: { exposed: false, checked_at: '', message: 'Shield healthy.', probe_path: 'probe/file.txt', probe_url: '/storage/probe/file.txt' },
@@ -572,6 +574,26 @@ describe('Admin app shell', () => {
     expect(savePermissionBody.entries.some((entry) => entry.can_edit === true || entry.can_create_folders === true)).toBe(true);
   });
 
+  it('saves a personal space limit and clears it to unlimited', async () => {
+    const { wrapper, calls } = await mountAdminApp({ hash: '#/users/2' });
+    const panel = wrapper.findAll('article').find((item) => item.text().includes('Personal space'));
+    await panel.find('input[type="checkbox"]').setValue(true);
+    await panel.find('input[type="number"]').setValue('8192');
+    const save = wrapper.findAll('button').find((button) => button.text() === 'Save account');
+    await save.trigger('click');
+    await flushPromises();
+    let body = JSON.parse(calls.filter((call) => call.action === 'admin.users.update').at(-1).init.body);
+    expect(body.space_enabled).toBe(true);
+    expect(body.space_size_limit_bytes).toBe(8192);
+    const refreshed = wrapper.findAll('article').find((item) => item.text().includes('Personal space'));
+    await refreshed.find('input[type="checkbox"]').setValue(true);
+    await refreshed.find('input[type="number"]').setValue('');
+    await save.trigger('click');
+    await flushPromises();
+    body = JSON.parse(calls.filter((call) => call.action === 'admin.users.update').at(-1).init.body);
+    expect(body.space_size_limit_bytes).toBeNull();
+  });
+
   it('submits grouped settings changes', async () => {
     const { wrapper, calls } = await mountAdminApp({ hash: '#/settings' });
 
@@ -781,6 +803,70 @@ describe('Admin app shell', () => {
     expect(unbanBody.ban_id).toBe(3);
   });
 
+  it('lands space owners in their own space folder', async () => {
+    const member = { id: 17, username: 'alice', role: 'user', status: 'active' };
+    window.history.replaceState(null, '', '/?');
+    let treeListUrl = '';
+    const { calls } = await mountBrowserApp({
+      bootstrapUser: member,
+      handlers: {
+        'auth.session': () => jsonResponse({
+          ...sessionPayload(member),
+          home_folder_id: 42,
+          space: { enabled: true, status: 'active', folder_id: 42, can_share: true, max_grant_level: 'write' },
+        }),
+        'tree.list': (input) => {
+          treeListUrl = String(input);
+          return jsonResponse(browserTreePayload());
+        },
+      },
+    });
+
+    expect(calls.some((call) => call.action === 'tree.list')).toBe(true);
+    expect(new URL(treeListUrl).searchParams.get('folder_id')).toBe('42');
+  });
+
+  it('shows the public share panel to space owners for their own files', async () => {
+    const member = { id: 17, username: 'alice', role: 'user', status: 'active' };
+    const { wrapper } = await mountBrowserApp({
+      bootstrapUser: member,
+      handlers: {
+        'auth.session': () => jsonResponse({
+          ...sessionPayload(member),
+          home_folder_id: 1,
+          space: { enabled: true, status: 'active', folder_id: 1, can_share: true, max_grant_level: 'write' },
+        }),
+        'tree.list': () => jsonResponse(browserTreePayload({ can_share: true })),
+      },
+    });
+
+    await wrapper.find('tbody tr').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.find('.share-panel').exists()).toBe(true);
+  });
+
+  it('submits spaces settings from the dedicated settings tab', async () => {
+    const { wrapper, calls } = await mountAdminApp({ hash: '#/settings' });
+
+    const spacesTab = wrapper.findAll('button').find((button) => button.text() === 'Spaces');
+    await spacesTab.trigger('click');
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Per-user spaces');
+
+    const spaceCheckboxes = wrapper.findAll('.settings-pane input[type="checkbox"]');
+    await spaceCheckboxes[0].setValue(true);
+
+    await wrapper.find('.primary-button').trigger('click');
+
+    const saveCall = calls.filter((call) => call.action === 'admin.settings.save').at(-1);
+    const body = JSON.parse(saveCall.init.body);
+
+    expect(body.spaces.enabled).toBe(true);
+    expect(body.spaces.sharing_allowed).toBe(true);
+  });
+
   it('creates a share link from the file preview in the browser shell', async () => {
     const clipboardWrite = vi.fn().mockResolvedValue();
     Object.defineProperty(window.navigator, 'clipboard', {
@@ -873,10 +959,11 @@ describe('Admin app shell', () => {
     await flushPromises();
 
     const shareInputs = wrapper.findAll('.share-panel__input');
-    expect(shareInputs).toHaveLength(3);
+    expect(shareInputs).toHaveLength(4);
     await shareInputs[0].setValue('2026-03-10T10:30');
-    await shareInputs[1].setValue('5');
-    await shareInputs[2].setValue('Secret 123');
+    await shareInputs[1].setValue('2026-03-11T10:30');
+    await shareInputs[2].setValue('5');
+    await shareInputs[3].setValue('Secret 123');
 
     const shareButton = wrapper.findAll('button').find((button) => button.text() === 'Share link');
     await shareButton.trigger('click');
@@ -886,6 +973,7 @@ describe('Admin app shell', () => {
 
     expect(body.max_views).toBe(5);
     expect(body.expires_at).toContain('2026-03-10T');
+    expect(body.delete_after).toContain('2026-03-11T');
     expect(body.password).toBe('Secret 123');
   });
 

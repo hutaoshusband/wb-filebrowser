@@ -46,6 +46,6 @@ final class SecurityHeadersTest extends TestCase
 
         $this->assertStringContainsString('type="application/json"', $tag);
         $this->assertStringNotContainsString('</script><script>', $tag);
-        $this->assertStringContainsString('/media/logo.svg', $head);
+        $this->assertStringContainsString('/media/forum-logo.webp', $head);
     }
 }

@@ -308,6 +308,7 @@ XML;
             return;
         }
 
+        $storageLock = new StorageLock();
         $pdo = self::connect($config);
 
         $schemaStatements = DatabasePlatform::schemaStatements((string) $config['driver']);
@@ -323,6 +324,7 @@ XML;
         ], (string) $config['driver']);
         self::ensureTableColumns($pdo, 'file_shares', [
             'expires_at ' . self::timestampType((string) $config['driver']) . ' NULL',
+            'delete_after ' . self::timestampType((string) $config['driver']) . ' NULL',
             'max_views INTEGER NULL',
             'view_count INTEGER NOT NULL DEFAULT 0',
             'password_hash TEXT NULL',
@@ -334,8 +336,12 @@ XML;
             'cached_size_bytes ' . self::bytesType((string) $config['driver']) . ' NULL',
             'cached_size_calculated_at ' . self::timestampType((string) $config['driver']) . ' NULL',
         ], (string) $config['driver']);
+        self::ensureTableColumns($pdo, 'spaces', [
+            'size_limit_bytes ' . self::bytesType((string) $config['driver']) . ' NULL',
+        ], (string) $config['driver']);
         self::ensureTableColumns($pdo, 'files', [
             'description ' . self::descriptionType((string) $config['driver']) . ' NOT NULL DEFAULT \'\'',
+            'blob_id ' . self::referenceType((string) $config['driver']) . ' NULL',
         ], (string) $config['driver']);
         self::ensureTableColumns($pdo, 'folder_permissions', [
             'can_edit ' . self::booleanType((string) $config['driver']) . ' NOT NULL DEFAULT 0',
@@ -353,6 +359,7 @@ XML;
         }
 
         Settings::seedDefaults($pdo);
+        self::backfillFileBlobs($pdo, (string) $config['driver']);
         $statement = $pdo->prepare(
             DatabasePlatform::upsertSql((string) $config['driver'], 'settings', ['key', 'value', 'updated_at'], ['value', 'updated_at'], ['key'])
         );
@@ -362,6 +369,153 @@ XML;
             ':updated_at' => wb_now(),
         ]);
         AutomationRunner::seedJobs($pdo);
+    }
+
+    /**
+     * One-time migration for content-addressed storage: every pre-dedup
+     * files row is attached to a file_blobs row keyed by its (sha256
+     * checksum, size) group. Metadata-only — no file on disk is moved or
+     * deleted, superseded physical duplicates are reclaimed later by the
+     * reconcile automation job. Guarded by a settings flag so it runs at
+     * most once and stays a no-op on every subsequent request.
+     */
+    private static function backfillFileBlobs(PDO $pdo, string $driver): void
+    {
+        $keyColumn = DatabasePlatform::quoteIdentifier($driver, 'key');
+        $selectFlag = $pdo->prepare('SELECT value FROM settings WHERE ' . $keyColumn . ' = :key LIMIT 1');
+        $selectFlag->execute([':key' => 'file_blobs_backfill_v1']);
+        $flag = $selectFlag->fetchColumn();
+
+        if ($flag !== false && (string) $flag === '1') {
+            return;
+        }
+
+        $rows = $pdo->query(
+            'SELECT id, checksum, size, disk_name, disk_extension
+             FROM files
+             WHERE blob_id IS NULL AND LENGTH(checksum) = 64
+             ORDER BY checksum ASC, size ASC, id ASC'
+        )->fetchAll();
+
+        $groups = [];
+
+        foreach ($rows as $row) {
+            if (!preg_match('/^[a-f0-9]{64}$/D', (string) $row['checksum'])) {
+                continue;
+            }
+            $groupKey = (string) $row['checksum'] . '|' . (string) $row['size'];
+            $groups[$groupKey][] = $row;
+        }
+
+        if ($groups !== []) {
+            $pdo->beginTransaction();
+
+            try {
+                $insertBlob = $pdo->prepare(
+                    // Idempotent upsert: a concurrent request may have created
+                    // the same checksum row; PostgreSQL aborts transactions on
+                    // unique violations, so the conflict must be a no-op.
+                    DatabasePlatform::upsertSql(
+                        $driver,
+                        'file_blobs',
+                        ['checksum', 'disk_name', 'disk_extension', 'size', 'ref_count', 'created_at'],
+                        ['checksum'],
+                        ['checksum']
+                    )
+                );
+                $selectBlob = $pdo->prepare(
+                    'SELECT id, size, disk_name, disk_extension FROM file_blobs WHERE checksum = :checksum LIMIT 1'
+                );
+                $now = wb_now();
+                $blobIds = [];
+                $blobIdsByFileId = [];
+
+                foreach ($groups as $groupRows) {
+                    $canonical = null;
+                    foreach ($groupRows as $candidate) {
+                        $path = FileManager::blobPathFor((string) $candidate['disk_name'], (string) $candidate['disk_extension']);
+                        if (is_file($path) && filesize($path) === (int) $candidate['size']) {
+                            $canonical = $candidate;
+                            break;
+                        }
+                    }
+                    if ($canonical === null) {
+                        continue;
+                    }
+                    $checksum = (string) $canonical['checksum'];
+
+                    $insertBlob->execute([
+                        ':checksum' => $checksum,
+                        ':disk_name' => (string) $canonical['disk_name'],
+                        ':disk_extension' => (string) $canonical['disk_extension'],
+                        ':size' => (int) $canonical['size'],
+                        ':ref_count' => 0,
+                        ':created_at' => $now,
+                    ]);
+
+                    $selectBlob->execute([':checksum' => $checksum]);
+                    $found = $selectBlob->fetch();
+
+                    if ($found === false) {
+                        throw new RuntimeException('Unable to create the deduplication record.');
+                    }
+
+                    if ((int) $found['size'] !== (int) $canonical['size']) {
+                        continue;
+                    }
+                    $existingPath = FileManager::blobPathFor((string) $found['disk_name'], (string) $found['disk_extension']);
+                    if (!is_file($existingPath)) {
+                        $pdo->prepare('UPDATE file_blobs SET disk_name = :name, disk_extension = :extension WHERE id = :id')->execute([
+                            ':name' => $canonical['disk_name'], ':extension' => $canonical['disk_extension'], ':id' => $found['id'],
+                        ]);
+                    }
+                    $blob = (int) $found['id'];
+                    $blobIds[$blob] = $checksum;
+
+                    foreach ($groupRows as $row) {
+                        $blobIdsByFileId[(int) $row['id']] = $blob;
+                    }
+                }
+
+                foreach (array_chunk($blobIdsByFileId, 250, true) as $chunk) {
+                    $cases = [];
+                    $params = [];
+
+                    foreach ($chunk as $fileId => $blobId) {
+                        $cases[] = sprintf('WHEN %d THEN %d', (int) $fileId, (int) $blobId);
+                    }
+
+                    $ids = implode(', ', array_map('intval', array_keys($chunk)));
+                    $sql = 'UPDATE files SET blob_id = CASE id ' . implode(' ', $cases) . ' END WHERE id IN (' . $ids . ')';
+                    $pdo->prepare($sql)->execute($params);
+                }
+
+                foreach ($blobIds as $blobId => $checksum) {
+                    $pdo->prepare(
+                        'UPDATE file_blobs
+                         SET ref_count = (SELECT COUNT(*) FROM files WHERE blob_id = :blob_id)
+                         WHERE id = :id'
+                    )->execute([':blob_id' => $blobId, ':id' => $blobId]);
+                }
+
+                $pdo->commit();
+            } catch (\Throwable $exception) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+
+                throw $exception;
+            }
+        }
+
+        $upsertFlag = $pdo->prepare(
+            DatabasePlatform::upsertSql($driver, 'settings', ['key', 'value', 'updated_at'], ['value', 'updated_at'], ['key'])
+        );
+        $upsertFlag->execute([
+            ':key' => 'file_blobs_backfill_v1',
+            ':value' => '1',
+            ':updated_at' => wb_now(),
+        ]);
     }
 
     /**

@@ -32,6 +32,14 @@ final class AutomationRunner
                 'label' => 'Refresh folder sizes',
                 'interval_key' => 'automation_folder_size_interval_minutes',
             ],
+            'process_share_deletions' => [
+                'label' => 'Share deletion after expiry',
+                'interval_key' => 'automation_share_deletion_interval_minutes',
+            ],
+            'reconcile_file_blobs' => [
+                'label' => 'Deduplication maintenance',
+                'interval_key' => 'automation_cleanup_interval_minutes',
+            ],
         ];
     }
 
@@ -278,6 +286,8 @@ final class AutomationRunner
                 'cleanup_abandoned_uploads' => self::cleanupAbandonedUploads($pdo),
                 'storage_usage_alert' => self::checkStorageUsage($pdo),
                 'refresh_folder_sizes' => self::refreshFolderSizes($pdo),
+                'process_share_deletions' => self::processShareDeletions($pdo),
+                'reconcile_file_blobs' => self::reconcileFileBlobs($pdo),
                 default => throw new RuntimeException('Unknown automation job.'),
             };
             $duration = (int) round((microtime(true) - $start) * 1000);
@@ -310,6 +320,52 @@ final class AutomationRunner
         $job = $statement->fetch();
 
         return is_array($job) ? $job : ['job_key' => $jobKey];
+    }
+
+    /**
+     * @return array{state: string, message: string}
+     */
+    private static function processShareDeletions(PDO $pdo): array
+    {
+        $result = FileShares::processDueDeletions($pdo);
+
+        return [
+            'state' => 'success',
+            'message' => ($result['deleted'] ?? 0) === 0
+                ? 'No share-scheduled deletions are due.'
+                : sprintf('Deleted %d file(s) scheduled by expired shares.', $result['deleted']),
+        ];
+    }
+
+    /**
+     * @return array{state: string, message: string}
+     */
+    private static function reconcileFileBlobs(PDO $pdo): array
+    {
+        $result = FileManager::reconcileFileBlobs($pdo);
+
+        if ($result['missing'] > 0) {
+            return [
+                'state' => 'warning',
+                'message' => sprintf(
+                    'Repaired %d refcount(s), removed %d drained blob(s) and %d orphan file(s). %d blob record(s) point at missing files.',
+                    $result['repaired'],
+                    $result['removed_blobs'],
+                    $result['removed_orphans'],
+                    $result['missing']
+                ),
+            ];
+        }
+
+        return [
+            'state' => 'success',
+            'message' => sprintf(
+                'Repaired %d refcount(s), removed %d drained blob(s) and %d orphan file(s).',
+                $result['repaired'],
+                $result['removed_blobs'],
+                $result['removed_orphans']
+            ),
+        ];
     }
 
     /**
