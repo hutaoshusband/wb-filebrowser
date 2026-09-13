@@ -328,7 +328,7 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
                     <div class="share-actions">
                         <?php if (!empty($file['encryption_format'])): ?>
                             <div id="wb-local-decryption" data-url="<?= wb_h($file['download_url']) ?>" data-name="<?= wb_h($file['name']) ?>"></div>
-                            <script type="module" src="<?= wb_h(wb_url('/assets/app.js')) ?>"></script>
+                            <script type="module" src="<?= wb_h(wb_asset_url('/assets/app.js')) ?>"></script>
                         <?php endif; ?>
                         <a class="header-button share-download" href="<?= wb_h($file['download_url']) ?>"><?= !empty($file['encryption_format']) ? 'Download encrypted file' : 'Download' ?></a>
                     </div>

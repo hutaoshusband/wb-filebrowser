@@ -20,6 +20,6 @@ WbFileBrowser\Security::sendPageHeaders();
 <body data-shell="admin">
     <div id="app"></div>
     <?= wb_bootstrap_script_tag($bootstrap) ?>
-    <script type="module" src="<?= wb_h(wb_url('/assets/app.js')) ?>"></script>
+    <script type="module" src="<?= wb_h(wb_asset_url('/assets/app.js')) ?>"></script>
 </body>
 </html>

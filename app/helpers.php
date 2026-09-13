@@ -259,6 +259,16 @@ function wb_bootstrap_script_tag(array $bootstrap): string
     return '<script id="wb-bootstrap" type="application/json">' . wb_json_html($bootstrap) . '</script>';
 }
 
+function wb_asset_url(string $path): string
+{
+    // App assets are served with long-lived default caching (browsers and any
+    // CDN in front), so every deploy must produce a different URL. The
+    // filemtime changes whenever the build output is replaced.
+    $version = is_file(dirname(__DIR__) . $path) ? (string) filemtime(dirname(__DIR__) . $path) : '1';
+
+    return wb_url($path . '?v=' . $version);
+}
+
 function wb_page_head(string $title): string
 {
     $stylesheetPath = dirname(__DIR__) . '/assets/app.css';
