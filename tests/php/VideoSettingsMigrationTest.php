@@ -34,6 +34,7 @@ final class VideoSettingsMigrationTest extends DatabaseTestCase
         'spaces_user_sharing_allowed',
         'spaces_max_grant_level',
         'spaces_auto_create_on_user_create',
+        'migration_uploader_names_v1',
     ];
 
     protected function tearDown(): void
@@ -104,6 +105,9 @@ final class VideoSettingsMigrationTest extends DatabaseTestCase
             'spaces_user_sharing_allowed' => '1',
             'spaces_max_grant_level' => 'write',
             'spaces_auto_create_on_user_create' => '0',
+            // The uploader-name backfill completes inside the same migration, so
+            // its flag is already flipped afterwards.
+            'migration_uploader_names_v1' => '1',
         ];
 
         foreach ($expectedNew as $key => $value) {
