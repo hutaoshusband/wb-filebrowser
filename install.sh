@@ -56,6 +56,12 @@ echo "-- node ok ($(node -v))"
 echo "-- npm ok ($(npm -v))"
 
 # dependencies
+command -v cargo >/dev/null || err "Rust is required to build local encryption. Install Rust from https://rustup.rs and rerun."
+command -v rustup >/dev/null || err "rustup is required to install the WebAssembly target."
+rustup target add wasm32-unknown-unknown
+if ! command -v wasm-bindgen >/dev/null || [ "$(wasm-bindgen --version)" != "wasm-bindgen 0.2.100" ]; then
+    cargo install wasm-bindgen-cli --version 0.2.100 --locked
+fi
 echo "-- composer install"
 $COMPOSER install --no-dev --optimize-autoloader --no-interaction 2>&1
 

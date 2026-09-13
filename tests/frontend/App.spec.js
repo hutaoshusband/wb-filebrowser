@@ -1,4 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils';
+vi.mock('../../frontend/src/lib/fileEncryption.js', () => ({ ENCRYPTION_FORMAT: 'WBENC001', transformFile: vi.fn() }));
+import { transformFile } from '../../frontend/src/lib/fileEncryption.js';
 vi.mock('../../frontend/src/lib/thumbnails.js', () => ({
   renderPdfThumbnail: vi.fn(async () => 'data:image/png;base64,pdf-thumb'),
 }));
@@ -1770,7 +1772,7 @@ describe('Video optimization uploads', () => {
     expect(wrapper.text()).toContain('Video optimization');
 
     const pane = wrapper.find('.settings-pane');
-    const modeSelect = pane.findAll('select').find((select) => select.findAll('option').some((option) => option.text().includes('Required')));
+    const modeSelect = pane.find('#video-compression-mode');
     await modeSelect.setValue('required');
     await modeSelect.trigger('change');
 
@@ -1784,5 +1786,40 @@ describe('Video optimization uploads', () => {
     expect(body.video_compression.max_fps).toBe(60);
     expect(body.video_compression.max_video_bitrate_kbps).toBe(8000);
     expect(body.video_compression.min_source_mb).toBe(20);
+  });
+
+  it.each(['optional', 'required'])('encrypts before upload.init in %s mode', async (mode) => {
+    transformFile.mockResolvedValueOnce(new Blob(['encrypted contents']));
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'auth.session': () => jsonResponse({ ...sessionPayload(), upload_policy: { ...uploadPolicy(), encryption_mode: mode } }),
+        ...uploadHandlers(),
+      },
+    });
+    await pickFile(wrapper, new File(['secret'], 'private.txt'));
+    expect(uploadInitBodies(calls)).toEqual([]);
+    const dialog = wrapper.find('.encryption-dialog');
+    await dialog.findAll('input')[0].setValue('a strong test password');
+    await dialog.findAll('input')[1].setValue('a strong test password');
+    await dialog.trigger('submit');
+    await flushPromises();
+    const [body] = uploadInitBodies(calls);
+    expect(body.encryption_format).toBe('WBENC001');
+    expect(body.size).toBe(18);
+    expect(JSON.stringify(calls)).not.toContain('a strong test password');
+  });
+
+  it('cancels required encryption without starting an upload or falling back to plaintext', async () => {
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'auth.session': () => jsonResponse({ ...sessionPayload(), upload_policy: { ...uploadPolicy(), encryption_mode: 'required' } }),
+        ...uploadHandlers(),
+      },
+    });
+    await pickFile(wrapper, new File(['secret'], 'private.txt'));
+    await wrapper.find('.encryption-dialog').findAll('button').find((button) => button.text() === 'Cancel').trigger('click');
+    await flushPromises();
+    expect(uploadInitBodies(calls)).toEqual([]);
+    expect(wrapper.find('.encryption-dialog').exists()).toBe(false);
   });
 });

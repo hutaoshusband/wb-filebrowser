@@ -13,3 +13,5 @@ pnpm-lock.yaml
 Thumbs.db
 .composer-home/
 .phpunit.cache/
+crypto/target/
+frontend/src/lib/wasm/

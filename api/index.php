@@ -364,7 +364,8 @@ try {
                     (int) ($requestData['total_chunks'] ?? 1),
                     is_array($requestData['relative_path_segments'] ?? null)
                         ? array_values($requestData['relative_path_segments'])
-                        : []
+                        : [],
+                    (string) ($requestData['encryption_format'] ?? '')
                 ),
             ], 201);
 

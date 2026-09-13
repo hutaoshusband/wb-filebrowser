@@ -14,6 +14,9 @@ import {
 } from './lib/videoCompressionPolicy.js';
 import { createVideoCompressor } from './lib/videoCompressor.js';
 import VideoCompressionDialog from './components/VideoCompressionDialog.vue';
+import EncryptionDialog from './components/EncryptionDialog.vue';
+import LocalDecryption from './components/LocalDecryption.vue';
+import { ENCRYPTION_FORMAT, transformFile } from './lib/fileEncryption.js';
 
 const ADMIN_SECTIONS = ['dashboard', 'users', 'permissions', 'settings', 'audit', 'security'];
 const SETTING_TABS = ['access', 'display', 'uploads', 'automation', 'spaces'];
@@ -63,6 +66,7 @@ function createDefaultSettings() {
       allowed_extensions: '',
       stale_upload_ttl_hours: 24,
       dedup_enabled: false,
+      encryption_mode: 'off',
     },
     video_compression: {
       mode: 'off',
@@ -233,6 +237,43 @@ const contextMenu = ref(null);
 const statusMessage = ref('');
 const stickyMessage = ref('');
 const uploadQueue = ref(null);
+const encryptionDialog = ref(null);
+const encryptionProgress = ref(null);
+const localDecryption = ref(null);
+let settleEncryption;
+let encryptionController;
+
+function answerEncryption(result) {
+  encryptionDialog.value = null;
+  settleEncryption?.(result);
+  settleEncryption = null;
+}
+
+async function encryptUpload(file) {
+  const mode = session.uploadPolicy.encryption_mode ?? 'off';
+  if (mode === 'off') return { file, format: '' };
+  const result = await new Promise((resolve) => {
+    settleEncryption = resolve;
+    encryptionDialog.value = { name: file.name, required: mode === 'required' };
+  });
+  if (result.choice === 'cancel') throw new DOMException('Upload canceled.', 'AbortError');
+  if (result.choice === 'plain' && mode !== 'required') return { file, format: '' };
+  encryptionController = new AbortController();
+  encryptionProgress.value = 0;
+  try {
+    const pending = transformFile(file, result.password, {
+      signal: encryptionController.signal,
+      onProgress: (value) => { encryptionProgress.value = Math.round(value * 100); },
+    });
+    result.password = '';
+    const encrypted = await pending;
+    return { file: new File([encrypted], file.name, { type: 'application/x-wb-encrypted' }), format: ENCRYPTION_FORMAT };
+  } finally {
+    result.password = '';
+    encryptionProgress.value = null;
+    encryptionController = null;
+  }
+}
 const videoCompressor = createVideoCompressor();
 const compressionState = reactive({
   phase: 'idle', // idle | asking | running
@@ -1274,7 +1315,7 @@ function createUploadQueueState(items) {
   };
 }
 
-async function ensureDroppedDirectories(directories) {
+async function ensureDroppedDirectories(directories, folderId = route.folderId) {
   const seen = new Set();
 
   for (const directory of directories) {
@@ -1286,7 +1327,7 @@ async function ensureDroppedDirectories(directories) {
     await api('folders.ensure_path', {
       method: 'POST',
       body: {
-        parent_id: route.folderId,
+        parent_id: folderId,
         path_segments: directory.relativePathSegments,
       },
     });
@@ -1528,6 +1569,7 @@ async function uploadQueuedItems(items, emptyDirectories = []) {
   const uploadedFileCount = items.length;
   const uploadedFileName = items[0]?.file.name ?? 'file';
   const uploadedBy = session.user?.username ?? 'unknown user';
+  const destinationFolderId = route.folderId;
 
   for (const item of items) {
     const uploadError = validateUploadCandidate(item.file, session.uploadPolicy);
@@ -1568,14 +1610,19 @@ async function uploadQueuedItems(items, emptyDirectories = []) {
   }
 
   uploadQueue.value = createUploadQueueState(uploadItems);
+  startCompressionHeartbeat();
   let completedFiles = 0;
   let completedBytes = 0;
 
   try {
-    await ensureDroppedDirectories(emptyDirectories);
+    await ensureDroppedDirectories(emptyDirectories, destinationFolderId);
 
     for (const item of uploadItems) {
-      const { file, relativePath, relativePathSegments } = item;
+      const { relativePath, relativePathSegments } = item;
+      const { file, format } = await encryptUpload(item.file);
+      const uploadError = validateUploadCandidate(file, session.uploadPolicy);
+      if (uploadError) throw new Error(uploadError);
+      uploadQueue.value.totalBytes += file.size - item.file.size;
       const totalChunks = Math.max(1, Math.ceil(file.size / DEFAULT_CHUNK_SIZE));
       uploadQueue.value = {
         ...uploadQueue.value,
@@ -1592,12 +1639,13 @@ async function uploadQueuedItems(items, emptyDirectories = []) {
       const initPayload = await api('upload.init', {
         method: 'POST',
         body: {
-          folder_id: route.folderId,
+          folder_id: destinationFolderId,
           original_name: file.name,
           size: file.size,
           mime_type: file.type || 'application/octet-stream',
           total_chunks: totalChunks,
           relative_path_segments: relativePathSegments,
+          encryption_format: format,
         },
       });
       const token = initPayload.data.upload_token;
@@ -1658,6 +1706,7 @@ async function uploadQueuedItems(items, emptyDirectories = []) {
     showStickyMessage(`${failedPath}: ${error instanceof Error ? error.message : 'Upload failed.'}`);
   } finally {
     uploadQueue.value = null;
+    stopCompressionHeartbeat();
     flushOpfsCleanup();
   }
 }
@@ -2104,7 +2153,12 @@ function downloadSelected() {
     return;
   }
 
-  window.location.href = item.download_url;
+  if (item.encryption_format) {
+    closePreview();
+    localDecryption.value.open(item);
+  } else {
+    window.location.href = item.download_url;
+  }
 }
 
 function selectCurrentItem() {
@@ -3016,6 +3070,8 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  answerEncryption({ choice: 'cancel', password: '' });
+  encryptionController?.abort();
   window.removeEventListener('hashchange', syncRouteFromHash);
   window.removeEventListener('click', handleGlobalClick);
   window.removeEventListener('dragenter', onDragEnter);
@@ -3035,6 +3091,12 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <EncryptionDialog v-if="encryptionDialog" v-bind="encryptionDialog" @answer="answerEncryption" />
+  <LocalDecryption ref="localDecryption" />
+  <section v-if="encryptionProgress !== null" class="upload-queue-card" aria-live="polite">
+    <p>Encrypting locally: {{ encryptionProgress }}%. No plaintext is sent to the server.</p>
+    <button class="header-button" type="button" @click="encryptionController?.abort()">Cancel upload</button>
+  </section>
   <div v-if="blockedState.active" class="install-shell blocked-shell">
     <main class="install-layout">
       <section class="install-card blocked-card">
@@ -3143,6 +3205,7 @@ onBeforeUnmount(() => {
             <button v-if="isAdmin" class="header-button" type="button" @click="openAdminPanel">Admin</button>
             <button class="header-button" type="button" @click="toggleViewMode">{{ viewMode === 'list' ? 'Grid view' : 'List view' }}</button>
             <button class="header-button" type="button" @click="downloadSelected">Download</button>
+            <button class="header-button" type="button" @click="localDecryption.pickLocal()">Decrypt local file</button>
             <button class="header-button" type="button" :disabled="!canUploadHere" @click="triggerUpload">Upload</button>
             <button class="header-button" type="button" @click="topActionInfo">Info</button>
             <button class="header-button" type="button" @click="selectCurrentItem">{{ selectMode ? 'Cancel select' : 'Select' }}</button>
@@ -3755,8 +3818,17 @@ onBeforeUnmount(() => {
 
               <h2>Video optimization</h2>
               <label>
+                <span>Client-side file encryption</span>
+                <select v-model="adminState.settings.uploads.encryption_mode" :disabled="!adminState.canManageSettings">
+                  <option value="off">Disabled - no encryption option</option>
+                  <option value="optional">Ask users - encrypt or upload normally</option>
+                  <option value="required">Required - every upload needs an encryption password</option>
+                </select>
+                <small class="panel-meta">AES-256 runs locally in WebAssembly. Names and sizes stay visible. Encrypted uploads cannot be combined with required server video verification. Existing encrypted files remain decryptable in every mode.</small>
+              </label>
+              <label>
                 <span>Compression policy</span>
-                <select v-model="adminState.settings.video_compression.mode" :disabled="!adminState.canManageSettings">
+                <select id="video-compression-mode" v-model="adminState.settings.video_compression.mode" :disabled="!adminState.canManageSettings">
                   <option value="off">Disabled - upload originals as-is</option>
                   <option value="optional">Ask users - offer local compression before upload</option>
                   <option value="required">Required - videos must comply with the policy below</option>

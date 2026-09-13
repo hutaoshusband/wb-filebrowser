@@ -795,7 +795,8 @@ final class FileManager
         int $size,
         string $mimeType,
         int $totalChunks,
-        array $relativePathSegments = []
+        array $relativePathSegments = [],
+        string $encryptionFormat = ''
     ): array
     {
         $storageLock = new StorageLock();
@@ -804,6 +805,7 @@ final class FileManager
         }
 
         $originalName = wb_validate_entry_name($originalName, 'file');
+        FileEncryption::assertUpload($encryptionFormat);
         Settings::assertUploadAllowed($originalName, $size);
 
         if ($size < 0) {
@@ -817,7 +819,9 @@ final class FileManager
         self::assertDeclaredChunkCountMatchesSize($size, $totalChunks);
         self::assertWithinStorageQuota($user, $size);
         SpaceService::assertWithinSpaceQuota($folderId, $size);
-        self::assertVideoUploadCanBeVerified($originalName, $size, $mimeType);
+        if ($encryptionFormat === '') {
+            self::assertVideoUploadCanBeVerified($originalName, $size, $mimeType);
+        }
 
         if ($relativePathSegments !== []) {
             $folder = self::ensureFolderPath($user, $folderId, $relativePathSegments);
@@ -838,6 +842,7 @@ final class FileManager
             'original_name' => $originalName,
             'mime_type' => $mimeType,
             'size' => $size,
+            'encryption_format' => $encryptionFormat,
             'total_chunks' => $totalChunks,
             'created_at' => wb_now(),
         ];
@@ -983,15 +988,23 @@ final class FileManager
             }
 
             Settings::assertUploadAllowed((string) $metadata['original_name'], $finalSize, $pdo);
+            $encryptionFormat = (string) ($metadata['encryption_format'] ?? '');
+            FileEncryption::assertUpload($encryptionFormat);
+            if ($encryptionFormat !== '') {
+                FileEncryption::validateContainer($finalPath, $finalSize);
+                $mimeType = FileEncryption::MIME;
+            }
 
             try {
-                MediaValidator::assertAcceptedVideoUpload(
-                    $finalPath,
-                    (string) $metadata['original_name'],
-                    $finalSize,
-                    $mimeType,
-                    $pdo
-                );
+                if ($encryptionFormat === '') {
+                    MediaValidator::assertAcceptedVideoUpload(
+                        $finalPath,
+                        (string) $metadata['original_name'],
+                        $finalSize,
+                        $mimeType,
+                        $pdo
+                    );
+                }
             } catch (RuntimeException $exception) {
                 AuditLog::record('file.upload_rejected', 'file_uploads', [
                     'actor_user' => $user,
@@ -1012,6 +1025,7 @@ final class FileManager
             $storageLock = new StorageLock();
             // Another completion may have consumed this token while bytes were assembled.
             self::readUploadMetadata($token);
+            FileEncryption::assertUpload($encryptionFormat);
             if (!Permissions::canUploadToFolder($folderId, $user, $pdo)) {
                 throw new RuntimeException('You no longer have permission to upload here.');
             }
@@ -1171,8 +1185,8 @@ final class FileManager
         ?string $diskName
     ): int {
         $statement = $pdo->prepare(
-            'INSERT INTO files (folder_id, original_name, disk_name, disk_extension, mime_type, size, checksum, blob_id, created_by, created_at, updated_at)
-             VALUES (:folder_id, :original_name, :disk_name, :disk_extension, :mime_type, :size, :checksum, :blob_id, :created_by, :created_at, :updated_at)'
+            'INSERT INTO files (folder_id, original_name, disk_name, disk_extension, mime_type, size, checksum, blob_id, encryption_format, created_by, created_at, updated_at)
+             VALUES (:folder_id, :original_name, :disk_name, :disk_extension, :mime_type, :size, :checksum, :blob_id, :encryption_format, :created_by, :created_at, :updated_at)'
         );
         $statement->execute([
             ':folder_id' => $folderId,
@@ -1181,6 +1195,7 @@ final class FileManager
             // this fresh name stays vestigial for them.
             ':disk_name' => $diskName ?? wb_random_token(16),
             ':disk_extension' => 'blob',
+            ':encryption_format' => (string) ($metadata['encryption_format'] ?? ''),
             ':mime_type' => $mimeType,
             ':size' => $finalSize,
             ':checksum' => $checksum,
@@ -1292,9 +1307,9 @@ final class FileManager
 
         Security::sendFile(
             self::blobPath((string) $location['disk_name'], (string) $location['disk_extension']),
-            (string) $file['mime_type'],
-            (string) $file['original_name'],
-            $disposition
+            ($file['encryption_format'] ?? '') !== '' ? 'application/octet-stream' : (string) $file['mime_type'],
+            (string) $file['original_name'] . (($file['encryption_format'] ?? '') !== '' ? '.wbencrypted' : ''),
+            ($file['encryption_format'] ?? '') !== '' ? 'attachment' : $disposition
         );
     }
 
@@ -1760,7 +1775,7 @@ final class FileManager
     {
         $extension = strtolower(pathinfo((string) $file['original_name'], PATHINFO_EXTENSION));
         $folderId = (int) $file['folder_id'];
-        $preview = wb_file_preview_metadata((string) $file['mime_type'], $extension);
+        $preview = FileEncryption::preview($file);
         $ownSpaceRoot = $scope['own_space_root'] ?? null;
         $inOwnSpace = $ownSpaceRoot !== null && in_array($folderId, $scope['own_space_ids'] ?? [], true);
         $locked = self::fileIsLockedFor($file, $user, $pdo);
@@ -1779,6 +1794,7 @@ final class FileManager
             'checksum' => $file['checksum'],
             'extension' => $extension,
             'locked' => $locked,
+            'encryption_format' => (string) ($file['encryption_format'] ?? ''),
             'can_share' => $scope['all'] || $inOwnSpace,
             'can_edit' => !$locked && Permissions::canEditFolder($folderId, $user, $pdo, $scope),
             'can_delete' => !$locked && Permissions::canDeleteFolder($folderId, $user, $pdo, $scope),

@@ -70,6 +70,7 @@ final class Settings
             'share_terms_enabled' => $normalized['access']['share_terms_enabled'] ? '1' : '0',
             'share_terms_message' => $normalized['access']['share_terms_message'],
             'uploads_max_file_size_mb' => (string) $normalized['uploads']['max_file_size_mb'],
+            'uploads_encryption_mode' => $normalized['uploads']['encryption_mode'],
             'uploads_allowed_extensions' => self::implodeExtensions($normalized['uploads']['allowed_extensions']),
             'uploads_stale_upload_ttl_hours' => (string) $normalized['uploads']['stale_upload_ttl_hours'],
             'dedup_enabled' => $normalized['uploads']['dedup_enabled'] ? '1' : '0',
@@ -130,6 +131,7 @@ final class Settings
                 ),
             ],
             'uploads' => [
+                'encryption_mode' => FileEncryption::mode(Database::setting('uploads_encryption_mode', 'off')),
                 'max_file_size_mb' => self::parseUploadLimitMb(Database::setting('uploads_max_file_size_mb', '0')),
                 'allowed_extensions' => implode(', ', self::allowedExtensions($pdo)),
                 'stale_upload_ttl_hours' => self::parseInteger(Database::setting('uploads_stale_upload_ttl_hours', '24'), 'Upload retention window', 1, 720),
@@ -247,6 +249,7 @@ final class Settings
             'share_terms_message' => $normalized['access']['share_terms_message'],
             'share_terms_version' => (string) $shareTermsVersion,
             'uploads_max_file_size_mb' => (string) $normalized['uploads']['max_file_size_mb'],
+            'uploads_encryption_mode' => $normalized['uploads']['encryption_mode'],
             'uploads_allowed_extensions' => self::implodeExtensions($normalized['uploads']['allowed_extensions']),
             'uploads_stale_upload_ttl_hours' => (string) $normalized['uploads']['stale_upload_ttl_hours'],
             'dedup_enabled' => $normalized['uploads']['dedup_enabled'] ? '1' : '0',
@@ -337,6 +340,7 @@ final class Settings
                 ? 'Any file type'
                 : implode(', ', array_map(static fn (string $extension): string => '.' . $extension, $allowedExtensions)),
             'stale_upload_ttl_hours' => $staleUploadTtlHours,
+            'encryption_mode' => FileEncryption::mode(Database::setting('uploads_encryption_mode', 'off')),
             'video_compression' => self::videoCompressionPolicy($pdo),
         ];
     }
@@ -490,7 +494,7 @@ final class Settings
         $uploadInput = self::normalizeGroupInput(
             $payload,
             'uploads',
-            ['max_file_size_mb', 'allowed_extensions', 'stale_upload_ttl_hours', 'dedup_enabled'],
+            ['max_file_size_mb', 'allowed_extensions', 'stale_upload_ttl_hours', 'dedup_enabled', 'encryption_mode'],
             $base['uploads']
         );
         $videoInput = self::normalizeGroupInput(
@@ -536,6 +540,11 @@ final class Settings
             $base['spaces']
         );
 
+        $encryptionMode = FileEncryption::mode($uploadInput['encryption_mode'] ?? $base['uploads']['encryption_mode'] ?? 'off');
+        if ($encryptionMode !== 'off' && ($videoInput['mode'] ?? $base['video_compression']['mode']) === 'required') {
+            throw new InvalidArgumentException('Local encryption cannot be enabled with required server video verification. Disable one of these policies.');
+        }
+
         return [
             'access' => [
                 'public_access' => wb_parse_bool($accessInput['public_access'] ?? $base['access']['public_access']),
@@ -569,6 +578,7 @@ final class Settings
                     720
                 ),
                 'dedup_enabled' => wb_parse_bool($uploadInput['dedup_enabled'] ?? $base['uploads']['dedup_enabled']),
+                'encryption_mode' => $encryptionMode,
             ],
             'video_compression' => [
                 'mode' => self::parseVideoCompressionMode($videoInput['mode'] ?? $base['video_compression']['mode']),
@@ -705,6 +715,7 @@ final class Settings
                 'allowed_extensions' => '',
                 'stale_upload_ttl_hours' => 24,
                 'dedup_enabled' => false,
+                'encryption_mode' => 'off',
             ],
             'video_compression' => [
                 'mode' => 'off',
@@ -773,6 +784,7 @@ final class Settings
             'uploads_allowed_extensions' => '',
             'uploads_stale_upload_ttl_hours' => '24',
             'dedup_enabled' => '0',
+            'uploads_encryption_mode' => 'off',
             'video_compression_mode' => 'off',
             'video_max_height' => '1080',
             'video_max_fps' => '60',

@@ -285,6 +285,7 @@ final class DatabasePlatform
                 description ' . $description . ' NOT NULL DEFAULT \'\',
                 checksum ' . $tokenText . ' NOT NULL,
                 blob_id ' . $refId . ' NULL,
+                encryption_format VARCHAR(16) NOT NULL DEFAULT \'\',
                 created_by ' . $refId . ' NULL,
                 created_at ' . $timestamp . ' NOT NULL,
                 updated_at ' . $timestamp . ' NOT NULL,

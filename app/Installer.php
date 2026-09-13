@@ -340,6 +340,7 @@ XML;
             'size_limit_bytes ' . self::bytesType((string) $config['driver']) . ' NULL',
         ], (string) $config['driver']);
         self::ensureTableColumns($pdo, 'files', [
+            'encryption_format VARCHAR(16) NOT NULL DEFAULT \'\'',
             'description ' . self::descriptionType((string) $config['driver']) . ' NOT NULL DEFAULT \'\'',
             'blob_id ' . self::referenceType((string) $config['driver']) . ' NULL',
         ], (string) $config['driver']);

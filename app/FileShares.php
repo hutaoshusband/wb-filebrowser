@@ -365,9 +365,9 @@ final class FileShares
 
         Security::sendFile(
             self::blobPath($location['disk_name'], $location['disk_extension']),
-            (string) $share['mime_type'],
-            (string) $share['original_name'],
-            $disposition
+            ($share['encryption_format'] ?? '') !== '' ? 'application/octet-stream' : (string) $share['mime_type'],
+            (string) $share['original_name'] . (($share['encryption_format'] ?? '') !== '' ? '.wbencrypted' : ''),
+            ($share['encryption_format'] ?? '') !== '' ? 'attachment' : $disposition
         );
     }
 
@@ -398,9 +398,9 @@ final class FileShares
 
         Security::sendFile(
             self::blobPath($location['disk_name'], $location['disk_extension']),
-            (string) $share['mime_type'],
-            (string) $share['original_name'],
-            $disposition
+            ($share['encryption_format'] ?? '') !== '' ? 'application/octet-stream' : (string) $share['mime_type'],
+            (string) $share['original_name'] . (($share['encryption_format'] ?? '') !== '' ? '.wbencrypted' : ''),
+            ($share['encryption_format'] ?? '') !== '' ? 'attachment' : $disposition
         );
     }
 
@@ -572,6 +572,7 @@ final class FileShares
                 files.disk_name,
                 files.disk_extension,
                 files.mime_type,
+                files.encryption_format,
                 files.size,
                 files.checksum,
                 files.blob_id,
@@ -714,7 +715,7 @@ final class FileShares
     {
         $extension = strtolower(pathinfo((string) $share['original_name'], PATHINFO_EXTENSION));
         $urls = self::shareStreamUrls((string) $share['token']);
-        $preview = wb_file_preview_metadata((string) $share['mime_type'], $extension);
+        $preview = FileEncryption::preview($share);
         $directUrl = ($preview['preview_mode'] ?? 'download') === 'download'
             ? $urls['attachment']
             : $urls['inline'];
