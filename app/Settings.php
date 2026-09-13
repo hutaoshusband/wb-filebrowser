@@ -101,6 +101,8 @@ final class Settings
             'log_admin_actions' => $normalized['security']['log_admin_actions'] ? '1' : '0',
             'log_security_actions' => $normalized['security']['log_security_actions'] ? '1' : '0',
             'display_grid_thumbnails_enabled' => $normalized['display']['grid_thumbnails_enabled'] ? '1' : '0',
+            'display_show_uploader' => $normalized['display']['show_uploader'] ? '1' : '0',
+            'user_link_shares_allowed' => $normalized['access']['user_link_shares_allowed'] ? '1' : '0',
             'diagnostic_message' => 'Storage shield checks will start after setup.',
         ];
     }
@@ -112,6 +114,7 @@ final class Settings
         return [
             'access' => [
                 'public_access' => wb_parse_bool(Database::setting('public_access', '0')),
+                'user_link_shares_allowed' => wb_parse_bool(Database::setting('user_link_shares_allowed', '1')),
                 'maintenance_enabled' => wb_parse_bool(Database::setting('maintenance_enabled', '0')),
                 'maintenance_scope' => self::parseMaintenanceScope(Database::setting('maintenance_scope', MaintenanceMode::SCOPE_APP_ONLY)),
                 'maintenance_message' => self::parseText(
@@ -171,6 +174,7 @@ final class Settings
             ],
             'display' => [
                 'grid_thumbnails_enabled' => wb_parse_bool(Database::setting('display_grid_thumbnails_enabled', '1')),
+                'show_uploader' => wb_parse_bool(Database::setting('display_show_uploader', '1')),
             ],
             'spaces' => [
                 'enabled' => wb_parse_bool(Database::setting('spaces_enabled', '0')),
@@ -280,6 +284,8 @@ final class Settings
             'log_admin_actions' => $normalized['security']['log_admin_actions'] ? '1' : '0',
             'log_security_actions' => $normalized['security']['log_security_actions'] ? '1' : '0',
             'display_grid_thumbnails_enabled' => $normalized['display']['grid_thumbnails_enabled'] ? '1' : '0',
+            'display_show_uploader' => $normalized['display']['show_uploader'] ? '1' : '0',
+            'user_link_shares_allowed' => $normalized['access']['user_link_shares_allowed'] ? '1' : '0',
             'spaces_enabled' => $normalized['spaces']['enabled'] ? '1' : '0',
             'spaces_user_sharing_allowed' => $normalized['spaces']['sharing_allowed'] ? '1' : '0',
             'spaces_max_grant_level' => $normalized['spaces']['max_grant_level'],
@@ -299,6 +305,10 @@ final class Settings
                     ':value' => $value,
                     ':updated_at' => wb_now(),
                 ]);
+            }
+
+            if (isset($payload['spaces']) && $normalized['spaces']['enabled']) {
+                SpaceService::provisionMissingUsers(Auth::currentUser($pdo) ?? [], $pdo);
             }
 
             if (!$inTransaction) {
@@ -488,7 +498,7 @@ final class Settings
         $accessInput = self::normalizeGroupInput(
             $payload,
             'access',
-            ['public_access', 'maintenance_enabled', 'maintenance_scope', 'maintenance_message', 'share_terms_enabled', 'share_terms_message'],
+            ['public_access', 'user_link_shares_allowed', 'maintenance_enabled', 'maintenance_scope', 'maintenance_message', 'share_terms_enabled', 'share_terms_message'],
             $base['access']
         );
         $uploadInput = self::normalizeGroupInput(
@@ -530,7 +540,7 @@ final class Settings
         $displayInput = self::normalizeGroupInput(
             $payload,
             'display',
-            ['grid_thumbnails_enabled'],
+            ['grid_thumbnails_enabled', 'show_uploader'],
             $base['display']
         );
         $spacesInput = self::normalizeGroupInput(
@@ -548,6 +558,7 @@ final class Settings
         return [
             'access' => [
                 'public_access' => wb_parse_bool($accessInput['public_access'] ?? $base['access']['public_access']),
+                'user_link_shares_allowed' => wb_parse_bool($accessInput['user_link_shares_allowed'] ?? $base['access']['user_link_shares_allowed']),
                 'maintenance_enabled' => wb_parse_bool($accessInput['maintenance_enabled'] ?? $base['access']['maintenance_enabled']),
                 'maintenance_scope' => self::parseMaintenanceScope($accessInput['maintenance_scope'] ?? $base['access']['maintenance_scope']),
                 'maintenance_message' => self::parseText(
@@ -678,6 +689,7 @@ final class Settings
             ],
             'display' => [
                 'grid_thumbnails_enabled' => wb_parse_bool($displayInput['grid_thumbnails_enabled'] ?? $base['display']['grid_thumbnails_enabled']),
+                'show_uploader' => wb_parse_bool($displayInput['show_uploader'] ?? $base['display']['show_uploader']),
             ],
             'spaces' => [
                 'enabled' => wb_parse_bool($spacesInput['enabled'] ?? $base['spaces']['enabled']),
@@ -704,6 +716,7 @@ final class Settings
         return [
             'access' => [
                 'public_access' => false,
+                'user_link_shares_allowed' => true,
                 'maintenance_enabled' => false,
                 'maintenance_scope' => MaintenanceMode::SCOPE_APP_ONLY,
                 'maintenance_message' => MaintenanceMode::defaultMessage(),
@@ -751,6 +764,7 @@ final class Settings
             ],
             'display' => [
                 'grid_thumbnails_enabled' => true,
+                'show_uploader' => true,
             ],
             'spaces' => [
                 'enabled' => false,
@@ -812,6 +826,8 @@ final class Settings
             'log_admin_actions' => '1',
             'log_security_actions' => '1',
             'display_grid_thumbnails_enabled' => '1',
+            'display_show_uploader' => '1',
+            'user_link_shares_allowed' => '1',
             'spaces_enabled' => '0',
             'spaces_user_sharing_allowed' => '1',
             'spaces_max_grant_level' => 'write',

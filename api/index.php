@@ -126,7 +126,9 @@ try {
                 'scope' => Permissions::scope($user),
                 'root_folder_id' => Database::rootFolderId(),
                 'home_folder_id' => SpaceService::homeFolderIdFor($user),
+                'navigation_roots' => FileManager::navigationRoots($user),
                 'space' => SpaceService::sessionContextFor($user),
+                'can_create_link_shares' => $user !== null && FileShares::userLinksAllowed($user),
                 'app_version' => Database::setting('app_version', Installer::VERSION),
                 'storage' => FileManager::storageStats(),
                 'diagnostic' => Settings::diagnosticState(),
@@ -308,7 +310,7 @@ try {
             ]);
 
         case 'files.share.get':
-            $user = Auth::requireAdmin();
+            $user = Auth::requireUser();
             wb_json_response([
                 'ok' => true,
                 'share' => FileShares::get($user, (int) ($_GET['file_id'] ?? 0)),
@@ -316,7 +318,7 @@ try {
 
         case 'files.share.create':
             $requireCsrf();
-            $user = Auth::requireAdmin();
+            $user = Auth::requireUser();
             wb_json_response([
                 'ok' => true,
                 'share' => FileShares::create($user, (int) ($requestData['file_id'] ?? 0), [
@@ -330,7 +332,7 @@ try {
 
         case 'files.share.revoke':
             $requireCsrf();
-            $user = Auth::requireAdmin();
+            $user = Auth::requireUser();
             FileShares::revoke($user, (int) ($requestData['file_id'] ?? 0));
             wb_json_response(['ok' => true]);
 
@@ -474,6 +476,7 @@ try {
                     users.force_password_reset,
                     users.is_immutable,
                     users.storage_quota_bytes,
+                    users.link_shares_allowed,
                     users.created_at,
                     users.updated_at,
                     users.last_login_at,
@@ -492,8 +495,10 @@ try {
             )->fetchAll();
             wb_json_response([
                 'ok' => true,
+                'spaces_policy' => SpaceService::policy(),
                 'users' => array_map(static function (array $user): array {
                     $user['id'] = (int) $user['id'];
+                    $user['link_shares_allowed'] = $user['link_shares_allowed'] === null ? null : (int) $user['link_shares_allowed'] === 1;
                     $user['force_password_reset'] = (int) $user['force_password_reset'] === 1;
                     $user['is_immutable'] = (int) $user['is_immutable'] === 1;
                     $user['storage_used_bytes'] = (int) ($user['storage_used_bytes'] ?? 0);
@@ -561,9 +566,9 @@ try {
                 ]);
 
                 $spacePolicy = SpaceService::policy();
-                $wantsSpace = wb_parse_bool($requestData['space_enabled'] ?? false);
+                $wantsSpace = wb_parse_bool($requestData['space_enabled'] ?? $spacePolicy['auto_create']);
 
-                if ($role === 'user' && ($wantsSpace || $spacePolicy['auto_create'])) {
+                if ($role === 'user' && $wantsSpace) {
                     SpaceService::provisionForUser($actor, $createdUserId);
                 }
 
@@ -635,7 +640,8 @@ try {
                      SET role = :role,
                          status = :status,
                          force_password_reset = :force_password_reset,
-                         storage_quota_bytes = :storage_quota_bytes,
+                        storage_quota_bytes = :storage_quota_bytes,
+                         link_shares_allowed = :link_shares_allowed,
                          updated_at = :updated_at
                      WHERE id = :id'
                 );
@@ -644,6 +650,9 @@ try {
                     ':status' => in_array((string) ($requestData['status'] ?? $target['status']), ['active', 'suspended'], true) ? ($requestData['status'] ?? $target['status']) : $target['status'],
                     ':force_password_reset' => wb_parse_bool($requestData['force_password_reset'] ?? $target['force_password_reset']) ? 1 : 0,
                     ':storage_quota_bytes' => $role === 'user' ? $storageQuotaBytes : null,
+                    ':link_shares_allowed' => array_key_exists('link_shares_allowed', $requestData)
+                        ? ($requestData['link_shares_allowed'] === null ? null : (wb_parse_bool($requestData['link_shares_allowed']) ? 1 : 0))
+                        : $target['link_shares_allowed'],
                     ':updated_at' => wb_now(),
                     ':id' => $targetId,
                 ]);
@@ -735,7 +744,7 @@ try {
                 wb_error_response('Grants must be an array.', 422);
             }
             SpaceService::saveFolderGrants($actor, $folderId, $grants);
-            wb_json_response(['ok' => true]);
+            wb_json_response(['ok' => true, 'grants' => SpaceService::folderGrants($folderId)]);
 
         case 'admin.users.password':
             $requireCsrf();

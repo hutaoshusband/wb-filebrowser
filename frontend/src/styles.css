@@ -492,3 +492,5 @@ input.media-player__volume::-moz-range-thumb{width:10px;height:10px;border-radiu
 /* Space sharing (info drawer) */
 .space-share-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--c-line)}
 .space-share-row:last-of-type{border-bottom:0}
+
+.uploader-attribution{color:#60a5fa;font-weight:400;font-size:.85em}

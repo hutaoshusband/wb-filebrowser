@@ -10,6 +10,28 @@ use RuntimeException;
 
 final class FileShares
 {
+    public static function userLinksAllowed(array $user, ?PDO $pdo = null): bool
+    {
+        $pdo ??= Database::connection();
+        $statement = $pdo->prepare('SELECT role, status, link_shares_allowed FROM users WHERE id = :id');
+        $statement->execute([':id' => $user['id']]);
+        $current = $statement->fetch();
+        if (!$current || $current['status'] !== 'active') return false;
+        if (in_array($current['role'], ['admin', 'super_admin'], true)) return true;
+        return $current['link_shares_allowed'] === null
+            ? wb_parse_bool(Database::setting('user_link_shares_allowed', '1'))
+            : (int) $current['link_shares_allowed'] === 1;
+    }
+
+    public static function canManageFile(array $user, array $file, ?PDO $pdo = null): bool
+    {
+        $pdo ??= Database::connection();
+        if (!self::userLinksAllowed($user, $pdo) || !Permissions::canViewFolderContents((int) $file['folder_id'], $user, $pdo)) return false;
+        if (Permissions::canManageStructure($user)) return true;
+        if ((int) ($file['created_by'] ?? 0) === (int) $user['id']) return true;
+        $space = SpaceService::featureEnabled($pdo) ? SpaceService::findForUser((int) $user['id'], true, $pdo) : null;
+        return $space !== null && SpaceService::spaceRootIdForFolder((int) $file['folder_id'], $pdo) === (int) $space['folder_id'];
+    }
     public const MSG_RATE_LIMIT_SHARE = 'Shared file unavailable right now.';
 
     private const TEXT_PREVIEW_LIMIT_BYTES = 262144;
@@ -46,6 +68,9 @@ final class FileShares
         self::assertCanManageShares($user, $file, $pdo);
         FileManager::assertFileNotLockedFor($file, $user, $pdo);
         $options = self::normalizeOptions($options);
+        if ($options['delete_after'] !== null && !Permissions::canDeleteFolder((int) $file['folder_id'], $user, $pdo)) {
+            throw new RuntimeException('You do not have permission to schedule deletion of this file.');
+        }
         $existing = self::activeShareRow($fileId, $pdo);
         $now = wb_now();
         $pdo->prepare('UPDATE file_shares SET delete_after = NULL WHERE file_id = :id AND active_file_id IS NULL')->execute([':id' => $fileId]);
@@ -430,16 +455,8 @@ final class FileShares
 
     private static function assertCanManageShares(array $user, array $file, PDO $pdo): void
     {
-        if (!Permissions::canManageStructure($user)) {
-            // Space owners may publish links for files inside their own
-            // space when the administrator allows space sharing.
-            if (!SpaceService::canManageSpaceSharing($user, (int) $file['folder_id'], $pdo)) {
-                throw new RuntimeException('Only administrators can manage share links.');
-            }
-        }
-
-        if (!Permissions::canViewFolderContents((int) $file['folder_id'], $user, $pdo)) {
-            throw new RuntimeException('You do not have access to this file.');
+        if (!self::canManageFile($user, $file, $pdo)) {
+            throw new RuntimeException('You do not have permission to manage share links for this file.');
         }
     }
 
@@ -567,8 +584,11 @@ final class FileShares
                 file_shares.revoked_at,
                 file_shares.created_at AS share_created_at,
                 file_shares.updated_at AS share_updated_at,
+                file_shares.created_by AS share_creator_id,
+                files.created_by,
                 files.folder_id,
                 files.original_name,
+                files.uploader_username,
                 files.disk_name,
                 files.disk_extension,
                 files.mime_type,
@@ -604,11 +624,17 @@ final class FileShares
         if ($root !== null) {
             $space = SpaceService::findByFolderId($root, $pdo);
             $policy = SpaceService::policy($pdo);
-            if ($space === null || $space['status'] !== 'active' || !$policy['enabled'] || !$policy['sharing_allowed']) {
+            if ($space === null || $space['status'] !== 'active' || !$policy['enabled']) {
                 throw new RuntimeException('Shared file not found.');
             }
         }
 
+        $creator = $pdo->prepare('SELECT id, role, status FROM users WHERE id = :id');
+        $creator->execute([':id' => $share['share_creator_id']]);
+        $user = $creator->fetch();
+        if (!$user || !self::canManageFile($user, $share, $pdo)) {
+            throw new RuntimeException('Shared file not found.');
+        }
         return $share;
     }
 
@@ -724,6 +750,7 @@ final class FileShares
             'id' => (int) $share['file_id'],
             'type' => 'file',
             'name' => (string) $share['original_name'],
+            'uploader_username' => wb_parse_bool(Database::setting('display_show_uploader', '1')) ? ((string) ($share['uploader_username'] ?? '') ?: 'Unknown') : null,
             'folder_id' => (int) $share['folder_id'],
             'size' => (int) $share['size'],
             'size_label' => wb_format_bytes((int) $share['size']),

@@ -10,10 +10,61 @@ use WbFileBrowser\FileManager;
 use WbFileBrowser\FileShares;
 use WbFileBrowser\Permissions;
 use WbFileBrowser\SpaceService;
+use WbFileBrowser\Settings;
 use WbFileBrowser\Tests\Support\DatabaseTestCase;
 
 final class SpacesTest extends DatabaseTestCase
 {
+    public function testSavingEnabledSpacesProvisionsMissingUsersWithoutReactivatingDisabledSpaces(): void
+    {
+        $alice = $this->createUser('new-space-owner');
+        $disabled = $this->createUser('disabled-owner');
+        $admin = $this->createUser('another-admin', 'admin');
+        SpaceService::provisionForUser($this->superAdmin(), (int) $disabled['id']);
+        SpaceService::setStatusForUser($this->superAdmin(), (int) $disabled['id'], 'disabled');
+        Settings::saveAdminSettings(['spaces' => ['enabled' => true]]);
+        $space = SpaceService::findForUser((int) $alice['id']);
+        $this->assertNotNull($space);
+        $this->assertSame((int) $space['folder_id'], SpaceService::homeFolderIdFor($alice));
+        $this->assertNull(SpaceService::findForUser((int) $disabled['id']));
+        $this->assertNull(SpaceService::findForUser((int) $admin['id']));
+        Settings::saveAdminSettings(['spaces' => ['enabled' => true]]);
+        $this->assertSame($space['folder_id'], SpaceService::findForUser((int) $alice['id'])['folder_id']);
+    }
+
+    public function testNavigationExposesSharedRootsWithoutOtherPrivateSpaces(): void
+    {
+        $this->enableSpaces();
+        $alice = $this->createUser('nav-alice');
+        $bob = $this->createUser('nav-bob');
+        $carol = $this->createUser('nav-carol');
+        $own = SpaceService::provisionForUser($this->superAdmin(), (int) $alice['id']);
+        $shared = SpaceService::provisionForUser($this->superAdmin(), (int) $bob['id']);
+        $private = SpaceService::provisionForUser($this->superAdmin(), (int) $carol['id']);
+        SpaceService::saveFolderGrants($bob, (int) $shared['folder_id'], [['username' => $alice['username'], 'level' => 'view']]);
+        $roots = FileManager::navigationRoots($alice);
+        $ids = array_column($roots, 'id');
+        $this->assertContains((int) $own['folder_id'], $ids);
+        $this->assertContains((int) $shared['folder_id'], $ids);
+        $this->assertNotContains((int) $private['folder_id'], $ids);
+        $this->assertNotContains(SpaceService::containerFolderId(), $ids);
+        $listing = FileManager::listFolder($alice, (int) $own['folder_id']);
+        $this->assertTrue($listing['folder']['protected_root']);
+        $this->assertFalse($listing['folder']['can_delete']);
+        $this->assertTrue($listing['folder']['can_create_folders']);
+        $this->assertSame((int) $own['folder_id'], $listing['folder']['space_root_id']);
+    }
+
+    public function testGlobalDisableExplainsUnavailableSpaceInSession(): void
+    {
+        $alice = $this->createUser('unavailable-owner');
+        SpaceService::provisionForUser($this->superAdmin(), (int) $alice['id']);
+        $context = SpaceService::sessionContextFor($alice);
+        $this->assertFalse($context['enabled']);
+        $this->assertSame('unavailable', $context['status']);
+        $this->assertNull($context['folder_id']);
+    }
+
     private function enableSpaces(): void
     {
         Database::updateSetting('spaces_enabled', '1');

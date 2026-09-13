@@ -300,6 +300,7 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
                         <dl>
                             <div><dt>Name</dt><dd><?= wb_h($file['name']) ?></dd></div>
                             <div><dt>Size</dt><dd><?= wb_h($file['size_label']) ?></dd></div>
+                            <?php if (!empty($file['uploader_username'])): ?><div><dt>Shared by</dt><dd class="uploader-attribution"><?= wb_h($file['uploader_username']) ?></dd></div><?php endif; ?>
                             <div><dt>Updated</dt><dd><?= wb_h($file['updated_relative']) ?></dd></div>
                             <div><dt>Shared</dt><dd><?= wb_h(wb_relative_time($share['created_at'])) ?></dd></div>
                             <?php if (!empty($share['delete_after'])): ?>
@@ -418,6 +419,7 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
                         <dl>
                             <div><dt>Name</dt><dd><?= wb_h($file['name']) ?></dd></div>
                             <div><dt>Size</dt><dd><?= wb_h($file['size_label']) ?></dd></div>
+                            <?php if (!empty($file['uploader_username'])): ?><div><dt>Shared by</dt><dd class="uploader-attribution"><?= wb_h($file['uploader_username']) ?></dd></div><?php endif; ?>
                             <div><dt>Updated</dt><dd><?= wb_h($file['updated_relative']) ?></dd></div>
                             <div><dt>Shared</dt><dd><?= wb_h(wb_relative_time($share['created_at'])) ?></dd></div>
                             <?php if (!empty($share['delete_after'])): ?>

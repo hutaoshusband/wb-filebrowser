@@ -40,6 +40,15 @@ final class SpaceService
         return self::policy($pdo)['enabled'];
     }
 
+    public static function provisionMissingUsers(array $actor, ?PDO $pdo = null): void
+    {
+        $pdo ??= Database::connection();
+        $users = $pdo->query("SELECT u.id FROM users u LEFT JOIN spaces s ON s.user_id = u.id WHERE u.role = 'user' AND s.id IS NULL")->fetchAll(PDO::FETCH_COLUMN);
+        foreach ($users as $userId) {
+            self::provisionForUser($actor, (int) $userId, $pdo);
+        }
+    }
+
     private static function parseGrantLevel(mixed $value): string
     {
         $level = strtolower(trim((string) $value));
@@ -394,12 +403,16 @@ final class SpaceService
      */
     public static function sessionContextFor(?array $user, ?PDO $pdo = null): ?array
     {
-        if ($user === null || !self::featureEnabled($pdo)) {
+        if ($user === null) {
             return null;
         }
 
         $pdo ??= Database::connection();
         $space = self::findForUser((int) $user['id'], false, $pdo);
+
+        if (!self::featureEnabled($pdo)) {
+            return $space === null ? null : ['enabled' => false, 'status' => 'unavailable', 'folder_id' => null];
+        }
 
         if ($space === null) {
             return ['enabled' => true, 'status' => 'none', 'folder_id' => null];

@@ -1,4 +1,5 @@
-import { flushPromises, mount } from '@vue/test-utils';
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils';
+enableAutoUnmount(afterEach);
 vi.mock('../../frontend/src/lib/fileEncryption.js', () => ({ ENCRYPTION_FORMAT: 'WBENC001', transformFile: vi.fn() }));
 import { transformFile } from '../../frontend/src/lib/fileEncryption.js';
 vi.mock('../../frontend/src/lib/thumbnails.js', () => ({
@@ -422,7 +423,7 @@ function installFetchStub(overrides = {}) {
   global.fetch = vi.fn(async (input, init = {}) => {
     const url = new URL(String(input));
     const action = url.searchParams.get('action');
-    calls.push({ action, init });
+    calls.push({ action, init, input: String(input) });
     const handler = handlers[action];
 
     if (!handler) {
@@ -600,7 +601,7 @@ describe('Admin app shell', () => {
     const { wrapper, calls } = await mountAdminApp({ hash: '#/settings' });
 
     const accessCheckboxes = wrapper.findAll('.settings-pane input[type="checkbox"]');
-    await accessCheckboxes[1].setValue(true);
+    await accessCheckboxes[2].setValue(true);
     await wrapper.find('.settings-pane select').setValue('app_and_share');
     await wrapper.find('.settings-pane textarea').setValue('Updates in progress');
 
@@ -608,7 +609,7 @@ describe('Admin app shell', () => {
     await displayTab.trigger('click');
     await flushPromises();
 
-    const displayCheckbox = wrapper.find('.settings-pane input[type="checkbox"]');
+    const displayCheckbox = wrapper.findAll('.settings-pane input[type="checkbox"]')[1];
     await displayCheckbox.setValue(false);
 
     const uploadsTab = wrapper.findAll('.settings-tabs button').find((button) => button.text() === 'Uploads');
@@ -649,7 +650,7 @@ describe('Admin app shell', () => {
     expect(wrapper.text()).toContain('Shared file terms');
 
     const accessCheckboxes = wrapper.findAll('.settings-pane input[type="checkbox"]');
-    await accessCheckboxes[2].setValue(true);
+    await accessCheckboxes[3].setValue(true);
 
     const accessTextareas = wrapper.findAll('.settings-pane textarea');
     await accessTextareas[1].setValue('Accept the published terms before opening or downloading shared files.');
@@ -828,6 +829,95 @@ describe('Admin app shell', () => {
     expect(new URL(treeListUrl).searchParams.get('folder_id')).toBe('42');
   });
 
+  it('opens the personal home after login from the public root and from My files', async () => {
+    const member = { id: 17, username: 'alice', role: 'user', status: 'active' };
+    let loggedIn = false;
+    const { wrapper, calls } = await mountBrowserApp({
+      hash: '#/folder/1', bootstrapUser: null,
+      handlers: {
+        'auth.session': () => jsonResponse(loggedIn ? {
+          ...sessionPayload(member), home_folder_id: 42,
+          space: { enabled: true, status: 'active', folder_id: 42, used_bytes: 512, size_limit_bytes: 1024 },
+          navigation_roots: [{ id: 50, name: 'Team documents' }],
+        } : sessionPayload(null)),
+        'auth.login': () => { loggedIn = true; return jsonResponse({ user: member }); },
+      },
+    });
+    await wrapper.find('input[type="text"]').setValue('alice');
+    await wrapper.find('input[type="password"]').setValue('test-password');
+    await wrapper.find('.auth-form').trigger('submit');
+    await flushPromises();
+    expect(new URL(calls.filter((call) => call.action === 'tree.list').at(-1).input).searchParams.get('folder_id')).toBe('42');
+    expect(wrapper.text()).toContain('512 B');
+    const shared = wrapper.findAll('button').find((button) => button.text() === 'Shared: Team documents');
+    await shared.trigger('click');
+    window.dispatchEvent(new Event('hashchange'));
+    await flushPromises();
+    expect(window.location.hash).toBe('#/folder/50');
+    await wrapper.findAll('button').find((button) => button.text() === 'My files').trigger('click');
+    window.dispatchEvent(new Event('hashchange'));
+    await flushPromises();
+    expect(window.location.hash).toBe('#/folder/42');
+    wrapper.unmount();
+  });
+
+  it('clears stale contents and offers recovery after denied navigation', async () => {
+    const { wrapper } = await mountBrowserApp({
+      handlers: {
+        'tree.list': (input) => new URL(input).searchParams.get('folder_id') === '99'
+          ? errorResponse({ message: 'You do not have access to this folder.' })
+          : jsonResponse(browserTreePayload()),
+      },
+    });
+    expect(wrapper.text()).toContain('brochure.pdf');
+    window.location.hash = '#/folder/99';
+    window.dispatchEvent(new Event('hashchange'));
+    await flushPromises();
+    await flushPromises();
+    expect(wrapper.text()).not.toContain('brochure.pdf');
+    expect(wrapper.find('[role="alert"]').text()).toContain('You do not have access');
+    await wrapper.findAll('button').find((button) => button.text() === 'Open my files').trigger('click');
+    await flushPromises();
+    window.dispatchEvent(new Event('hashchange'));
+    await flushPromises();
+    expect(wrapper.text()).toContain('brochure.pdf');
+    wrapper.unmount();
+  });
+
+  it.each(['none', 'disabled', 'unavailable'])('explains a %s personal space', async (status) => {
+    const { wrapper } = await mountBrowserApp({ handlers: {
+      'auth.session': () => jsonResponse({ ...sessionPayload(), space: { status } }),
+    } });
+    expect(wrapper.find('[role="status"]').text()).toMatch(/personal space|Personal spaces/);
+    wrapper.unmount();
+  });
+
+  it('keeps confirmed grants after failed removal and exposes root folder sharing', async () => {
+    const member = { id: 17, username: 'alice', role: 'user', status: 'active' };
+    const { wrapper } = await mountBrowserApp({
+      bootstrapUser: member,
+      handlers: {
+        'auth.session': () => jsonResponse({ ...sessionPayload(member), space: { status: 'active', can_share: true } }),
+        'tree.list': () => {
+          const payload = browserTreePayload();
+          Object.assign(payload.data.folder, { can_manage_sharing: true, can_edit: true, can_delete: false, protected_root: true });
+          return jsonResponse(payload);
+        },
+        'space.permissions.get': () => jsonResponse({ grants: [{ username: 'bob', level: 'view' }], users: [] }),
+        'space.permissions.save': () => errorResponse({ message: 'Unable to save permissions.' }),
+      },
+    });
+    await wrapper.findAll('button').find((button) => button.text() === 'Folder info').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('.space-share-row').text()).toContain('bob');
+    expect(wrapper.findAll('button').some((button) => button.text() === 'Rename')).toBe(false);
+    await wrapper.find('.space-share-row button').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('.space-share-row').text()).toContain('bob');
+    expect(wrapper.text()).toContain('Unable to save permissions.');
+    wrapper.unmount();
+  });
+
   it('shows the public share panel to space owners for their own files', async () => {
     const member = { id: 17, username: 'alice', role: 'user', status: 'active' };
     const { wrapper } = await mountBrowserApp({
@@ -846,6 +936,23 @@ describe('Admin app shell', () => {
     await flushPromises();
 
     expect(wrapper.find('.share-panel').exists()).toBe(true);
+  });
+
+  it('allows a user without a space to share files and shows creation errors inside the preview', async () => {
+    const member = { id: 17, username: 'alice', role: 'user', status: 'active' };
+    const { wrapper } = await mountBrowserApp({ bootstrapUser: member, handlers: {
+      'auth.session': () => jsonResponse({ ...sessionPayload(member), can_create_link_shares: true, display: { show_uploader: true } }),
+      'tree.list': () => jsonResponse(browserTreePayload({ can_share: true, uploader_username: 'alice' })),
+      'files.share.get': () => jsonResponse({ share: null }),
+      'files.share.create': () => errorResponse({ message: 'Link sharing was disabled by your administrator.' }),
+    } });
+    expect(wrapper.find('tbody tr').text()).toContain('alice');
+    await wrapper.find('tbody tr').trigger('click');
+    await flushPromises();
+    const modal = wrapper.find('.preview-modal');
+    await modal.findAll('button').find((button) => button.text() === 'Share link').trigger('click');
+    await flushPromises();
+    expect(modal.find('[role="alert"]').text()).toBe('Link sharing was disabled by your administrator.');
   });
 
   it('submits spaces settings from the dedicated settings tab', async () => {

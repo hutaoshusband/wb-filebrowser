@@ -320,6 +320,7 @@ XML;
         }
 
         self::ensureTableColumns($pdo, 'users', [
+            'link_shares_allowed INTEGER NULL',
             'storage_quota_bytes ' . self::bytesType((string) $config['driver']) . ' NULL',
         ], (string) $config['driver']);
         self::ensureTableColumns($pdo, 'file_shares', [
@@ -340,6 +341,7 @@ XML;
             'size_limit_bytes ' . self::bytesType((string) $config['driver']) . ' NULL',
         ], (string) $config['driver']);
         self::ensureTableColumns($pdo, 'files', [
+            'uploader_username VARCHAR(255) NOT NULL DEFAULT \'\'',
             'encryption_format VARCHAR(16) NOT NULL DEFAULT \'\'',
             'description ' . self::descriptionType((string) $config['driver']) . ' NOT NULL DEFAULT \'\'',
             'blob_id ' . self::referenceType((string) $config['driver']) . ' NULL',
@@ -353,6 +355,10 @@ XML;
             'active_ip_address ' . self::ipType((string) $config['driver']) . ' NULL',
         ], (string) $config['driver']);
 
+        if (Database::setting('migration_uploader_names_v1', '0') !== '1') {
+            $pdo->exec("UPDATE files SET uploader_username = COALESCE((SELECT username FROM users WHERE users.id = files.created_by), '') WHERE uploader_username = ''");
+            Database::updateSetting('migration_uploader_names_v1', '1');
+        }
         self::syncActiveConstraintColumns($pdo);
 
         foreach ($indexStatements as $statement) {

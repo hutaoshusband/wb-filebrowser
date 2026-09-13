@@ -48,6 +48,7 @@ function createDefaultMaintenance() {
 function createDefaultDisplaySettings() {
   return {
     grid_thumbnails_enabled: true,
+    show_uploader: true,
   };
 }
 
@@ -55,6 +56,7 @@ function createDefaultSettings() {
   return {
     access: {
       public_access: false,
+      user_link_shares_allowed: true,
       maintenance_enabled: false,
       maintenance_scope: 'app_only',
       maintenance_message: createDefaultMaintenance().message,
@@ -124,6 +126,8 @@ const session = reactive({
   publicAccess: false,
   rootFolderId: 1,
   homeFolderId: 1,
+  navigationRoots: [],
+  canCreateLinkShares: false,
   space: null,
   appVersion: bootstrap.app_version ?? '1.0.0-alpha',
   storage: { used_label: '0 B', total_label: 'Unknown' },
@@ -142,6 +146,7 @@ const route = reactive({
 
 const folderState = reactive({
   loading: false,
+  error: '',
   folder: null,
   breadcrumbs: [],
   folders: [],
@@ -189,12 +194,16 @@ const adminState = reactive({
 
 const shareState = reactive({
   fileId: 0,
+  error: '',
   loading: false,
   link: null,
 });
 const spaceShareState = reactive({
   folderId: 0,
   loading: false,
+  ready: false,
+  saving: false,
+  error: '',
   grants: [],
   users: [],
   maxLevel: 'write',
@@ -330,7 +339,7 @@ const currentEntries = computed(() => (searchActive.value ? [...searchState.fold
 const selectedItem = computed(() => currentEntries.value.find((item) => rowKey(item) === selectedKey.value) ?? null);
 const canUploadHere = computed(() => shell === 'app' && session.user !== null && folderState.can_upload);
 const canCreateFoldersHere = computed(() => shell === 'app' && folderState.can_create_folders);
-const canManageShares = computed(() => shell === 'app' && (isAdmin.value || Boolean(session.space?.can_share)));
+const canManageShares = computed(() => shell === 'app' && (isAdmin.value || session.canCreateLinkShares));
 const canShareItem = (item) => {
   if (!item || item.type !== 'file') {
     return false;
@@ -340,11 +349,12 @@ const canShareItem = (item) => {
     return true;
   }
 
-  return Boolean(session.space?.can_share) && item.can_share === true;
+  return session.canCreateLinkShares && item.can_share === true;
 };
 const canEditDescription = computed(() => Boolean(infoItem.value?.can_edit));
+const canManageFolderSharing = (item) => item?.type === 'folder' && item.can_manage_sharing && (isAdmin.value || session.space?.can_share);
 const breadcrumbItems = computed(() => searchActive.value
-  ? [{ id: session.rootFolderId, name: 'Home' }, { id: -1, name: 'Search results' }]
+  ? [{ id: session.homeFolderId, name: 'Home' }, { id: -1, name: 'Search results' }]
   : folderState.breadcrumbs);
 const filteredUsers = computed(() => filterUsers(adminState.users, searchQuery.value, route.section));
 const filteredPermissionRows = computed(() => route.section === 'permissions'
@@ -372,7 +382,7 @@ const descriptionDirty = computed(() => {
 });
 const descriptionTooLong = computed(() => descriptionDraft.value.length > 1000);
 const shareContextItem = computed(() => {
-  if (!canManageShares.value && !session.space?.can_share) {
+  if (!canManageShares.value) {
     return null;
   }
   if (infoItem.value?.type === 'file') {
@@ -516,6 +526,8 @@ async function refreshSession() {
   session.rootFolderId = payload.root_folder_id ?? 1;
   session.homeFolderId = payload.home_folder_id ?? payload.root_folder_id ?? 1;
   session.space = payload.space ?? null;
+  session.canCreateLinkShares = payload.can_create_link_shares ?? Boolean(session.space?.can_share);
+  session.navigationRoots = payload.navigation_roots ?? [];
   session.appVersion = payload.app_version ?? session.appVersion;
   session.storage = payload.storage ?? session.storage;
   session.diagnostic = payload.diagnostic ?? session.diagnostic;
@@ -679,6 +691,10 @@ async function refreshCurrentView() {
 
 async function loadFolder(folderId = route.folderId) {
   folderState.loading = true;
+  folderState.error = '';
+  Object.assign(folderState, { folder: null, folders: [], files: [], breadcrumbs: [], can_upload: false, can_create_folders: false, can_edit: false, can_delete: false });
+  selectedKey.value = '';
+  infoItem.value = null;
   try {
     const payload = await api('tree.list', {
       params: {
@@ -687,10 +703,15 @@ async function loadFolder(folderId = route.folderId) {
         direction: sortDirection.value,
       },
     });
+    if (route.folderId !== folderId) return;
     Object.assign(folderState, payload.data);
     selectedKey.value = '';
+  } catch (error) {
+    if (route.folderId === folderId) {
+      folderState.error = error instanceof Error ? error.message : 'Unable to load this folder.';
+    }
   } finally {
-    folderState.loading = false;
+    if (route.folderId === folderId) folderState.loading = false;
   }
 }
 
@@ -776,14 +797,19 @@ function openUserDetails(user) {
   window.location.hash = nextHash;
 }
 
-function browseHome() {
+async function browseHome() {
   closeMobileNav();
   if (isAdminShell.value) {
     goToBrowserRoot();
     return;
   }
 
-  navigateToFolder(session.rootFolderId);
+  try {
+    await refreshSession();
+    navigateToFolder(session.homeFolderId || session.rootFolderId);
+  } catch (error) {
+    showMessage(error instanceof Error ? error.message : 'Unable to open your files.');
+  }
 }
 
 function redirectTo(url) {
@@ -841,7 +867,7 @@ function canEditItem(item) {
     return false;
   }
 
-  return Boolean(item.can_edit);
+  return Boolean(item.can_edit) && !item.protected_root;
 }
 
 function canDeleteItem(item) {
@@ -1200,6 +1226,9 @@ async function submitLogin() {
     session.csrfToken = payload.csrf_token ?? session.csrfToken;
     authForm.password = '';
     await refreshSession();
+    if (!isAdminShell.value && (session.space?.status === 'active' || !window.location.hash || window.location.hash === `#/folder/${session.rootFolderId}`)) {
+      window.history.replaceState(null, '', `#/folder/${session.homeFolderId}`);
+    }
     syncRouteFromHash();
     startAutomationPulse();
 
@@ -1234,6 +1263,8 @@ async function logout() {
   }
 
   await refreshSession();
+  window.history.replaceState(null, '', `#/folder/${session.homeFolderId}`);
+  syncRouteFromHash();
   await refreshCurrentView();
 }
 
@@ -1790,9 +1821,23 @@ function buildFolderRows(folders) {
   return rows;
 }
 
-async function ensureMoveTargets() {
+async function ensureMoveTargets(item) {
   const payload = await api('tree.folders');
-  return buildFolderRows(payload.folders).filter((folder) => folder.can_edit);
+  const folders = payload.folders ?? [];
+  const sourceFolderId = item.type === 'folder' ? item.id : item.folder_id;
+  const source = folders.find((folder) => folder.id === sourceFolderId);
+  return buildFolderRows(folders).filter((folder) => {
+    if (!(folder.can_receive_moves ?? folder.can_edit)) return false;
+    if (!isAdmin.value && (folder.space_root_id ?? null) !== (source?.space_root_id ?? null)) return false;
+    let current = folder;
+    const visited = new Set();
+    while (item.type === 'folder' && current && !visited.has(current.id)) {
+      if (current.id === item.id) return false;
+      visited.add(current.id);
+      current = folders.find((entry) => entry.id === current.parent_id);
+    }
+    return folder.id !== (item.type === 'folder' ? item.parent_id : item.folder_id);
+  });
 }
 
 async function moveSelected(item = selectedItem.value) {
@@ -1806,11 +1851,20 @@ async function moveSelected(item = selectedItem.value) {
     return;
   }
 
-  const folderList = await ensureMoveTargets();
+  const folderList = await ensureMoveTargets(item);
+  if (folderList.length === 0) {
+    showMessage('No available destination folders.');
+    return;
+  }
   const choices = folderList.map((folder) => `${folder.id}: ${folder.path}`).join('\n');
-  const destination = window.prompt(`Move "${item.name}" to folder ID:\n${choices}`, String(route.folderId));
+  const destination = window.prompt(`Move "${item.name}" to folder ID:\n${choices}`, String(folderList[0].id));
 
   if (!destination) {
+    return;
+  }
+
+  if (!folderList.some((folder) => folder.id === Number(destination))) {
+    showMessage('Choose one of the available destination folders.');
     return;
   }
 
@@ -1852,6 +1906,7 @@ async function deleteSelected(item = selectedItem.value) {
 }
 
 function resetShareState() {
+  shareState.error = '';
   shareState.fileId = 0;
   shareState.loading = false;
   shareState.link = null;
@@ -1915,12 +1970,16 @@ function shareOptionsFor(item) {
 }
 
 async function loadSpaceSharing(item) {
-  if (!item || item.type !== 'folder' || !item.can_manage_sharing || !session.space?.can_share) {
+  if (!canManageFolderSharing(item)) {
     return;
   }
 
   spaceShareState.folderId = item.id;
   spaceShareState.loading = true;
+  spaceShareState.ready = false;
+  spaceShareState.error = '';
+  spaceShareState.grants = [];
+  spaceShareState.users = [];
 
   try {
     const payload = await api('space.permissions.get', {
@@ -1929,10 +1988,15 @@ async function loadSpaceSharing(item) {
 
     if (spaceShareState.folderId === item.id) {
       spaceShareState.grants = payload.grants ?? [];
+      spaceShareState.ready = true;
       spaceShareState.users = payload.users ?? [];
       spaceShareState.maxLevel = payload.max_grant_level ?? 'write';
       spaceShareState.draftUser = '';
       spaceShareState.draftLevel = 'view';
+    }
+  } catch (error) {
+    if (spaceShareState.folderId === item.id) {
+      spaceShareState.error = error instanceof Error ? error.message : 'Unable to load sharing grants.';
     }
   } finally {
     if (spaceShareState.folderId === item.id) {
@@ -1941,15 +2005,27 @@ async function loadSpaceSharing(item) {
   }
 }
 
-async function persistSpaceGrants(item) {
-  await api('space.permissions.save', {
-    method: 'POST',
-    body: {
-      folder_id: item.id,
-      grants: spaceShareState.grants.map((grant) => ({ username: grant.username, level: grant.level })),
-    },
-  });
-  await loadSpaceSharing(item);
+async function persistSpaceGrants(item, grants) {
+  if (spaceShareState.saving || spaceShareState.loading || !spaceShareState.ready) return;
+  spaceShareState.saving = true;
+  spaceShareState.error = '';
+  try {
+    const payload = await api('space.permissions.save', {
+      method: 'POST',
+      body: { folder_id: item.id, grants: grants.map(({ username, level }) => ({ username, level })) },
+    });
+    if (spaceShareState.folderId === item.id) {
+      spaceShareState.grants = payload.grants ?? grants;
+      spaceShareState.draftUser = '';
+    }
+    showMessage('Sharing permissions saved.');
+  } catch (error) {
+    if (spaceShareState.folderId === item.id) {
+      spaceShareState.error = error instanceof Error ? error.message : 'Unable to save sharing permissions.';
+    }
+  } finally {
+    spaceShareState.saving = false;
+  }
 }
 
 async function addSpaceGrant(item) {
@@ -1962,9 +2038,7 @@ async function addSpaceGrant(item) {
     return;
   }
 
-  spaceShareState.grants.push({ username: spaceShareState.draftUser, level: spaceShareState.draftLevel });
-  await persistSpaceGrants(item);
-  showMessage(`Access granted to ${spaceShareState.draftUser}.`);
+  await persistSpaceGrants(item, [...spaceShareState.grants, { username: spaceShareState.draftUser, level: spaceShareState.draftLevel }]);
 }
 
 async function removeSpaceGrant(grant) {
@@ -1974,9 +2048,7 @@ async function removeSpaceGrant(grant) {
     return;
   }
 
-  spaceShareState.grants = spaceShareState.grants.filter((entry) => entry.username !== grant.username);
-  await persistSpaceGrants(item);
-  showMessage(`Access removed for ${grant.username}.`);
+  await persistSpaceGrants(item, spaceShareState.grants.filter((entry) => entry.username !== grant.username));
 }
 
 async function loadShareState(item = shareContextItem.value) {
@@ -1988,6 +2060,8 @@ async function loadShareState(item = shareContextItem.value) {
   shareState.fileId = item.id;
   shareState.loading = true;
 
+  shareState.fileId = item.id;
+  shareState.error = '';
   try {
     const payload = await api('files.share.get', {
       params: { file_id: item.id },
@@ -2021,6 +2095,8 @@ async function createShareLink(item = shareContextItem.value, { open = false } =
     return;
   }
 
+  shareState.fileId = item.id;
+  shareState.error = '';
   try {
     const payload = await api('files.share.create', {
       method: 'POST',
@@ -2047,7 +2123,7 @@ async function createShareLink(item = shareContextItem.value, { open = false } =
 
     showMessage(copied ? 'Share link copied.' : 'Share link ready.');
   } catch (error) {
-    showMessage(error instanceof Error ? error.message : 'Unable to create a share link.');
+    showMessage(shareState.error = error instanceof Error ? error.message : 'Unable to create a share link.');
   }
 }
 
@@ -2058,8 +2134,11 @@ async function openShareLink(item = shareContextItem.value) {
     return;
   }
 
-  const popup = window.open('', '_blank', 'noopener');
+  const popup = window.open('', '_blank');
+  if (popup) popup.opener = null;
 
+  shareState.fileId = item.id;
+  shareState.error = '';
   try {
     const payload = await api('files.share.create', {
       method: 'POST',
@@ -2073,9 +2152,10 @@ async function openShareLink(item = shareContextItem.value) {
     shareState.link = payload.share;
     applyShareForm(item, payload.share);
     popup?.location.replace(payload.share.url);
+    if (!popup) shareState.error = 'Your browser blocked the new tab. Use the share link below.';
   } catch (error) {
     popup?.close();
-    showMessage(error instanceof Error ? error.message : 'Unable to open the shared view.');
+    showMessage(shareState.error = error instanceof Error ? error.message : 'Unable to open the shared view.');
   }
 }
 
@@ -2095,6 +2175,8 @@ async function removeSharePassword(item = shareContextItem.value) {
     return;
   }
 
+  shareState.fileId = item.id;
+  shareState.error = '';
   try {
     const payload = await api('files.share.create', {
       method: 'POST',
@@ -2111,7 +2193,7 @@ async function removeSharePassword(item = shareContextItem.value) {
     applyShareForm(item, payload.share);
     showMessage('Share password removed.');
   } catch (error) {
-    showMessage(error instanceof Error ? error.message : 'Unable to update the share password.');
+    showMessage(shareState.error = error instanceof Error ? error.message : 'Unable to update the share password.');
   }
 }
 
@@ -2142,7 +2224,7 @@ async function revokeShareLink(item = shareContextItem.value) {
     applyShareForm(item, null);
     showMessage('Share link disabled.');
   } catch (error) {
-    showMessage(error instanceof Error ? error.message : 'Unable to disable the share link.');
+    showMessage(shareState.error = error instanceof Error ? error.message : 'Unable to disable the share link.');
   }
 }
 
@@ -2170,9 +2252,14 @@ function selectCurrentItem() {
 
 async function loadAdminUsers() {
   const payload = await api('admin.users.list');
+  if (payload.spaces_policy) {
+    adminState.settings.spaces = payload.spaces_policy;
+    if (!newUserForm.username) newUserForm.space_enabled = Boolean(payload.spaces_policy.auto_create);
+  }
   adminState.users = (payload.users ?? []).map((user) => ({
     ...user,
     storage_quota_input: user.storage_quota_bytes === null ? '' : String(user.storage_quota_bytes),
+    link_shares_allowed: user.link_shares_allowed ?? null,
     space_enabled: user.space?.status === 'active',
     space_size_limit_input: user.space?.size_limit_bytes === null || user.space?.size_limit_bytes === undefined
       ? ''
@@ -2185,7 +2272,9 @@ function spaceStatusLabel(space) {
     return 'None';
   }
 
-  return space.status === 'active' ? 'Active' : 'Disabled';
+  return space.status === 'active'
+    ? (adminState.settings.spaces.enabled ? 'Active' : 'Unavailable — Spaces is disabled globally')
+    : 'Disabled';
 }
 
 async function loadAuditLogs(page = adminState.auditPage) {
@@ -2513,7 +2602,7 @@ function resetNewUserForm() {
   newUserForm.password = '';
   newUserForm.role = 'user';
   newUserForm.force_password_reset = false;
-  newUserForm.space_enabled = false;
+  newUserForm.space_enabled = Boolean(adminState.settings.spaces.auto_create);
 }
 
 async function createUser() {
@@ -2551,6 +2640,7 @@ async function saveUser(user) {
       force_password_reset: user.force_password_reset,
       storage_quota_bytes: quotaBytes,
       space_enabled: user.role === 'user' ? Boolean(user.space_enabled) : false,
+      link_shares_allowed: user.link_shares_allowed ?? null,
       space_size_limit_bytes: spaceLimitBytes,
     },
   });
@@ -2997,15 +3087,15 @@ watch(() => shareContextItem.value?.id ?? 0, async (fileId) => {
   try {
     await loadShareState(shareContextItem.value);
   } catch (error) {
-    resetShareState();
-    showMessage(error instanceof Error ? error.message : 'Unable to load the share link.');
+    shareState.error = error instanceof Error ? error.message : 'Unable to load the share link.';
+    showMessage(shareState.error);
   }
 });
 
-watch(() => infoItem.value?.id ?? 0, async (folderId) => {
+watch(() => infoItem.value ? rowKey(infoItem.value) : '', async () => {
   const item = infoItem.value;
 
-  if (!item || item.type !== 'folder' || !item.can_manage_sharing || !session.space?.can_share) {
+  if (!canManageFolderSharing(item)) {
     return;
   }
 
@@ -3140,6 +3230,9 @@ onBeforeUnmount(() => {
 
       <nav class="sidebar-nav">
         <button class="sidebar-link" type="button" @click="browseHome">My files</button>
+        <template v-if="shell === 'app'">
+          <button v-for="folder in session.navigationRoots.filter((entry) => entry.id !== session.homeFolderId)" :key="folder.id" class="sidebar-link" type="button" @click="navigateToFolder(folder.id)">{{ folder.id === session.rootFolderId ? 'Library' : `Shared: ${folder.name}` }}</button>
+        </template>
         <button class="sidebar-link" type="button" :disabled="shell === 'admin' || !canCreateFoldersHere" @click="createFolder">New folder</button>
         <button class="sidebar-link" type="button" :disabled="shell === 'admin' || !canUploadHere" @click="triggerUpload">New file</button>
         <button class="sidebar-link" type="button" @click="openSettings">Settings</button>
@@ -3151,6 +3244,11 @@ onBeforeUnmount(() => {
       </p>
 
       <div class="sidebar-footer">
+        <div v-if="session.space?.status === 'active'" class="storage-meter">
+          <div class="storage-meter__label">Personal space</div>
+          <strong>{{ session.space.used_label ?? formatBytes(session.space.used_bytes ?? 0) }}</strong>
+          <span>{{ session.space.size_limit_bytes == null ? 'Unlimited space' : `of ${formatBytes(session.space.size_limit_bytes)} used` }}</span>
+        </div>
         <div v-if="session.user" class="storage-meter">
           <div class="storage-meter__label">Storage Used</div>
           <strong>{{ session.storage.used_label }}</strong>
@@ -3418,11 +3516,12 @@ onBeforeUnmount(() => {
                   <span class="checkbox-control__indicator" aria-hidden="true"></span>
                   <span class="checkbox-control__label">Require password reset at next login</span>
                 </label>
-                <label class="checkbox-control checkbox-control--row">
+                <label v-if="newUserForm.role === 'user'" class="checkbox-control checkbox-control--row">
                   <input v-model="newUserForm.space_enabled" class="checkbox-control__input" type="checkbox">
                   <span class="checkbox-control__indicator" aria-hidden="true"></span>
                   <span class="checkbox-control__label">Create a personal space for this user</span>
                 </label>
+                <p v-if="newUserForm.role === 'user' && !adminState.settings.spaces.enabled" class="panel-meta">Spaces is disabled globally. Created spaces become accessible after enabling Spaces in Settings.</p>
                 <button type="submit">Create account</button>
               </form>
             </article>
@@ -3497,6 +3596,15 @@ onBeforeUnmount(() => {
           <article v-if="activeAdminUser" class="panel">
             <p class="panel-kicker">Account</p>
             <h2>Profile and access</h2>
+            <label v-if="activeAdminUser.role === 'user'">
+              <span>Public file share links</span>
+              <select v-model="activeAdminUser.link_shares_allowed" :disabled="!canEditUser(activeAdminUser)">
+                <option :value="null">Use global default</option>
+                <option :value="true">Allow</option>
+                <option :value="false">Deny</option>
+              </select>
+              <small>Overrides the global default for this user. Denying also blocks their existing links.</small>
+            </label>
             <label>
               <span>Role</span>
               <select v-model="activeAdminUser.role" :disabled="!canEditUser(activeAdminUser)">
@@ -3544,6 +3652,7 @@ onBeforeUnmount(() => {
             <p class="panel-kicker">Space</p>
             <h2>Personal space</h2>
             <p>Current status: {{ spaceStatusLabel(activeAdminUser.space) }}</p>
+            <p v-if="!adminState.settings.spaces.enabled" class="panel-meta">Enable Spaces in Settings to let this user access their personal space.</p>
             <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !canEditUser(activeAdminUser) }]">
               <input v-model="activeAdminUser.space_enabled" class="checkbox-control__input" type="checkbox" :disabled="!canEditUser(activeAdminUser)">
               <span class="checkbox-control__indicator" aria-hidden="true"></span>
@@ -3733,6 +3842,11 @@ onBeforeUnmount(() => {
             <div v-if="adminState.settingsTab === 'access'" class="settings-pane">
               <p class="panel-kicker">Access</p>
               <h2>Published browsing and maintenance</h2>
+              <label class="checkbox-control checkbox-control--row">
+                <input v-model="adminState.settings.access.user_link_shares_allowed" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                <span class="checkbox-control__label">Allow users to create public file links by default<small>Users can share their uploads and files in their own space. Individual user settings can override this default.</small></span>
+              </label>
               <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
                 <input v-model="adminState.settings.access.public_access" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
                 <span class="checkbox-control__indicator" aria-hidden="true"></span>
@@ -3778,6 +3892,11 @@ onBeforeUnmount(() => {
             </div>
 
             <div v-else-if="adminState.settingsTab === 'display'" class="settings-pane">
+              <label class="checkbox-control checkbox-control--row">
+                <input v-model="adminState.settings.display.show_uploader" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                <span class="checkbox-control__label">Show uploader beside file names</span>
+              </label>
               <p class="panel-kicker">Display</p>
               <h2>Grid thumbnails</h2>
               <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
@@ -3939,7 +4058,7 @@ onBeforeUnmount(() => {
               <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
                 <input v-model="adminState.settings.spaces.enabled" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
                 <span class="checkbox-control__indicator" aria-hidden="true"></span>
-                <span class="checkbox-control__label">Enable per-user spaces<small class="panel-meta">Each enabled user gets a private root folder and lands there after login. Admins keep full visibility of every space.</small></span>
+                <span class="checkbox-control__label">Enable per-user spaces<small class="panel-meta">Saving with Spaces enabled creates missing spaces for existing standard users. Individually disabled spaces stay disabled. Users land in their private folder after login; admins retain full visibility.</small></span>
               </label>
               <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
                 <input v-model="adminState.settings.spaces.sharing_allowed" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
@@ -3956,7 +4075,7 @@ onBeforeUnmount(() => {
               <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
                 <input v-model="adminState.settings.spaces.auto_create" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
                 <span class="checkbox-control__indicator" aria-hidden="true"></span>
-                <span class="checkbox-control__label">Create a space automatically for every new standard user</span>
+                <span class="checkbox-control__label">Select personal space creation by default for new standard users<small class="panel-meta">You can change this choice when creating an account.</small></span>
               </label>
             </div>
           </article>
@@ -4277,12 +4396,19 @@ onBeforeUnmount(() => {
       </template>
 
       <template v-else>
+        <p v-if="session.space && session.space.status !== 'active'" class="panel-meta" role="status">{{ session.space.status === 'none' ? 'Your personal space has not been created. Ask an administrator to enable it.' : session.space.status === 'disabled' ? 'Your personal space is disabled. Ask an administrator to restore access.' : 'Personal spaces are currently disabled by the administrator.' }}</p>
+        <div v-if="folderState.error && !searchActive" role="alert" class="panel">
+          <p>{{ folderState.error }}</p>
+          <button type="button" @click="browseHome">Open my files</button>
+          <button type="button" @click="loadFolder()">Retry</button>
+        </div>
         <div class="breadcrumb-bar">
           <button class="crumb-home" type="button" @click="browseHome">Home</button>
           <template v-for="crumb in breadcrumbItems" :key="crumb.id">
             <span class="crumb-separator">/</span>
             <button class="crumb-link" type="button" @click="crumb.id > 0 && navigateToFolder(crumb.id)">{{ crumb.name }}</button>
           </template>
+          <button v-if="folderState.folder && !searchActive" type="button" class="crumb-link" @click="infoItem = folderState.folder">Folder info</button>
         </div>
 
 
@@ -4308,7 +4434,7 @@ onBeforeUnmount(() => {
               >
               <div v-else class="grid-card__icon">{{ item.type === 'folder' ? '📁' : '📄' }}</div>
             </div>
-            <strong>{{ item.name }}</strong>
+            <strong>{{ item.name }}<small class="uploader-attribution" v-if="item.type === 'file' && session.display.show_uploader && item.uploader_username"> - {{ item.uploader_username }}</small></strong>
             <span>{{ item.size_label }}</span>
             <small>{{ item.updated_relative }}</small>
           </button>
@@ -4332,7 +4458,7 @@ onBeforeUnmount(() => {
                 @click="handleEntryClick(item)"
                 @contextmenu="handleContextMenu($event, item)"
               >
-                <td class="name-cell"><span class="row-icon">{{ item.type === 'folder' ? '📁' : '📄' }}</span><span>{{ item.name }}</span><span v-if="item.type === 'file' && item.locked" class="entry-locked">Locked</span></td>
+                <td class="name-cell"><span class="row-icon">{{ item.type === 'folder' ? '📁' : '📄' }}</span><span>{{ item.name }}<small class="uploader-attribution" v-if="item.type === 'file' && session.display.show_uploader && item.uploader_username"> - {{ item.uploader_username }}</small></span><span v-if="item.type === 'file' && item.locked" class="entry-locked">Locked</span></td>
                 <td>{{ item.size_label }}</td>
                 <td>{{ item.updated_relative }}</td>
               </tr>
@@ -4348,6 +4474,8 @@ onBeforeUnmount(() => {
           <div>
             <h2>{{ previewItem.name }} <span v-if="previewItem.type === 'file' && previewItem.locked" class="entry-locked">Locked</span></h2>
             <p>{{ previewItem.mime_type }}</p>
+            <p v-if="shareState.fileId === previewItem.id && shareState.error" role="alert">{{ shareState.error }}</p>
+            <p v-if="session.user && !canShareItem(previewItem)">Public file links are not permitted for this file or your account.</p>
           </div>
           <div class="header-actions">
             <button v-if="canShareItem(previewItem) && !previewItem.locked" class="header-button" type="button" @click="createShareLink(previewItem)">Share link</button>
@@ -4489,12 +4617,13 @@ onBeforeUnmount(() => {
             <dl>
               <div><dt>Name</dt><dd>{{ previewItem.name }}</dd></div>
               <div><dt>Size</dt><dd>{{ previewItem.size_label }}</dd></div>
+              <div v-if="session.display.show_uploader && previewItem.uploader_username"><dt>Shared by</dt><dd class="uploader-attribution">{{ previewItem.uploader_username }}</dd></div>
               <div><dt>Updated</dt><dd>{{ previewItem.updated_relative }}</dd></div>
               <div><dt>Checksum</dt><dd>{{ previewItem.checksum }}</dd></div>
             </dl>
             <div v-if="canShareItem(previewItem)" class="share-panel">
               <strong>Public share</strong>
-              <p v-if="shareState.fileId === previewItem.id && shareState.link" class="share-panel__url">{{ shareState.link.url }}</p>
+              <p v-if="shareState.fileId === previewItem.id && shareState.link" class="share-panel__url"><a :href="shareState.link.url" target="_blank" rel="noopener noreferrer">{{ shareState.link.url }}</a></p>
               <p v-else>No public share link is active for this file yet.</p>
               <p class="share-panel__hint">
                 {{ shareState.fileId === previewItem.id && shareState.link?.requires_password ? 'Password protected' : 'No password required' }}
@@ -4562,10 +4691,13 @@ onBeforeUnmount(() => {
         <h2>Info</h2>
         <button class="header-button" type="button" @click="infoItem = null">Close</button>
       </header>
+      <p v-if="shareState.fileId === infoItem.id && shareState.error" role="alert">{{ shareState.error }}</p>
+      <p v-if="infoItem.type === 'file' && session.user && !canShareItem(infoItem)">Public file links are not permitted for this file or your account.</p>
       <dl>
         <div><dt>Name</dt><dd>{{ infoItem.name }}</dd></div>
         <div><dt>Type</dt><dd>{{ infoItem.type }}</dd></div>
         <div><dt>Size</dt><dd>{{ infoItem.size_label }}</dd></div>
+        <div v-if="session.display.show_uploader && infoItem.uploader_username"><dt>Shared by</dt><dd class="uploader-attribution">{{ infoItem.uploader_username }}</dd></div>
         <div><dt>Last modified</dt><dd>{{ infoItem.updated_relative }}</dd></div>
       </dl>
       <div class="note-panel">
@@ -4588,15 +4720,17 @@ onBeforeUnmount(() => {
           {{ descriptionSaving ? 'Saving...' : 'Save description' }}
         </button>
       </div>
-      <div v-if="infoItem.type === 'folder' && infoItem.can_manage_sharing && session.space?.can_share" class="share-panel">
+      <div v-if="canManageFolderSharing(infoItem)" class="share-panel">
         <strong>Share access</strong>
         <p class="share-panel__hint">Give other users view or write access to this folder inside your space.</p>
         <p v-if="spaceShareState.loading && spaceShareState.folderId === infoItem.id">Loading grants...</p>
-        <template v-else>
+        <p v-if="spaceShareState.error" role="alert">{{ spaceShareState.error }}</p>
+        <button v-if="!spaceShareState.loading && !spaceShareState.ready" type="button" @click="loadSpaceSharing(infoItem)">Retry loading permissions</button>
+        <template v-if="!spaceShareState.loading && spaceShareState.ready">
           <p v-if="spaceShareState.grants.length === 0" class="share-panel__hint">No other users have access yet.</p>
           <div v-for="grant in spaceShareState.grants" :key="grant.username" class="space-share-row">
             <span><strong>{{ grant.username }}</strong> · {{ grant.level === 'write' ? 'View + write' : 'View only' }}</span>
-            <button type="button" @click="removeSpaceGrant(grant)">Remove</button>
+            <button type="button" :disabled="spaceShareState.saving" @click="removeSpaceGrant(grant)">Remove</button>
           </div>
           <label>
             <span>User</span>
@@ -4612,13 +4746,13 @@ onBeforeUnmount(() => {
               <option v-if="spaceShareState.maxLevel === 'write'" value="write">View + write</option>
             </select>
           </label>
-          <button type="button" :disabled="spaceShareState.draftUser === ''" @click="addSpaceGrant(infoItem)">Grant access</button>
+          <button type="button" :disabled="spaceShareState.saving || spaceShareState.draftUser === ''" @click="addSpaceGrant(infoItem)">Grant access</button>
         </template>
       </div>
       <div v-if="canShareItem(infoItem)" class="share-panel">
         <strong>Public share</strong>
         <p v-if="shareState.loading && shareState.fileId === infoItem.id">Checking share link...</p>
-        <p v-else-if="shareState.fileId === infoItem.id && shareState.link" class="share-panel__url">{{ shareState.link.url }}</p>
+        <p v-else-if="shareState.fileId === infoItem.id && shareState.link" class="share-panel__url"><a :href="shareState.link.url" target="_blank" rel="noopener noreferrer">{{ shareState.link.url }}</a></p>
         <p v-else>No public share link is active for this file yet.</p>
         <p class="share-panel__hint">
           {{ shareState.fileId === infoItem.id && shareState.link?.requires_password ? 'Password protected' : 'No password required' }}
@@ -4671,7 +4805,7 @@ onBeforeUnmount(() => {
 
     <div v-if="contextMenu" class="context-menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }">
       <template v-if="contextMenu.kind === 'item'">
-        <button v-if="canManageShares && contextMenu.item.type === 'file' && !contextMenu.item.locked" type="button" @click="createShareLink(contextMenu.item)">Share link</button>
+        <button v-if="canShareItem(contextMenu.item) && !contextMenu.item.locked" type="button" @click="createShareLink(contextMenu.item)">Share link</button>
         <button v-if="canEditItem(contextMenu.item)" type="button" @click="renameSelected(contextMenu.item)">Rename</button>
         <button v-if="canEditItem(contextMenu.item)" type="button" @click="moveSelected(contextMenu.item)">Move</button>
         <button v-if="canDeleteItem(contextMenu.item)" type="button" class="danger" @click="deleteSelected(contextMenu.item)">Delete</button>

@@ -54,7 +54,7 @@ final class FileShareTest extends DatabaseTestCase
         $file = $this->createFile('notes.txt');
 
         $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('Only administrators can manage share links.');
+        $this->expectExceptionMessage('You do not have permission to manage share links for this file.');
 
         FileShares::create($member, (int) $file['id']);
     }

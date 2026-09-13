@@ -1185,8 +1185,8 @@ final class FileManager
         ?string $diskName
     ): int {
         $statement = $pdo->prepare(
-            'INSERT INTO files (folder_id, original_name, disk_name, disk_extension, mime_type, size, checksum, blob_id, encryption_format, created_by, created_at, updated_at)
-             VALUES (:folder_id, :original_name, :disk_name, :disk_extension, :mime_type, :size, :checksum, :blob_id, :encryption_format, :created_by, :created_at, :updated_at)'
+            'INSERT INTO files (folder_id, original_name, disk_name, disk_extension, mime_type, size, checksum, blob_id, encryption_format, created_by, uploader_username, created_at, updated_at)
+             VALUES (:folder_id, :original_name, :disk_name, :disk_extension, :mime_type, :size, :checksum, :blob_id, :encryption_format, :created_by, :uploader_username, :created_at, :updated_at)'
         );
         $statement->execute([
             ':folder_id' => $folderId,
@@ -1201,6 +1201,7 @@ final class FileManager
             ':checksum' => $checksum,
             ':blob_id' => $blobId,
             ':created_by' => $user['id'],
+            ':uploader_username' => (string) $user['username'],
             ':created_at' => wb_now(),
             ':updated_at' => wb_now(),
         ]);
@@ -1630,6 +1631,16 @@ final class FileManager
         return $removed;
     }
 
+    public static function navigationRoots(?array $user): array
+    {
+        if ($user === null || in_array($user['role'], ['admin', 'super_admin'], true)) {
+            return [];
+        }
+        $folders = self::folderTree($user);
+        $ids = array_fill_keys(array_column($folders, 'id'), true);
+        return array_values(array_filter($folders, static fn (array $folder): bool => $folder['parent_id'] === null || !isset($ids[$folder['parent_id']])));
+    }
+
     public static function folderTree(?array $user = null): array
     {
         $pdo = Database::connection();
@@ -1745,6 +1756,8 @@ final class FileManager
         }
 
         $isRoot = $folderId === Database::rootFolderId();
+        $spaceRootId = SpaceService::spaceRootIdForFolder($folderId, $pdo);
+        $protectedRoot = $isRoot || $spaceRootId === $folderId || $folderId === SpaceService::containerFolderId($pdo);
         $cachedSize = $folder['cached_size_bytes'] === null ? null : (int) $folder['cached_size_bytes'];
         $ownSpaceRoot = $scope['own_space_root'] ?? null;
 
@@ -1753,6 +1766,8 @@ final class FileManager
             'type' => 'folder',
             'name' => $isRoot ? 'Home' : $folder['name'],
             'parent_id' => $folder['parent_id'] === null ? null : (int) $folder['parent_id'],
+            'space_root_id' => $spaceRootId,
+            'protected_root' => $protectedRoot,
             'size' => $cachedSize,
             'size_label' => $cachedSize === null ? '-' : wb_format_bytes($cachedSize),
             'mime_type' => 'inode/directory',
@@ -1765,7 +1780,8 @@ final class FileManager
             'can_upload' => Permissions::canUploadToFolder($folderId, $user, $pdo, $scope),
             'can_create_folders' => Permissions::canCreateFoldersIn($folderId, $user, $pdo, $scope),
             'can_edit' => !$isRoot && Permissions::canEditFolder($folderId, $user, $pdo, $scope),
-            'can_delete' => !$isRoot && Permissions::canDeleteFolder($folderId, $user, $pdo, $scope),
+            'can_receive_moves' => Permissions::canEditFolder($folderId, $user, $pdo, $scope),
+            'can_delete' => !$protectedRoot && Permissions::canDeleteFolder($folderId, $user, $pdo, $scope),
             'can_manage_sharing' => $scope['all']
                 || ($ownSpaceRoot !== null && in_array($folderId, $scope['own_space_ids'] ?? [], true)),
         ];
@@ -1795,7 +1811,8 @@ final class FileManager
             'extension' => $extension,
             'locked' => $locked,
             'encryption_format' => (string) ($file['encryption_format'] ?? ''),
-            'can_share' => $scope['all'] || $inOwnSpace,
+            'can_share' => $user !== null && FileShares::canManageFile($user, $file, $pdo),
+            'uploader_username' => wb_parse_bool(Database::setting('display_show_uploader', '1')) ? ((string) ($file['uploader_username'] ?? '') ?: 'Unknown') : null,
             'can_edit' => !$locked && Permissions::canEditFolder($folderId, $user, $pdo, $scope),
             'can_delete' => !$locked && Permissions::canDeleteFolder($folderId, $user, $pdo, $scope),
             'preview_url' => wb_url('/api/index.php?action=files.stream&id=' . (int) $file['id'] . '&disposition=inline'),

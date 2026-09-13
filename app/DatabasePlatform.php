@@ -251,6 +251,7 @@ final class DatabasePlatform
                 force_password_reset ' . $bool . ' NOT NULL DEFAULT 0,
                 is_immutable ' . $bool . ' NOT NULL DEFAULT 0,
                 storage_quota_bytes ' . $bytes . ' NULL,
+                link_shares_allowed INTEGER NULL,
                 created_at ' . $timestamp . ' NOT NULL,
                 updated_at ' . $timestamp . ' NOT NULL,
                 last_login_at ' . $timestamp . ' NULL
@@ -278,6 +279,7 @@ final class DatabasePlatform
                 id ' . $id . ',
                 folder_id ' . $refId . ' NOT NULL,
                 original_name ' . $shortText . ' NOT NULL,
+                uploader_username ' . $shortText . ' NOT NULL DEFAULT \'\',
                 disk_name ' . $tokenText . ' NOT NULL UNIQUE,
                 disk_extension ' . $shortText . ' NOT NULL,
                 mime_type ' . $shortText . ' NOT NULL,
