@@ -20,6 +20,8 @@ final class Permissions
     {
         $pdo ??= Database::connection();
 
+        if (isset($user['folder_share_token'])) return FolderShares::actor($user['folder_share_token'])['folder_share_scope'];
+
         if ($user !== null && in_array($user['role'], ['super_admin', 'admin'], true)) {
             $ids = array_map(
                 static fn (array $folder): int => (int) $folder['id'],

@@ -128,6 +128,7 @@ try {
                 'home_folder_id' => SpaceService::homeFolderIdFor($user),
                 'navigation_roots' => FileManager::navigationRoots($user),
                 'space' => SpaceService::sessionContextFor($user),
+                'can_create_write_links' => $user !== null && \WbFileBrowser\FolderShares::writeAllowed($user),
                 'can_create_link_shares' => $user !== null && FileShares::userLinksAllowed($user),
                 'app_version' => Database::setting('app_version', Installer::VERSION),
                 'storage' => FileManager::storageStats(),
@@ -308,6 +309,19 @@ try {
                     (string) ($requestData['description'] ?? '')
                 ),
             ]);
+
+        case 'folders.share.get':
+            $user = Auth::requireUser();
+            wb_json_response(['ok' => true, 'share' => \WbFileBrowser\FolderShares::get($user, (int) ($_GET['folder_id'] ?? 0))]);
+        case 'folders.share.create':
+            $requireCsrf();
+            $user = Auth::requireUser();
+            wb_json_response(['ok' => true, 'share' => \WbFileBrowser\FolderShares::create($user, (int) ($requestData['folder_id'] ?? 0), $requestData)], 201);
+        case 'folders.share.revoke':
+            $requireCsrf();
+            $user = Auth::requireUser();
+            \WbFileBrowser\FolderShares::revoke($user, (int) ($requestData['folder_id'] ?? 0));
+            wb_json_response(['ok' => true]);
 
         case 'files.share.get':
             $user = Auth::requireUser();
@@ -718,14 +732,9 @@ try {
                 wb_error_response('You do not have permission to manage sharing for this folder.', 403);
             }
 
-            $users = Database::connection()->query(
-                "SELECT id, username FROM users WHERE role = 'user' AND status = 'active' AND id != " . (int) $actor['id'] . ' ORDER BY username ASC'
-            )->fetchAll();
-
             wb_json_response([
                 'ok' => true,
                 'grants' => SpaceService::folderGrants($folderId),
-                'users' => $users,
                 'sharing_allowed' => SpaceService::policy()['sharing_allowed'],
                 'max_grant_level' => SpaceService::policy()['max_grant_level'],
             ]);

@@ -33,6 +33,7 @@ require_once __DIR__ . '/StorageLock.php';
 require_once __DIR__ . '/FileManager.php';
 require_once __DIR__ . '/MediaValidator.php';
 require_once __DIR__ . '/FileShares.php';
+require_once __DIR__ . '/FolderShares.php';
 require_once __DIR__ . '/AuditLog.php';
 require_once __DIR__ . '/IpBanService.php';
 require_once __DIR__ . '/AutomationRunner.php';

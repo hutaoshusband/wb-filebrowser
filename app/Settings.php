@@ -103,6 +103,7 @@ final class Settings
             'display_grid_thumbnails_enabled' => $normalized['display']['grid_thumbnails_enabled'] ? '1' : '0',
             'display_show_uploader' => $normalized['display']['show_uploader'] ? '1' : '0',
             'user_link_shares_allowed' => $normalized['access']['user_link_shares_allowed'] ? '1' : '0',
+            'user_link_share_level' => $normalized['access']['user_link_share_level'],
             'diagnostic_message' => 'Storage shield checks will start after setup.',
         ];
     }
@@ -115,6 +116,7 @@ final class Settings
             'access' => [
                 'public_access' => wb_parse_bool(Database::setting('public_access', '0')),
                 'user_link_shares_allowed' => wb_parse_bool(Database::setting('user_link_shares_allowed', '1')),
+                'user_link_share_level' => self::parseLinkShareLevel(Database::setting('user_link_share_level', 'write')),
                 'maintenance_enabled' => wb_parse_bool(Database::setting('maintenance_enabled', '0')),
                 'maintenance_scope' => self::parseMaintenanceScope(Database::setting('maintenance_scope', MaintenanceMode::SCOPE_APP_ONLY)),
                 'maintenance_message' => self::parseText(
@@ -286,6 +288,7 @@ final class Settings
             'display_grid_thumbnails_enabled' => $normalized['display']['grid_thumbnails_enabled'] ? '1' : '0',
             'display_show_uploader' => $normalized['display']['show_uploader'] ? '1' : '0',
             'user_link_shares_allowed' => $normalized['access']['user_link_shares_allowed'] ? '1' : '0',
+            'user_link_share_level' => $normalized['access']['user_link_share_level'],
             'spaces_enabled' => $normalized['spaces']['enabled'] ? '1' : '0',
             'spaces_user_sharing_allowed' => $normalized['spaces']['sharing_allowed'] ? '1' : '0',
             'spaces_max_grant_level' => $normalized['spaces']['max_grant_level'],
@@ -498,7 +501,7 @@ final class Settings
         $accessInput = self::normalizeGroupInput(
             $payload,
             'access',
-            ['public_access', 'user_link_shares_allowed', 'maintenance_enabled', 'maintenance_scope', 'maintenance_message', 'share_terms_enabled', 'share_terms_message'],
+            ['public_access', 'user_link_share_level', 'user_link_shares_allowed', 'maintenance_enabled', 'maintenance_scope', 'maintenance_message', 'share_terms_enabled', 'share_terms_message'],
             $base['access']
         );
         $uploadInput = self::normalizeGroupInput(
@@ -559,6 +562,7 @@ final class Settings
             'access' => [
                 'public_access' => wb_parse_bool($accessInput['public_access'] ?? $base['access']['public_access']),
                 'user_link_shares_allowed' => wb_parse_bool($accessInput['user_link_shares_allowed'] ?? $base['access']['user_link_shares_allowed']),
+                'user_link_share_level' => self::parseLinkShareLevel($accessInput['user_link_share_level'] ?? $base['access']['user_link_share_level']),
                 'maintenance_enabled' => wb_parse_bool($accessInput['maintenance_enabled'] ?? $base['access']['maintenance_enabled']),
                 'maintenance_scope' => self::parseMaintenanceScope($accessInput['maintenance_scope'] ?? $base['access']['maintenance_scope']),
                 'maintenance_message' => self::parseText(
@@ -700,6 +704,14 @@ final class Settings
         ];
     }
 
+    private static function parseLinkShareLevel(mixed $value): string
+    {
+        if (!in_array($value, ['none', 'view', 'write'], true)) {
+            throw new InvalidArgumentException('Link permissions must be none, view or write.');
+        }
+        return $value;
+    }
+
     private static function parseSpaceGrantLevel(mixed $value): string
     {
         $level = strtolower(trim((string) $value));
@@ -717,6 +729,7 @@ final class Settings
             'access' => [
                 'public_access' => false,
                 'user_link_shares_allowed' => true,
+                'user_link_share_level' => 'write',
                 'maintenance_enabled' => false,
                 'maintenance_scope' => MaintenanceMode::SCOPE_APP_ONLY,
                 'maintenance_message' => MaintenanceMode::defaultMessage(),
@@ -828,6 +841,7 @@ final class Settings
             'display_grid_thumbnails_enabled' => '1',
             'display_show_uploader' => '1',
             'user_link_shares_allowed' => '1',
+            'user_link_share_level' => 'write',
             'spaces_enabled' => '0',
             'spaces_user_sharing_allowed' => '1',
             'spaces_max_grant_level' => 'write',

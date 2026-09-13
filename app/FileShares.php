@@ -18,6 +18,7 @@ final class FileShares
         $current = $statement->fetch();
         if (!$current || $current['status'] !== 'active') return false;
         if (in_array($current['role'], ['admin', 'super_admin'], true)) return true;
+        if (Database::setting('user_link_share_level', 'write') === 'none') return false;
         return $current['link_shares_allowed'] === null
             ? wb_parse_bool(Database::setting('user_link_shares_allowed', '1'))
             : (int) $current['link_shares_allowed'] === 1;
@@ -845,7 +846,7 @@ final class FileShares
         ]);
     }
 
-    private static function normalizeOptions(array $options): array
+    public static function normalizeOptions(array $options): array
     {
         $expiresAt = trim((string) ($options['expires_at'] ?? ''));
         $deleteAfterInput = $options['delete_after'] ?? null;

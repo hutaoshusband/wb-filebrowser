@@ -327,13 +327,14 @@ final class AutomationRunner
      */
     private static function processShareDeletions(PDO $pdo): array
     {
+        $folders = FolderShares::processDueDeletions();
         $result = FileShares::processDueDeletions($pdo);
 
         return [
             'state' => 'success',
-            'message' => ($result['deleted'] ?? 0) === 0
+            'message' => ($result['deleted'] ?? 0) === 0 && $folders === 0
                 ? 'No share-scheduled deletions are due.'
-                : sprintf('Deleted %d file(s) scheduled by expired shares.', $result['deleted']),
+                : sprintf('Deleted %d file(s) and %d folder(s) scheduled by shares.', $result['deleted'], $folders),
         ];
     }
 

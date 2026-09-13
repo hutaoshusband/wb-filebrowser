@@ -38,6 +38,7 @@ require_once $root . '/app/StorageLock.php';
 require_once $root . '/app/FileManager.php';
 require_once $root . '/app/MediaValidator.php';
 require_once $root . '/app/FileShares.php';
+require_once $root . '/app/FolderShares.php';
 require_once $root . '/app/AuditLog.php';
 require_once $root . '/app/IpBanService.php';
 require_once $root . '/app/AutomationRunner.php';

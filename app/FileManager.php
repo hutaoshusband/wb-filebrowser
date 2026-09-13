@@ -309,6 +309,7 @@ final class FileManager
             if ($crossSpace) {
                 $placeholders = implode(',', array_fill(0, count($descendants), '?'));
                 $pdo->prepare('DELETE FROM folder_permissions WHERE folder_id IN (' . $placeholders . ')')->execute($descendants);
+                $pdo->prepare('DELETE FROM folder_shares WHERE folder_id IN (' . $placeholders . ')')->execute($descendants);
                 $pdo->prepare('DELETE FROM file_shares WHERE file_id IN (SELECT id FROM files WHERE folder_id IN (' . $placeholders . '))')->execute($descendants);
             }
             $pdo->commit();
@@ -839,6 +840,7 @@ final class FileManager
             'token' => $token,
             'folder_id' => $folderId,
             'user_id' => (int) $user['id'],
+            'folder_share_token' => $user['folder_share_token'] ?? null,
             'original_name' => $originalName,
             'mime_type' => $mimeType,
             'size' => $size,
@@ -858,7 +860,7 @@ final class FileManager
     {
         $metadata = self::readUploadMetadata($token);
 
-        if ((int) $metadata['user_id'] !== (int) $user['id']) {
+        if (($metadata['folder_share_token'] ?? null) !== ($user['folder_share_token'] ?? null) || (int) $metadata['user_id'] !== (int) $user['id']) {
             throw new RuntimeException('This upload session does not belong to you.');
         }
 
@@ -896,7 +898,7 @@ final class FileManager
     {
         $metadata = self::readUploadMetadata($token);
 
-        if ((int) $metadata['user_id'] !== (int) $user['id']) {
+        if (($metadata['folder_share_token'] ?? null) !== ($user['folder_share_token'] ?? null) || (int) $metadata['user_id'] !== (int) $user['id']) {
             throw new RuntimeException('This upload session does not belong to you.');
         }
 
@@ -1228,7 +1230,7 @@ final class FileManager
     {
         $metadata = self::readUploadMetadata($token);
 
-        if ((int) $metadata['user_id'] !== (int) $user['id']) {
+        if (($metadata['folder_share_token'] ?? null) !== ($user['folder_share_token'] ?? null) || (int) $metadata['user_id'] !== (int) $user['id']) {
             throw new RuntimeException('This upload session does not belong to you.');
         }
 
@@ -1756,8 +1758,9 @@ final class FileManager
         }
 
         $isRoot = $folderId === Database::rootFolderId();
+        $isSharedRoot = $folderId === ($user['folder_share_root'] ?? null);
         $spaceRootId = SpaceService::spaceRootIdForFolder($folderId, $pdo);
-        $protectedRoot = $isRoot || $spaceRootId === $folderId || $folderId === SpaceService::containerFolderId($pdo);
+        $protectedRoot = $isRoot || $isSharedRoot || $spaceRootId === $folderId || $folderId === SpaceService::containerFolderId($pdo);
         $cachedSize = $folder['cached_size_bytes'] === null ? null : (int) $folder['cached_size_bytes'];
         $ownSpaceRoot = $scope['own_space_root'] ?? null;
 
@@ -1765,7 +1768,7 @@ final class FileManager
             'id' => $folderId,
             'type' => 'folder',
             'name' => $isRoot ? 'Home' : $folder['name'],
-            'parent_id' => $folder['parent_id'] === null ? null : (int) $folder['parent_id'],
+            'parent_id' => $isSharedRoot || $folder['parent_id'] === null ? null : (int) $folder['parent_id'],
             'space_root_id' => $spaceRootId,
             'protected_root' => $protectedRoot,
             'size' => $cachedSize,
@@ -1779,9 +1782,10 @@ final class FileManager
             'can_open' => $scope['all'] || in_array($folderId, $scope['ancestors'], true),
             'can_upload' => Permissions::canUploadToFolder($folderId, $user, $pdo, $scope),
             'can_create_folders' => Permissions::canCreateFoldersIn($folderId, $user, $pdo, $scope),
-            'can_edit' => !$isRoot && Permissions::canEditFolder($folderId, $user, $pdo, $scope),
+            'can_edit' => !$isRoot && !$isSharedRoot && Permissions::canEditFolder($folderId, $user, $pdo, $scope),
             'can_receive_moves' => Permissions::canEditFolder($folderId, $user, $pdo, $scope),
             'can_delete' => !$protectedRoot && Permissions::canDeleteFolder($folderId, $user, $pdo, $scope),
+            'can_share' => $user !== null && !isset($user['folder_share_scope']) && FolderShares::canManage($user, $folderId, $pdo),
             'can_manage_sharing' => $scope['all']
                 || ($ownSpaceRoot !== null && in_array($folderId, $scope['own_space_ids'] ?? [], true)),
         ];
@@ -1811,12 +1815,12 @@ final class FileManager
             'extension' => $extension,
             'locked' => $locked,
             'encryption_format' => (string) ($file['encryption_format'] ?? ''),
-            'can_share' => $user !== null && FileShares::canManageFile($user, $file, $pdo),
+            'can_share' => $user !== null && !isset($user['folder_share_scope']) && FileShares::canManageFile($user, $file, $pdo),
             'uploader_username' => wb_parse_bool(Database::setting('display_show_uploader', '1')) ? ((string) ($file['uploader_username'] ?? '') ?: 'Unknown') : null,
             'can_edit' => !$locked && Permissions::canEditFolder($folderId, $user, $pdo, $scope),
             'can_delete' => !$locked && Permissions::canDeleteFolder($folderId, $user, $pdo, $scope),
-            'preview_url' => wb_url('/api/index.php?action=files.stream&id=' . (int) $file['id'] . '&disposition=inline'),
-            'download_url' => wb_url('/api/index.php?action=files.stream&id=' . (int) $file['id'] . '&disposition=attachment'),
+            'preview_url' => wb_url((isset($user['folder_share_token']) ? '/share/folder-api.php?token=' . rawurlencode($user['folder_share_token']) . '&' : '/api/index.php?') . 'action=files.stream&id=' . (int) $file['id'] . '&disposition=inline'),
+            'download_url' => wb_url((isset($user['folder_share_token']) ? '/share/folder-api.php?token=' . rawurlencode($user['folder_share_token']) . '&' : '/api/index.php?') . 'action=files.stream&id=' . (int) $file['id'] . '&disposition=attachment'),
         ], $preview);
     }
 

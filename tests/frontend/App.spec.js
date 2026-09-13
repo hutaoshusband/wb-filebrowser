@@ -453,11 +453,12 @@ async function mountAdminApp({ hash = '#/dashboard', handlers = {}, bootstrapUse
   return { wrapper, ...fetchState };
 }
 
-async function mountBrowserApp({ hash = '', handlers = {}, bootstrapUser = adminUser() } = {}) {
+async function mountBrowserApp({ hash = '', handlers = {}, bootstrapUser = adminUser(), folderShareToken = '' } = {}) {
   window.location.hash = hash;
   document.body.dataset.shell = 'app';
   window.WB_BOOTSTRAP = {
     surface: 'app',
+    folder_share_token: folderShareToken,
     base_path: '',
     csrf_token: 'csrf-token',
     user: bootstrapUser,
@@ -484,6 +485,32 @@ afterEach(() => {
 });
 
 describe('Admin app shell', () => {
+  it.each([false, true])('uses the existing browser for shared folders (write=%s)', async (write) => {
+    const { wrapper, calls } = await mountBrowserApp({
+      bootstrapUser: null,
+      folderShareToken: 'demo-token',
+      handlers: {
+        'auth.session': () => jsonResponse({ ...sessionPayload(null), public_access: true, root_folder_id: 42, home_folder_id: 42 }),
+        'tree.list': () => jsonResponse({ data: {
+          ...browserTreePayload({ can_edit: write, can_delete: write }).data,
+          folder: { id: 42, type: 'folder', name: 'Folder 1', parent_id: null },
+          breadcrumbs: [{ id: 42, name: 'Folder 1' }],
+          can_upload: write, can_create_folders: write,
+        } }),
+      },
+    });
+    expect(wrapper.find('.wb-sidebar').exists()).toBe(true);
+    expect(wrapper.find('.wb-header').exists()).toBe(true);
+    expect(wrapper.find('table').text()).toContain('brochure.pdf');
+    for (const label of ['New folder', 'New file', 'Upload']) {
+      expect(wrapper.findAll('button').find((button) => button.text() === label).element.disabled).toBe(!write);
+    }
+    expect(wrapper.findAll('button').find((button) => button.text() === 'Settings').element.disabled).toBe(true);
+    const request = calls.find((call) => call.action === 'tree.list');
+    expect(new URL(request.input).pathname).toBe('/share/folder-api.php');
+    expect(new URL(request.input).searchParams.get('folder_id')).toBe('42');
+  });
+
   it('loads a new admin section after hash changes', async () => {
     const { calls } = await mountAdminApp();
 
@@ -602,7 +629,7 @@ describe('Admin app shell', () => {
 
     const accessCheckboxes = wrapper.findAll('.settings-pane input[type="checkbox"]');
     await accessCheckboxes[2].setValue(true);
-    await wrapper.find('.settings-pane select').setValue('app_and_share');
+    await wrapper.findAll('.settings-pane select').find((select) => select.find('option[value="app_and_share"]').exists()).setValue('app_and_share');
     await wrapper.find('.settings-pane textarea').setValue('Updates in progress');
 
     const displayTab = wrapper.findAll('.settings-tabs button').find((button) => button.text() === 'Display');
