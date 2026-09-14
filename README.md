@@ -51,3 +51,16 @@ location ~ ^/(storage|vendor|node_modules|tests|\.git)/ {
     return 404;
 }
 ```
+
+### Storage diagnostic origin
+
+Set `WB_PUBLIC_ORIGIN` in the PHP service environment to the trusted site origin
+(for example `https://files.example.com`, without a path). Storage diagnostics
+use this configured destination and do not follow redirects. Without it, the
+network probe reports a configuration error instead of trusting the HTTP Host header.
+
+Password resets invalidate existing sessions. Upgrading from sessions without a
+credential fingerprint requires users to sign in again. Accounts marked for a
+password change can access only session, logout, and password-change API actions
+until they choose a new password. Mutating API actions require POST and a CSRF token.
+JSON request bodies are limited to 1 MiB; binary upload chunks use multipart requests.

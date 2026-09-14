@@ -17,7 +17,7 @@ use WbFileBrowser\Permissions;
 use WbFileBrowser\Security;
 use WbFileBrowser\Settings;
 
-require __DIR__ . '/../app/bootstrap.php';
+require_once __DIR__ . '/../app/bootstrap.php';
 
 $action = (string) ($_GET['action'] ?? '');
 $installed = Installer::isInstalled();
@@ -46,11 +46,17 @@ try {
         MaintenanceMode::assertActionAllowed($action, $currentUser);
     }
 
-    $requireCsrf = static function () use ($action, $csrfToken): void {
-        if (wb_request_method() !== 'GET' && !in_array($action, ['auth.logout'], true)) {
-            Security::assertCsrfToken(is_string($csrfToken) ? $csrfToken : null);
+    $requireCsrf = static function () use ($csrfToken): void {
+        if (wb_request_method() !== 'POST') {
+            wb_error_response('This action requires POST.', 405);
         }
+        Security::assertCsrfToken(is_string($csrfToken) ? $csrfToken : null);
     };
+
+    if ((int) ($currentUser['force_password_reset'] ?? 0) === 1
+        && !in_array($action, ['auth.session', 'auth.password', 'auth.logout'], true)) {
+        wb_error_response('You must change your password before continuing.', 403);
+    }
 
     switch ($action) {
         case 'install.status':
@@ -71,7 +77,8 @@ try {
             $password = (string) ($requestData['password'] ?? '');
             $result = Installer::install($username, $password, $requestData);
             Security::regenerateSession();
-            $_SESSION['user_id'] = $result['super_admin_id'];
+            $createdUser = Database::connection()->query('SELECT * FROM users WHERE id = ' . (int) $result['super_admin_id'])->fetch();
+            Auth::establishSession($createdUser);
             wb_json_response([
                 'ok' => true,
                 'redirect' => wb_url('/admin/#/dashboard'),
@@ -87,6 +94,9 @@ try {
             }
 
             $user = Auth::currentUser();
+            if ((int) ($user['force_password_reset'] ?? 0) === 1) {
+                wb_json_response(['ok' => true, 'installed' => true, 'user' => $user, 'csrf_token' => Security::csrfToken()]);
+            }
             $surface = match ((string) ($_GET['surface'] ?? 'app')) {
                 'admin' => 'admin',
                 'share' => 'share',
@@ -125,7 +135,13 @@ try {
                 'csrf_token' => Security::csrfToken(),
             ]);
 
+        case 'auth.password':
+            $requireCsrf();
+            $user = Auth::changePassword((string) ($requestData['current_password'] ?? ''), (string) ($requestData['password'] ?? ''));
+            wb_json_response(['ok' => true, 'user' => $user, 'csrf_token' => Security::csrfToken()]);
+
         case 'auth.logout':
+            $requireCsrf();
             if ($installed) {
                 Auth::logout();
             }
@@ -341,7 +357,7 @@ try {
             ], 201);
 
         case 'upload.chunk':
-            Security::assertCsrfToken(is_string($csrfToken) ? $csrfToken : null);
+            $requireCsrf();
             $user = Auth::requireUser();
             wb_json_response([
                 'ok' => true,

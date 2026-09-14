@@ -21,17 +21,21 @@ final class Auth
 
         $pdo ??= Database::connection();
         $statement = $pdo->prepare(
-            'SELECT id, username, role, status, force_password_reset, is_immutable, created_at, updated_at, last_login_at
+            'SELECT id, username, password_hash, role, status, force_password_reset, is_immutable, created_at, updated_at, last_login_at
              FROM users WHERE id = :id LIMIT 1'
         );
         $statement->execute([':id' => $userId]);
         $user = $statement->fetch();
+        $statement->closeCursor();
 
-        if (!is_array($user) || $user['status'] !== 'active') {
-            unset($_SESSION['user_id']);
+        if (!is_array($user) || $user['status'] !== 'active'
+            || !hash_equals(hash('sha256', (string) $user['password_hash']), (string) ($_SESSION['credential_version'] ?? ''))) {
+            unset($_SESSION['user_id'], $_SESSION['credential_version']);
 
             return null;
         }
+
+        unset($user['password_hash']);
 
         return $user;
     }
@@ -42,7 +46,7 @@ final class Auth
         $username = wb_normalize_name($username);
         $ip = Security::clientIp();
         $rateLimitBuckets = self::loginRateLimitBuckets($username, $ip);
-        Security::assertRateLimitAvailable(
+        Security::reserveRateLimit(
             $rateLimitBuckets,
             'Too many failed login attempts. Please wait a few minutes and try again.',
             $pdo,
@@ -52,6 +56,7 @@ final class Auth
         $statement = $pdo->prepare('SELECT * FROM users WHERE username = :username LIMIT 1');
         $statement->execute([':username' => $username]);
         $user = $statement->fetch();
+        $statement->closeCursor();
 
         if (!is_array($user) || $user['status'] !== 'active' || !password_verify($password, (string) $user['password_hash'])) {
             self::recordAttempt($pdo, $username, $ip, false);
@@ -62,7 +67,6 @@ final class Auth
                 'target_label' => $username,
                 'summary' => 'Failed login for ' . $username,
             ], $pdo);
-            Security::consumeRateLimit($rateLimitBuckets, $pdo);
 
             if (Security::rateLimitBlockInfo($rateLimitBuckets, $pdo) !== null) {
                 AuditLog::record('auth.login.lockout', 'security_actions', [
@@ -88,7 +92,7 @@ final class Auth
         self::recordAttempt($pdo, $username, $ip, true);
         Security::clearRateLimit($rateLimitBuckets, $pdo);
         Security::regenerateSession();
-        $_SESSION['user_id'] = (int) $user['id'];
+        self::establishSession($user);
 
         $update = $pdo->prepare('UPDATE users SET last_login_at = :last_login_at, updated_at = :updated_at WHERE id = :id');
         $update->execute([
@@ -108,6 +112,38 @@ final class Auth
         ], $pdo);
 
         return $currentUser;
+    }
+
+    public static function establishSession(array $user): void
+    {
+        $_SESSION['user_id'] = (int) $user['id'];
+        $_SESSION['credential_version'] = hash('sha256', (string) $user['password_hash']);
+    }
+
+    public static function changePassword(string $currentPassword, string $newPassword): array
+    {
+        $pdo = Database::connection();
+        $user = self::requireUser($pdo);
+        Security::reserveRateLimit([['scope' => 'password-change', 'identifier' => (string) $user['id'], 'limit' => 5, 'window' => 600]], 'Too many password change attempts. Please try again later.', $pdo);
+        $statement = $pdo->prepare('SELECT password_hash FROM users WHERE id = :id');
+        $statement->execute([':id' => $user['id']]);
+        $oldHash = (string) $statement->fetchColumn();
+        $statement->closeCursor();
+        if (!password_verify($currentPassword, $oldHash)) {
+            throw new RuntimeException('The current password is incorrect.');
+        }
+        if (mb_strlen($newPassword) < 12 || password_verify($newPassword, $oldHash)) {
+            throw new RuntimeException('Choose a different password with at least 12 characters.');
+        }
+        $newHash = Security::hashPassword($newPassword);
+        $update = $pdo->prepare('UPDATE users SET password_hash = :hash, force_password_reset = 0, updated_at = :now WHERE id = :id AND password_hash = :old');
+        $update->execute([':hash' => $newHash, ':now' => wb_now(), ':id' => $user['id'], ':old' => $oldHash]);
+        if ($update->rowCount() !== 1) {
+            throw new RuntimeException('Your credentials changed. Please sign in again.');
+        }
+        Security::regenerateSession();
+        self::establishSession($user + ['password_hash' => $newHash]);
+        return self::currentUser($pdo) ?? throw new RuntimeException('Authentication is required.');
     }
 
     public static function logout(): void

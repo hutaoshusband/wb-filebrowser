@@ -13,12 +13,23 @@ for ext in pdo_sqlite fileinfo mbstring; do
     php -m | grep -qi "^${ext}$" || err "missing php extension: ${ext}"
 done
 
+INSTALL_TMP="$(mktemp -d)"
+trap 'rm -rf -- "$INSTALL_TMP"' EXIT
+
 # composer
 if ! command -v composer >/dev/null; then
     echo "composer not found, installing locally..."
-    php -r "copy('https://getcomposer.org/installer', '/tmp/composer-setup.php');"
-    php /tmp/composer-setup.php --install-dir="$DIR" --filename=composer
-    rm -f /tmp/composer-setup.php
+    php -r '
+        $expected = trim((string) file_get_contents("https://composer.github.io/installer.sig"));
+        $path = $argv[1];
+        if (!preg_match("/^[a-f0-9]{96}$/D", $expected)
+            || !copy("https://getcomposer.org/installer", $path)
+            || !hash_equals($expected, hash_file("sha384", $path))) {
+            fwrite(STDERR, "Composer installer checksum verification failed.\n");
+            exit(1);
+        }
+    ' "$INSTALL_TMP/composer-setup.php"
+    php "$INSTALL_TMP/composer-setup.php" --install-dir="$DIR" --filename=composer
     COMPOSER="$DIR/composer"
 else
     COMPOSER="composer"
@@ -30,7 +41,10 @@ if ! command -v node >/dev/null || ! command -v npm >/dev/null; then
         echo "node not found, installing via nvm..."
         export NVM_DIR="$HOME/.nvm"
         if [ ! -d "$NVM_DIR" ]; then
-            curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+            curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+                https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh -o "$INSTALL_TMP/nvm-install.sh"
+            php -r 'if (!hash_equals("abdb525ee9f5b48b34d8ed9fc67c6013fb0f659712e401ecd88ab989b3af8f53", hash_file("sha256", $argv[1]))) { fwrite(STDERR, "nvm installer checksum verification failed.\n"); exit(1); }' "$INSTALL_TMP/nvm-install.sh"
+            bash "$INSTALL_TMP/nvm-install.sh"
         fi
         [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
         nvm install --lts

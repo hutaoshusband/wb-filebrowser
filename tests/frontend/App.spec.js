@@ -1290,3 +1290,33 @@ describe('Admin app shell', () => {
     expect(wrapper.text()).toContain('Uploaded file by admin: brief.txt.');
   });
 });
+
+
+describe('Required password change', () => {
+  it.each(['app', 'admin'])('requires a password change before loading the %s workspace', async (shell) => {
+    let user = { ...adminUser(shell === 'admin' ? 'admin' : 'user'), force_password_reset: true };
+    const mountShell = shell === 'admin' ? mountAdminApp : mountBrowserApp;
+    const { wrapper, calls } = await mountShell({
+      bootstrapUser: user,
+      handlers: {
+        'auth.session': () => jsonResponse(sessionPayload(user)),
+        'auth.password': () => {
+          user = { ...user, force_password_reset: false };
+          return jsonResponse({ user, csrf_token: 'new-token' });
+        },
+      },
+    });
+    expect(wrapper.find('.auth-card h1').text()).toBe('Change your password');
+    expect(calls.map(call => call.action)).toEqual(['auth.session']);
+    await wrapper.find('input[autocomplete="current-password"]').setValue('TemporaryPassword123!');
+    await wrapper.find('input[autocomplete="new-password"]').setValue('ReplacementPassword123!');
+    await wrapper.find('.auth-form').trigger('submit');
+    await flushPromises();
+    expect(JSON.parse(calls.find(call => call.action === 'auth.password').init.body)).toMatchObject({
+      current_password: 'TemporaryPassword123!', password: 'ReplacementPassword123!',
+    });
+    expect(wrapper.find('.auth-form').exists()).toBe(false);
+    expect(calls.some(call => call.action === (shell === 'admin' ? 'admin.dashboard' : 'tree.list'))).toBe(true);
+    wrapper.unmount();
+  });
+});

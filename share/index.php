@@ -153,7 +153,7 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
 <head>
     <?= wb_page_head((($pageFile['name'] ?? 'Shared file unavailable')) . ' | wb-filebrowser') ?>
     <meta name="robots" content="noindex,nofollow,noarchive">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css" integrity="sha384-wH75j6z1lH97ZOpMOInqhgKzFkAInZPPSPlZpYKYTOqsaizPvhQZmAtLcPKXpLyH" crossorigin="anonymous" referrerpolicy="no-referrer" />
     <style>
         /* Force the text preview to fill the frame and scroll inside it */
         .preview-frame:has(.share-text-preview) {
@@ -377,7 +377,7 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
             <?php endif; ?>
         </section>
     </main>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js" integrity="sha384-RH2xi4eIQ/gjtbs9fUXM68sLSi99C7ZWBRX1vDrVv6GQXRibxXLbwO2NGZB74MbU" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
     <script>
     (function() {
         var el = document.getElementById('share-code');

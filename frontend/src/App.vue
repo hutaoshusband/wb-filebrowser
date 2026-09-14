@@ -162,6 +162,8 @@ const shareForm = reactive({
 });
 
 const authForm = reactive({ username: '', password: '' });
+const passwordForm = reactive({ current: '', password: '' });
+const needsPasswordChange = computed(() => Number(session.user?.force_password_reset) === 1);
 const newUserForm = reactive({ username: '', password: '', role: 'user', force_password_reset: false });
 const banForm = reactive({ ipAddress: '', reason: '', expiresAtLocal: '' });
 
@@ -446,6 +448,7 @@ function applySecurityPayload(payload) {
 }
 
 async function refreshCurrentView() {
+  if (needsPasswordChange.value) return;
   if (isAdminShell.value) {
     if (isAdmin.value) {
       await loadAdminSection();
@@ -890,6 +893,25 @@ async function submitLogin() {
     }
   } catch (error) {
     showMessage(error instanceof Error ? error.message : 'Unable to sign in.');
+  }
+}
+
+async function submitPasswordChange() {
+  try {
+    const payload = await api('auth.password', {
+      method: 'POST',
+      body: { current_password: passwordForm.current, password: passwordForm.password },
+    });
+    passwordForm.current = '';
+    passwordForm.password = '';
+    session.user = payload.user;
+    session.csrfToken = payload.csrf_token;
+    await refreshSession();
+    startAutomationPulse();
+    await refreshCurrentView();
+    showMessage('Password changed.');
+  } catch (error) {
+    showMessage(error instanceof Error ? error.message : 'Unable to change password.');
   }
 }
 
@@ -1888,6 +1910,7 @@ async function goToAuditPage(page) {
 }
 
 async function tickAutomation({ silent = false } = {}) {
+  if (needsPasswordChange.value) return;
   if (!isAdmin.value) {
     return;
   }
@@ -2146,6 +2169,7 @@ function uploadLimitLabel(policy = session.uploadPolicy) {
 
 function startAutomationPulse() {
   stopAutomationPulse();
+  if (needsPasswordChange.value) return;
   if (!isAdminShell.value || !isAdmin.value) {
     return;
   }
@@ -2456,6 +2480,16 @@ onBeforeUnmount(() => {
             <input v-model="authForm.password" type="password" autocomplete="current-password" required>
           </label>
           <button type="submit">Sign in</button>
+        </form>
+      </section>
+
+      <section v-else-if="needsPasswordChange" class="auth-card">
+        <h1>Change your password</h1>
+        <p>Your administrator requires a new password before you continue.</p>
+        <form class="auth-form" @submit.prevent="submitPasswordChange">
+          <label><span>Current password</span><input v-model="passwordForm.current" type="password" autocomplete="current-password" required></label>
+          <label><span>New password</span><input v-model="passwordForm.password" type="password" autocomplete="new-password" minlength="12" required></label>
+          <button type="submit">Change password</button>
         </form>
       </section>
 

@@ -69,7 +69,7 @@ $_COOKIE = [];
 $_SERVER['HTTP_HOST'] = 'localhost';
 $_SERVER['HTTPS'] = 'off';
 $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
-$_SERVER['REQUEST_METHOD'] = 'GET';
+$_SERVER['REQUEST_METHOD'] = 'POST';
 $_SERVER['CONTENT_TYPE'] = '';
 
 ob_start();
@@ -90,6 +90,8 @@ register_shutdown_function(static function (): void {
     ], JSON_THROW_ON_ERROR));
 });
 
+require WB_ROOT . '/app/bootstrap.php';
+$_SERVER['HTTP_X_CSRF_TOKEN'] = \WbFileBrowser\Security::csrfToken();
 require %s;
 PHP,
             var_export(WB_ROOT, true),

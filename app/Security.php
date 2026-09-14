@@ -148,58 +148,34 @@ final class Security
     {
         $pdo ??= Database::connection();
         self::pruneRateLimitRows($pdo);
-        $now = time();
-        $select = $pdo->prepare(
-            'SELECT hits, window_started_at
-             FROM rate_limits
-             WHERE bucket_key = :bucket_key
-             LIMIT 1'
-        );
-        $insert = $pdo->prepare(
+        $statement = $pdo->prepare(
             'INSERT INTO rate_limits (bucket_key, scope, bucket_identifier, hits, window_started_at, updated_at)
-             VALUES (:bucket_key, :scope, :bucket_identifier, :hits, :window_started_at, :updated_at)'
+             VALUES (:key, :scope, :identifier, 1, :now, :now)
+             ON CONFLICT(bucket_key) DO UPDATE SET
+                 hits = CASE WHEN rate_limits.window_started_at > :cutoff THEN rate_limits.hits + 1 ELSE 1 END,
+                 window_started_at = CASE WHEN rate_limits.window_started_at > :cutoff THEN rate_limits.window_started_at ELSE excluded.window_started_at END,
+                 updated_at = excluded.updated_at'
         );
-        $update = $pdo->prepare(
-            'UPDATE rate_limits
-             SET hits = :hits, window_started_at = :window_started_at, updated_at = :updated_at
-             WHERE bucket_key = :bucket_key'
-        );
-
         foreach ($buckets as $bucket) {
-            $scope = (string) $bucket['scope'];
-            $identifier = (string) $bucket['identifier'];
-            $window = (int) $bucket['window'];
-            $bucketKey = self::rateLimitBucketKey($scope, $identifier);
-            $select->execute([':bucket_key' => $bucketKey]);
-            $row = $select->fetch();
-            $windowStartedAt = wb_now();
-            $hits = 1;
-
-            if (is_array($row)) {
-                $windowStartedAtUnix = strtotime((string) $row['window_started_at']) ?: 0;
-
-                if ($windowStartedAtUnix > 0 && ($now - $windowStartedAtUnix) < $window) {
-                    $windowStartedAt = (string) $row['window_started_at'];
-                    $hits = (int) $row['hits'] + 1;
-                }
-
-                $update->execute([
-                    ':bucket_key' => $bucketKey,
-                    ':hits' => $hits,
-                    ':window_started_at' => $windowStartedAt,
-                    ':updated_at' => wb_now(),
-                ]);
-                continue;
-            }
-
-            $insert->execute([
-                ':bucket_key' => $bucketKey,
-                ':scope' => $scope,
-                ':bucket_identifier' => $identifier,
-                ':hits' => $hits,
-                ':window_started_at' => $windowStartedAt,
-                ':updated_at' => wb_now(),
+            $statement->execute([
+                ':key' => self::rateLimitBucketKey((string) $bucket['scope'], (string) $bucket['identifier']),
+                ':scope' => $bucket['scope'], ':identifier' => (string) $bucket['identifier'],
+                ':now' => wb_now(), ':cutoff' => gmdate('c', time() - (int) $bucket['window']),
             ]);
+        }
+    }
+
+    public static function reserveRateLimit(array $buckets, string $message, ?PDO $pdo = null, ?array $blockedContext = null): void
+    {
+        $pdo ??= Database::connection();
+        $pdo->exec('BEGIN IMMEDIATE');
+        try {
+            self::assertRateLimitAvailable($buckets, $message, $pdo, $blockedContext);
+            self::consumeRateLimit($buckets, $pdo);
+            $pdo->exec('COMMIT');
+        } catch (\Throwable $exception) {
+            $pdo->exec('ROLLBACK');
+            throw $exception;
         }
     }
 

@@ -13,3 +13,7 @@ pnpm-lock.yaml
 Thumbs.db
 .composer-home/
 .phpunit.cache/
+
+# Local Rust build and generated WASM artifacts
+/crypto/target/
+/frontend/src/lib/wasm/

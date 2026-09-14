@@ -75,6 +75,22 @@ final class Installer
 
     public static function install(string $username, string $password, array $settings = []): array
     {
+        self::ensureRuntimeDirectories();
+        $lock = fopen(wb_storage_path('installation.mutex'), 'c');
+        if ($lock === false || !flock($lock, LOCK_EX)) {
+            throw new RuntimeException('Unable to lock installation.');
+        }
+        try {
+            return self::installLocked($username, $password, $settings);
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
+    }
+
+    private static function installLocked(string $username, string $password, array $settings): array
+    {
+        clearstatcache();
         if (self::isInstalled()) {
             throw new RuntimeException('wb-filebrowser is already installed.');
         }
@@ -110,6 +126,10 @@ final class Installer
 
             foreach (self::schemaStatements() as $statement) {
                 $pdo->exec($statement);
+            }
+
+            if ((int) $pdo->query('SELECT COUNT(*) FROM users')->fetchColumn() > 0) {
+                throw new RuntimeException('An administrator already exists. Restore the installation lock instead of reinstalling.');
             }
 
             $now = wb_now();

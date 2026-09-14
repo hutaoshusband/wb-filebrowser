@@ -190,6 +190,17 @@ final class AutomationRunner
             ];
         }
 
+        // Network probes use an operator-configured origin, never a request Host header.
+        if ($fetcher === null) {
+            $origin = trim((string) getenv('WB_PUBLIC_ORIGIN'));
+        }
+        $parts = $origin ? parse_url($origin) : false;
+        if (!is_array($parts) || !in_array($parts['scheme'] ?? '', ['http', 'https'], true)
+            || empty($parts['host']) || isset($parts['user']) || isset($parts['pass'])
+            || isset($parts['query']) || isset($parts['fragment'])
+            || !in_array($parts['path'] ?? '', ['', '/'], true)) {
+            return ['state' => 'error', 'message' => 'Set WB_PUBLIC_ORIGIN to the trusted site origin to enable the storage probe.'];
+        }
         $probeUrl = wb_absolute_url('/storage/' . $probeRelativePath, $origin);
 
         if ($probeUrl === null) {
@@ -506,11 +517,12 @@ final class AutomationRunner
                 'method' => 'GET',
                 'ignore_errors' => true,
                 'timeout' => 3,
+                'follow_location' => 0,
                 'header' => "Cache-Control: no-cache\r\n",
             ],
         ]);
 
-        @file_get_contents($url, false, $context);
+        @file_get_contents($url, false, $context, 0, 1024);
         $headers = $http_response_header ?? [];
         $statusLine = is_array($headers) ? (string) ($headers[0] ?? '') : '';
         $statusCode = preg_match('/\s(\d{3})\s/', $statusLine, $matches) ? (int) $matches[1] : 0;

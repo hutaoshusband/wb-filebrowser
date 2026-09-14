@@ -115,7 +115,15 @@ function wb_is_json_request(): bool
 function wb_request_data(): array
 {
     if (wb_is_json_request()) {
-        $payload = json_decode((string) file_get_contents('php://input'), true);
+        $limit = 1024 * 1024;
+        if ((int) ($_SERVER['CONTENT_LENGTH'] ?? 0) > $limit) {
+            wb_error_response('The JSON request body is too large.', 413);
+        }
+        $body = (string) file_get_contents('php://input', false, null, 0, $limit + 1);
+        if (strlen($body) > $limit) {
+            wb_error_response('The JSON request body is too large.', 413);
+        }
+        $payload = json_decode($body, true);
 
         return is_array($payload) ? $payload : [];
     }
