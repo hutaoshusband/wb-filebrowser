@@ -369,6 +369,7 @@ final class FileShares
                 'preview_mode' => $previewMode,
                 'text_preview' => $textPreview,
                 'text_preview_truncated' => $textPreviewTruncated,
+                'embed' => self::embedPresentation($share),
             ];
         } catch (\Throwable $exception) {
             if ($pdo->inTransaction()) {
@@ -848,6 +849,48 @@ final class FileShares
             $mimeType,
             (string) $share['original_name']
         );
+    }
+
+    private static function embedPresentation(array $share): ?array
+    {
+        if ((int) ($share['allow_embed'] ?? 0) !== 1) {
+            return null;
+        }
+
+        if (trim((string) ($share['password_hash'] ?? '')) !== '') {
+            return null;
+        }
+
+        if (!self::shareCreatorMayEmbed($share['share_creator_id'] ?? null)) {
+            return null;
+        }
+
+        $extension = strtolower(pathinfo((string) $share['original_name'], PATHINFO_EXTENSION));
+
+        if (wb_embed_media_mime_type($extension) === null) {
+            return null;
+        }
+
+        $preview = wb_file_preview_metadata((string) $share['mime_type'], $extension);
+
+        if (!in_array($preview['preview_mode'], ['video', 'audio'], true)) {
+            return null;
+        }
+
+        $urls = self::embedUrls((string) $share['token']);
+        $title = wb_h((string) $share['original_name'] . ' (' . wb_format_bytes((int) $share['size']) . ')');
+
+        if ($preview['preview_mode'] === 'audio') {
+            $embedHtml = '<iframe src="' . $urls['page'] . '" title="' . $title . '" width="100%" height="200" style="width:100%;height:200px;border:0" allow="autoplay" referrerpolicy="strict-origin-when-cross-origin" loading="lazy"></iframe>';
+        } else {
+            $embedHtml = '<iframe src="' . $urls['page'] . '" title="' . $title . '" width="560" height="315" style="width:100%;aspect-ratio:16/9;height:auto;border:0" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen referrerpolicy="strict-origin-when-cross-origin" loading="lazy"></iframe>';
+        }
+
+        return [
+            'html' => $embedHtml,
+            'url' => $urls['page'],
+            'discord_url' => $urls['stream'],
+        ];
     }
 
     private static function resolveEmbeddableShare(string $token, PDO $pdo): array

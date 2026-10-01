@@ -107,8 +107,8 @@ a{color:var(--c-accent);text-decoration:none;transition:color var(--ease)}
 .auth-form input:focus,.panel input:focus,.help-modal input:focus,.panel select:focus,.panel textarea:focus,.install-form input:focus{border-color:var(--c-accent);box-shadow:0 0 0 2px hsla(135,64%,50%,.3)}
 .auth-form input::placeholder,.panel input::placeholder,.help-modal input::placeholder{color:var(--c-text-dim)}
 .panel textarea{resize:vertical;min-height:110px}
-.auth-form button,.panel button,.drawer-actions button,.empty-state button,.help-modal button,.install-form button,.context-menu button{padding:9px 16px;border-radius:var(--r-sm);border:1px solid var(--c-line);background:var(--c-surface-2);box-shadow:none;color:var(--c-text);font-weight:600;letter-spacing:.2px;transition:all var(--ease)}
-.auth-form button:hover,.panel button:hover,.drawer-actions button:hover,.empty-state button:hover,.help-modal button:hover,.install-form button:hover,.context-menu button:hover{border-color:#3a3a3e;color:var(--c-title);background:var(--c-surface-2)}
+.auth-form button,.panel button,.share-panel button,.drawer-actions button,.empty-state button,.help-modal button,.install-form button,.context-menu button{padding:9px 16px;border-radius:var(--r-sm);border:1px solid var(--c-line);background:var(--c-surface-2);box-shadow:none;color:var(--c-text);font-weight:600;letter-spacing:.2px;transition:all var(--ease)}
+.auth-form button:hover,.panel button:hover,.share-panel button:hover,.drawer-actions button:hover,.empty-state button:hover,.help-modal button:hover,.install-form button:hover,.context-menu button:hover{border-color:#3a3a3e;color:var(--c-title);background:var(--c-surface-2)}
 .panel-form{display:grid;gap:16px;align-content:start}
 .panel-form > button{justify-self:start}
 .panel-header{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:18px}

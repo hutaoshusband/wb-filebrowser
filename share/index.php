@@ -441,6 +441,34 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
                             </div>
                             <a class="header-button share-direct-link__open" href="<?= wb_h($file['direct_url']) ?>" target="_blank" rel="noopener noreferrer">Open direct link</a>
                         </div>
+                        <?php if (!empty($payload['embed'])): ?>
+                            <div class="share-direct-link">
+                                <label class="share-direct-link__label" for="share-embed-code">Embed code</label>
+                                <div class="share-direct-link__row">
+                                    <input
+                                        id="share-embed-code"
+                                        class="share-direct-link__field"
+                                        type="text"
+                                        readonly
+                                        value="<?= wb_h($payload['embed']['html']) ?>"
+                                    >
+                                    <button class="header-button share-direct-link__copy" type="button" data-copy-target="#share-embed-code">Copy</button>
+                                </div>
+                            </div>
+                            <div class="share-direct-link">
+                                <label class="share-direct-link__label" for="share-discord-link">Discord embed link</label>
+                                <div class="share-direct-link__row">
+                                    <input
+                                        id="share-discord-link"
+                                        class="share-direct-link__field"
+                                        type="text"
+                                        readonly
+                                        value="<?= wb_h($payload['embed']['discord_url']) ?>"
+                                    >
+                                    <button class="header-button share-direct-link__copy" type="button" data-copy-target="#share-discord-link">Copy</button>
+                                </div>
+                            </div>
+                        <?php endif; ?>
                     </aside>
                 </div>
             <?php endif; ?>

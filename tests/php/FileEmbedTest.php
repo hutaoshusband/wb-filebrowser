@@ -206,6 +206,22 @@ final class FileEmbedTest extends DatabaseTestCase
         }
     }
 
+    public function testSharePagePayloadExposesEmbedInfoForEligibleShares(): void
+    {
+        $video = $this->createFile('clip.mp4', 'video payload', 'video/mp4');
+        $share = FileShares::create($this->superAdmin(), (int) $video['id'], ['allow_embed' => true]);
+
+        $payload = FileShares::viewPayload($share['token']);
+
+        $this->assertNotNull($payload['embed']);
+        $this->assertStringContainsString('/embed/?token=' . $share['token'], $payload['embed']['html']);
+        $this->assertStringContainsString('/embed/stream/?token=' . $share['token'], $payload['embed']['discord_url']);
+
+        $plainShare = FileShares::create($this->superAdmin(), (int) $this->createFile('movie.webm', 'webm payload', 'video/webm')['id']);
+
+        $this->assertNull(FileShares::viewPayload($plainShare['token'])['embed']);
+    }
+
     public function testEmbedMediaMimeTypeAllowlist(): void
     {
         $known = [
