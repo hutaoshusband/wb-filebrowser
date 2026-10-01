@@ -296,8 +296,7 @@ input.media-player__volume::-moz-range-thumb{width:10px;height:10px;border-radiu
 .share-panel p{color:var(--c-text-dim);line-height:1.5}
 .share-panel__hint{font-size:.92rem}
 .share-panel__embed-actions{display:grid;gap:8px;margin-top:6px}
-.embed-shell .share-card,.embed-card{width:min(560px,100%)}
-.embed-card .preview-frame{min-height:0}
+.share-view--embed{grid-template-columns:1fr}
 .share-panel__url{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--c-accent)!important;word-break:break-all}
 .share-panel__input{width:100%;padding:9px 12px;border-radius:var(--r-sm);border:1px solid var(--c-line);background:var(--c-bg);color:var(--c-text);outline:0;color-scheme:dark;appearance:none}
 .share-panel__input::placeholder{color:var(--c-text-dim);opacity:.82}

@@ -331,6 +331,10 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
                             <script type="module" src="<?= wb_h(wb_asset_url('/assets/app.js')) ?>"></script>
                         <?php endif; ?>
                         <a class="header-button share-download" href="<?= wb_h($file['download_url']) ?>"><?= !empty($file['encryption_format']) ? 'Download encrypted file' : 'Download' ?></a>
+                        <?php if (!empty($payload['embed'])): ?>
+                            <button class="header-button share-download" type="button" data-copy-text="<?= wb_h($payload['embed']['html']) ?>">Copy embed code</button>
+                            <button class="header-button share-download" type="button" data-copy-text="<?= wb_h($payload['embed']['discord_url']) ?>">Copy Discord embed</button>
+                        <?php endif; ?>
                     </div>
                 </header>
 
@@ -441,34 +445,6 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
                             </div>
                             <a class="header-button share-direct-link__open" href="<?= wb_h($file['direct_url']) ?>" target="_blank" rel="noopener noreferrer">Open direct link</a>
                         </div>
-                        <?php if (!empty($payload['embed'])): ?>
-                            <div class="share-direct-link">
-                                <label class="share-direct-link__label" for="share-embed-code">Embed code</label>
-                                <div class="share-direct-link__row">
-                                    <input
-                                        id="share-embed-code"
-                                        class="share-direct-link__field"
-                                        type="text"
-                                        readonly
-                                        value="<?= wb_h($payload['embed']['html']) ?>"
-                                    >
-                                    <button class="header-button share-direct-link__copy" type="button" data-copy-target="#share-embed-code">Copy</button>
-                                </div>
-                            </div>
-                            <div class="share-direct-link">
-                                <label class="share-direct-link__label" for="share-discord-link">Discord embed link</label>
-                                <div class="share-direct-link__row">
-                                    <input
-                                        id="share-discord-link"
-                                        class="share-direct-link__field"
-                                        type="text"
-                                        readonly
-                                        value="<?= wb_h($payload['embed']['discord_url']) ?>"
-                                    >
-                                    <button class="header-button share-direct-link__copy" type="button" data-copy-target="#share-discord-link">Copy</button>
-                                </div>
-                            </div>
-                        <?php endif; ?>
                     </aside>
                 </div>
             <?php endif; ?>
@@ -481,6 +457,42 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
         if (el) {
             hljs.highlightElement(el);
         }
+    })();
+    (function() {
+        document.querySelectorAll('[data-copy-text]').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var text = btn.getAttribute('data-copy-text') || '';
+                var done = function() { btn.textContent = 'Copied'; setTimeout(function() { btn.textContent = btn.getAttribute('data-copy-label') || 'Copy'; }, 1500); };
+                var fallback = function() {
+                    var area = document.createElement('textarea');
+                    area.value = text;
+                    area.setAttribute('readonly', '');
+                    area.style.position = 'fixed';
+                    area.style.left = '-9999px';
+                    document.body.appendChild(area);
+                    area.select();
+                    area.setSelectionRange(0, text.length);
+                    try { document.execCommand('copy'); } catch (error) {}
+                    document.body.removeChild(area);
+                    done();
+                };
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    var fallbackTimer = setTimeout(fallback, 200);
+                    navigator.clipboard.writeText(text).then(function() {
+                        clearTimeout(fallbackTimer);
+                        done();
+                    }, function() {
+                        clearTimeout(fallbackTimer);
+                        fallback();
+                    });
+                } else {
+                    fallback();
+                }
+            });
+        });
+        document.querySelectorAll('[data-copy-text]').forEach(function(btn) {
+            btn.setAttribute('data-copy-label', btn.textContent);
+        });
     })();
     (function() {
         document.querySelectorAll('[data-copy-target]').forEach(function(btn) {

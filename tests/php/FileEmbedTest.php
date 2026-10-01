@@ -27,14 +27,14 @@ final class FileEmbedTest extends DatabaseTestCase
         $this->assertStringContainsString('/embed/?token=' . $share['token'], $share['embed_url']);
         $this->assertStringContainsString('/embed/stream/?token=' . $share['token'], $share['discord_url']);
         $this->assertStringContainsString('<iframe src="' . $share['embed_url'] . '" title="' . wb_h($expectedVideoLabel) . '"', $share['embed_html']);
-        $this->assertStringContainsString('width="560" height="315"', $share['embed_html']);
+        $this->assertStringContainsString('width="560" height="520"', $share['embed_html']);
         $this->assertStringContainsString('allow="autoplay; fullscreen; picture-in-picture"', $share['embed_html']);
         $this->assertSame($share['token'], FileShares::get($this->superAdmin(), (int) $video['id'])['token']);
 
         $audioShare = FileShares::create($this->superAdmin(), (int) $audio['id'], ['allow_embed' => true]);
 
         $this->assertTrue($audioShare['allow_embed']);
-        $this->assertStringContainsString('width="100%" height="200"', $audioShare['embed_html']);
+        $this->assertStringContainsString('width="100%" height="240"', $audioShare['embed_html']);
         $this->assertStringContainsString('allow="autoplay"', $audioShare['embed_html']);
         $this->assertStringNotContainsString('allowfullscreen', $audioShare['embed_html']);
 

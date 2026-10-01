@@ -788,9 +788,9 @@ final class FileShares
         $title = wb_h((string) $file['original_name'] . ' (' . wb_format_bytes((int) $file['size']) . ')');
 
         if ($preview['preview_mode'] === 'audio') {
-            $embedHtml = '<iframe src="' . $urls['page'] . '" title="' . $title . '" width="100%" height="200" style="width:100%;height:200px;border:0" allow="autoplay" referrerpolicy="strict-origin-when-cross-origin" loading="lazy"></iframe>';
+            $embedHtml = '<iframe src="' . $urls['page'] . '" title="' . $title . '" width="100%" height="240" style="width:100%;height:240px;border:0" allow="autoplay" referrerpolicy="strict-origin-when-cross-origin" loading="lazy"></iframe>';
         } else {
-            $embedHtml = '<iframe src="' . $urls['page'] . '" title="' . $title . '" width="560" height="315" style="width:100%;aspect-ratio:16/9;height:auto;border:0" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen referrerpolicy="strict-origin-when-cross-origin" loading="lazy"></iframe>';
+            $embedHtml = '<iframe src="' . $urls['page'] . '" title="' . $title . '" width="560" height="520" style="width:100%;height:520px;border:0" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen referrerpolicy="strict-origin-when-cross-origin" loading="lazy"></iframe>';
         }
 
         return [
@@ -819,6 +819,7 @@ final class FileShares
         $extension = strtolower(pathinfo((string) $share['original_name'], PATHINFO_EXTENSION));
         $preview = wb_file_preview_metadata((string) $share['mime_type'], $extension);
         $urls = self::embedUrls((string) $share['token']);
+        $downloadUrls = self::shareUrls((string) $share['token']);
 
         AuditLog::record('share.embed.view', 'file_views', [
             'target_type' => 'file',
@@ -833,6 +834,7 @@ final class FileShares
             'mime_type' => (string) wb_embed_media_mime_type($extension),
             'extension' => $extension,
             'stream_url' => $urls['stream'],
+            'download_url' => $downloadUrls['download'],
             'preview_mode' => (string) $preview['preview_mode'],
         ];
     }
@@ -881,9 +883,9 @@ final class FileShares
         $title = wb_h((string) $share['original_name'] . ' (' . wb_format_bytes((int) $share['size']) . ')');
 
         if ($preview['preview_mode'] === 'audio') {
-            $embedHtml = '<iframe src="' . $urls['page'] . '" title="' . $title . '" width="100%" height="200" style="width:100%;height:200px;border:0" allow="autoplay" referrerpolicy="strict-origin-when-cross-origin" loading="lazy"></iframe>';
+            $embedHtml = '<iframe src="' . $urls['page'] . '" title="' . $title . '" width="100%" height="240" style="width:100%;height:240px;border:0" allow="autoplay" referrerpolicy="strict-origin-when-cross-origin" loading="lazy"></iframe>';
         } else {
-            $embedHtml = '<iframe src="' . $urls['page'] . '" title="' . $title . '" width="560" height="315" style="width:100%;aspect-ratio:16/9;height:auto;border:0" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen referrerpolicy="strict-origin-when-cross-origin" loading="lazy"></iframe>';
+            $embedHtml = '<iframe src="' . $urls['page'] . '" title="' . $title . '" width="560" height="520" style="width:100%;height:520px;border:0" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen referrerpolicy="strict-origin-when-cross-origin" loading="lazy"></iframe>';
         }
 
         return [
