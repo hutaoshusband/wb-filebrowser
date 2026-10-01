@@ -80,9 +80,7 @@ final class DatabaseConfig
             throw new RuntimeException('Unable to prepare the storage directory for database configuration.');
         }
 
-        if (file_put_contents(self::path(), $contents) === false) {
-            throw new RuntimeException('Unable to write the database configuration.');
-        }
+        file_put_contents(self::path(), $contents);
         @chmod(self::path(), 0640);
     }
 

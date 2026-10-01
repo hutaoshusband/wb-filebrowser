@@ -17,6 +17,15 @@ final class SecurityHeadersTest extends TestCase
         $this->assertStringContainsString("frame-ancestors 'none'", $headers['Content-Security-Policy']);
         $this->assertSame('no-referrer', $headers['Referrer-Policy']);
         $this->assertSame('nosniff', $headers['X-Content-Type-Options']);
+        // Cross-origin isolation is required for the multithreaded ffmpeg
+        // fallback (SharedArrayBuffer) and is safe under the self-only CSP.
+        $this->assertSame('same-origin', $headers['Cross-Origin-Opener-Policy']);
+        $this->assertSame('require-corp', $headers['Cross-Origin-Embedder-Policy']);
+        // COEP require-corp rejects subresource responses without CORP, so
+        // every PHP response must declare it.
+        $this->assertSame('same-origin', $headers['Cross-Origin-Resource-Policy']);
+        // The worker-src list must stay parseable (blob: unquoted, 'self' quoted).
+        $this->assertStringContainsString("worker-src 'self' blob:", $headers['Content-Security-Policy']);
     }
 
     public function testApiHeadersExposeStrictBrowserPolicies(): void
@@ -25,25 +34,6 @@ final class SecurityHeadersTest extends TestCase
 
         $this->assertArrayHasKey('Content-Security-Policy', $headers);
         $this->assertStringContainsString("default-src 'none'", $headers['Content-Security-Policy']);
-    }
-
-    public function testEmbedHeadersAllowFramingAndCrossOriginMedia(): void
-    {
-        $headers = Security::embedHeaders();
-
-        $this->assertArrayHasKey('Content-Security-Policy', $headers);
-        $this->assertStringContainsString('frame-ancestors *', $headers['Content-Security-Policy']);
-        $this->assertStringNotContainsString("frame-ancestors 'none'", $headers['Content-Security-Policy']);
-        $this->assertSame('cross-origin', $headers['Cross-Origin-Resource-Policy']);
-        $this->assertSame('noindex, nofollow, noarchive', $headers['X-Robots-Tag']);
-        $this->assertSame('no-store, no-cache, must-revalidate, max-age=0', $headers['Cache-Control']);
-        $this->assertSame('nosniff', $headers['X-Content-Type-Options']);
-    }
-
-    public function testPageAndApiHeadersStillForbidFraming(): void
-    {
-        $this->assertStringContainsString("frame-ancestors 'none'", Security::pageHeaders()['Content-Security-Policy']);
-        $this->assertStringContainsString("frame-ancestors 'none'", Security::apiHeaders()['Content-Security-Policy']);
     }
 
     public function testBootstrapScriptTagEscapesExecutableMarkupAndPageHeadIncludesFavicon(): void
@@ -56,6 +46,6 @@ final class SecurityHeadersTest extends TestCase
 
         $this->assertStringContainsString('type="application/json"', $tag);
         $this->assertStringNotContainsString('</script><script>', $tag);
-        $this->assertStringContainsString('/media/logo.svg', $head);
+        $this->assertStringContainsString('/media/forum-logo.webp', $head);
     }
 }

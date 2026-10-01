@@ -20,8 +20,11 @@ final class DatabasePlatform
             'settings',
             'folders',
             'files',
+            'file_blobs',
             'file_shares',
+            'folder_shares',
             'folder_permissions',
+            'spaces',
             'login_attempts',
             'rate_limits',
             'audit_logs',
@@ -101,7 +104,6 @@ final class DatabasePlatform
         array $conflictColumns
     ): string {
         $driver = self::normalizeDriver($driver);
-        $table = self::quoteIdentifier($driver, $table);
         $placeholders = implode(', ', array_map(static fn (string $column): string => ':' . $column, $insertColumns));
 
         if ($driver === 'mysql') {
@@ -235,12 +237,12 @@ final class DatabasePlatform
         $timestamp = $driver === 'sqlite' ? 'TEXT' : 'VARCHAR(40)';
         $description = $driver === 'sqlite' ? 'TEXT' : 'VARCHAR(1000)';
         $messageText = 'TEXT';
-        $metadataJsonColumn = $driver === 'mysql' ? 'TEXT NOT NULL' : 'TEXT NOT NULL DEFAULT \'{}\'';
-        $jobMessageColumn = $driver === 'mysql' ? 'TEXT NOT NULL' : 'TEXT NOT NULL DEFAULT \'\'';
         $engine = $driver === 'mysql' ? ' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci' : '';
+        // "key" is a reserved word on MySQL/MariaDB and must be quoted; SQLite
+        // and PostgreSQL accept the double-quoted ISO form.
         $keyColumn = self::quoteIdentifier($driver, 'key');
 
-        $statements = [
+        return [
             'CREATE TABLE IF NOT EXISTS users (
                 id ' . $id . ',
                 username ' . $shortText . ' NOT NULL UNIQUE,
@@ -250,6 +252,7 @@ final class DatabasePlatform
                 force_password_reset ' . $bool . ' NOT NULL DEFAULT 0,
                 is_immutable ' . $bool . ' NOT NULL DEFAULT 0,
                 storage_quota_bytes ' . $bytes . ' NULL,
+                link_shares_allowed INTEGER NULL,
                 created_at ' . $timestamp . ' NOT NULL,
                 updated_at ' . $timestamp . ' NOT NULL,
                 last_login_at ' . $timestamp . ' NULL
@@ -277,24 +280,38 @@ final class DatabasePlatform
                 id ' . $id . ',
                 folder_id ' . $refId . ' NOT NULL,
                 original_name ' . $shortText . ' NOT NULL,
+                uploader_username ' . $shortText . ' NOT NULL DEFAULT \'\',
                 disk_name ' . $tokenText . ' NOT NULL UNIQUE,
                 disk_extension ' . $shortText . ' NOT NULL,
                 mime_type ' . $shortText . ' NOT NULL,
                 size ' . $bytes . ' NOT NULL,
                 description ' . $description . ' NOT NULL DEFAULT \'\',
                 checksum ' . $tokenText . ' NOT NULL,
+                blob_id ' . $refId . ' NULL,
+                encryption_format VARCHAR(16) NOT NULL DEFAULT \'\',
                 created_by ' . $refId . ' NULL,
                 created_at ' . $timestamp . ' NOT NULL,
                 updated_at ' . $timestamp . ' NOT NULL,
                 FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE CASCADE,
                 FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
             )' . $engine,
+            'CREATE TABLE IF NOT EXISTS file_blobs (
+                id ' . $id . ',
+                checksum ' . $tokenText . ' NOT NULL,
+                disk_name ' . $tokenText . ' NOT NULL,
+                disk_extension ' . $shortText . ' NOT NULL,
+                size ' . $bytes . ' NOT NULL,
+                ref_count INTEGER NOT NULL DEFAULT 1,
+                created_at ' . $timestamp . ' NOT NULL
+            )' . $engine,
             'CREATE TABLE IF NOT EXISTS file_shares (
                 id ' . $id . ',
                 file_id ' . $refId . ' NOT NULL,
+                active_file_id ' . $refId . ' NULL,
                 token ' . $tokenText . ' NOT NULL UNIQUE,
                 created_by ' . $refId . ' NULL,
                 expires_at ' . $timestamp . ' NULL,
+                delete_after ' . $timestamp . ' NULL,
                 max_views INTEGER NULL,
                 view_count INTEGER NOT NULL DEFAULT 0,
                 password_hash TEXT NULL,
@@ -304,6 +321,25 @@ final class DatabasePlatform
                 updated_at ' . $timestamp . ' NOT NULL,
                 revoked_at ' . $timestamp . ' NULL,
                 FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
+                FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+            )' . $engine,
+            'CREATE TABLE IF NOT EXISTS folder_shares (
+                id ' . $id . ',
+                folder_id ' . $refId . ' NOT NULL,
+                active_folder_id ' . $refId . ' NULL,
+                token ' . $tokenText . ' NOT NULL UNIQUE,
+                created_by ' . $refId . ' NULL,
+                expires_at ' . $timestamp . ' NULL,
+                delete_after ' . $timestamp . ' NULL,
+                access_level ' . $shortText . ' NOT NULL DEFAULT \'view\',
+                max_views INTEGER NULL,
+                view_count INTEGER NOT NULL DEFAULT 0,
+                password_hash TEXT NULL,
+                password_version INTEGER NOT NULL DEFAULT 0,
+                created_at ' . $timestamp . ' NOT NULL,
+                updated_at ' . $timestamp . ' NOT NULL,
+                revoked_at ' . $timestamp . ' NULL,
+                FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE CASCADE,
                 FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
             )' . $engine,
             'CREATE TABLE IF NOT EXISTS folder_permissions (
@@ -320,6 +356,17 @@ final class DatabasePlatform
                 updated_at ' . $timestamp . ' NOT NULL,
                 FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE CASCADE,
                 UNIQUE (folder_id, principal_type, principal_id)
+            )' . $engine,
+            'CREATE TABLE IF NOT EXISTS spaces (
+                id ' . $id . ',
+                user_id ' . $refId . ' NOT NULL UNIQUE,
+                folder_id ' . $refId . ' NOT NULL UNIQUE,
+                status ' . $shortText . ' NOT NULL DEFAULT \'active\' CHECK (status IN (\'active\', \'disabled\')),
+                size_limit_bytes ' . $bytes . ' NULL,
+                created_at ' . $timestamp . ' NOT NULL,
+                updated_at ' . $timestamp . ' NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE CASCADE
             )' . $engine,
             'CREATE TABLE IF NOT EXISTS login_attempts (
                 id ' . $id . ',
@@ -346,13 +393,14 @@ final class DatabasePlatform
                 target_type ' . $shortText . ' NULL,
                 target_id ' . $refId . ' NULL,
                 target_label ' . $description . ' NULL,
-                metadata_json ' . $metadataJsonColumn . ',
+                metadata_json TEXT NOT NULL,
                 created_at ' . $timestamp . ' NOT NULL,
                 FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE SET NULL
             )' . $engine,
             'CREATE TABLE IF NOT EXISTS ip_bans (
                 id ' . $id . ',
                 ip_address ' . $ipText . ' NOT NULL,
+                active_ip_address ' . $ipText . ' NULL,
                 reason ' . $description . ' NOT NULL,
                 created_by ' . $refId . ' NULL,
                 created_by_username ' . $shortText . ' NULL,
@@ -371,43 +419,39 @@ final class DatabasePlatform
                 label ' . $shortText . ' NOT NULL,
                 status ' . $shortText . ' NOT NULL DEFAULT \'idle\',
                 last_result ' . $shortText . ' NOT NULL DEFAULT \'idle\',
-                last_message ' . $jobMessageColumn . ',
+                last_message ' . $messageText . ' NOT NULL,
                 last_run_at ' . $timestamp . ' NULL,
                 next_run_at ' . $timestamp . ' NULL,
                 last_duration_ms INTEGER NOT NULL DEFAULT 0,
                 created_at ' . $timestamp . ' NOT NULL,
                 updated_at ' . $timestamp . ' NOT NULL
             )' . $engine,
+            'CREATE INDEX IF NOT EXISTS idx_folders_parent_id ON folders(parent_id)',
+            'CREATE INDEX IF NOT EXISTS idx_files_folder_id ON files(folder_id)',
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_folder_shares_active_folder ON folder_shares(active_folder_id)',
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_file_shares_active_file ON file_shares(active_file_id)',
+            'CREATE INDEX IF NOT EXISTS idx_file_shares_delete_after ON file_shares(delete_after)',
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_file_blobs_checksum ON file_blobs(checksum)',
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_file_blobs_disk_name ON file_blobs(disk_name)',
+            'CREATE INDEX IF NOT EXISTS idx_files_blob_id ON files(blob_id)',
+            'CREATE INDEX IF NOT EXISTS idx_permissions_principal ON folder_permissions(principal_type, principal_id)',
+            'CREATE INDEX IF NOT EXISTS idx_spaces_status ON spaces(status)',
+            'CREATE INDEX IF NOT EXISTS idx_login_attempts_lookup ON login_attempts(username, ip_address, attempted_at)',
+            'CREATE INDEX IF NOT EXISTS idx_rate_limits_updated_at ON rate_limits(updated_at)',
+            'CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at)',
+            'CREATE INDEX IF NOT EXISTS idx_audit_logs_category_created_at ON audit_logs(category, created_at)',
+            'CREATE INDEX IF NOT EXISTS idx_audit_logs_ip_created_at ON audit_logs(ip_address, created_at)',
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_ip_bans_active_ip ON ip_bans(active_ip_address)',
+            'CREATE INDEX IF NOT EXISTS idx_ip_bans_history ON ip_bans(ip_address, revoked_at, expires_at)',
+            'CREATE INDEX IF NOT EXISTS idx_automation_jobs_next_run ON automation_jobs(next_run_at)',
         ];
-
-        $statements[] = 'CREATE INDEX IF NOT EXISTS idx_folders_parent_id ON folders(parent_id)';
-        $statements[] = 'CREATE INDEX IF NOT EXISTS idx_files_folder_id ON files(folder_id)';
-
-        if ($driver === 'mysql') {
-            $statements[] = 'CREATE INDEX IF NOT EXISTS idx_file_shares_active_file ON file_shares(file_id, revoked_at)';
-        } else {
-            $statements[] = 'CREATE UNIQUE INDEX IF NOT EXISTS idx_file_shares_active_file ON file_shares(file_id) WHERE revoked_at IS NULL';
-        }
-
-        $statements[] = 'CREATE INDEX IF NOT EXISTS idx_permissions_principal ON folder_permissions(principal_type, principal_id)';
-        $statements[] = 'CREATE INDEX IF NOT EXISTS idx_login_attempts_lookup ON login_attempts(username, ip_address, attempted_at)';
-        $statements[] = 'CREATE INDEX IF NOT EXISTS idx_rate_limits_updated_at ON rate_limits(updated_at)';
-        $statements[] = 'CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at)';
-        $statements[] = 'CREATE INDEX IF NOT EXISTS idx_audit_logs_category_created_at ON audit_logs(category, created_at)';
-        $statements[] = 'CREATE INDEX IF NOT EXISTS idx_audit_logs_ip_created_at ON audit_logs(ip_address, created_at)';
-
-        if ($driver === 'mysql') {
-            $statements[] = 'CREATE INDEX IF NOT EXISTS idx_ip_bans_active_ip ON ip_bans(ip_address, revoked_at)';
-        } else {
-            $statements[] = 'CREATE UNIQUE INDEX IF NOT EXISTS idx_ip_bans_active_ip ON ip_bans(ip_address) WHERE revoked_at IS NULL';
-        }
-
-        $statements[] = 'CREATE INDEX IF NOT EXISTS idx_ip_bans_history ON ip_bans(ip_address, revoked_at, expires_at)';
-        $statements[] = 'CREATE INDEX IF NOT EXISTS idx_automation_jobs_next_run ON automation_jobs(next_run_at)';
-
-        return $statements;
     }
 
+    /**
+     * Quote an SQL identifier for the target platform: backticks on
+     * MySQL/MariaDB (reserved words such as settings.key), the ISO
+     * double-quoted form on SQLite and PostgreSQL.
+     */
     public static function quoteIdentifier(string $driver, string $name): string
     {
         self::assertIdentifier($name);

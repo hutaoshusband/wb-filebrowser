@@ -4,9 +4,22 @@ import { describePermissionPrincipal, filterPermissionRows, filterUsers, getSear
 import { collectDroppedItems } from './lib/folderDrop.js';
 import { renderPdfThumbnail } from './lib/thumbnails.js';
 import { validateUploadCandidate } from './lib/uploadPolicy.js';
+import {
+  compressedFileName,
+  formatBytesPlain,
+  hasSufficientSavings,
+  inspectSummaryIsCompliant,
+  normalizeVideoPolicy,
+  shouldConsiderForCompression,
+} from './lib/videoCompressionPolicy.js';
+import { createVideoCompressor } from './lib/videoCompressor.js';
+import VideoCompressionDialog from './components/VideoCompressionDialog.vue';
+import EncryptionDialog from './components/EncryptionDialog.vue';
+import LocalDecryption from './components/LocalDecryption.vue';
+import { ENCRYPTION_FORMAT, transformFile } from './lib/fileEncryption.js';
 
 const ADMIN_SECTIONS = ['dashboard', 'users', 'permissions', 'settings', 'audit', 'security'];
-const SETTING_TABS = ['access', 'display', 'uploads', 'automation'];
+const SETTING_TABS = ['access', 'display', 'uploads', 'automation', 'spaces'];
 const BLOCKED_STORAGE_KEY = 'wb-filebrowser:blocked-state';
 const THUMB_OBSERVER_KEY = Symbol('wb-thumb-observer');
 const DEFAULT_CHUNK_SIZE = 2097152;
@@ -35,6 +48,7 @@ function createDefaultMaintenance() {
 function createDefaultDisplaySettings() {
   return {
     grid_thumbnails_enabled: true,
+    show_uploader: true,
   };
 }
 
@@ -42,17 +56,31 @@ function createDefaultSettings() {
   return {
     access: {
       public_access: false,
+      user_link_shares_allowed: true,
+      share_embeds_enabled: false,
       maintenance_enabled: false,
       maintenance_scope: 'app_only',
       maintenance_message: createDefaultMaintenance().message,
       share_terms_enabled: false,
       share_terms_message: 'By opening or downloading this shared file, you confirm that you are authorized to access it and will handle it according to the applicable terms and confidentiality requirements.',
-      share_embeds_enabled: false,
     },
     uploads: {
       max_file_size_mb: 0,
       allowed_extensions: '',
       stale_upload_ttl_hours: 24,
+      dedup_enabled: false,
+      encryption_mode: 'off',
+    },
+    video_compression: {
+      mode: 'off',
+      max_height: 1080,
+      max_fps: 60,
+      max_video_bitrate_kbps: 8000,
+      max_audio_bitrate_kbps: 192,
+      min_source_mb: 20,
+      min_savings_pct: 5,
+      ffmpeg_fallback: true,
+      media_ffprobe_path: '',
     },
     automation: {
       runner_enabled: true,
@@ -60,6 +88,13 @@ function createDefaultSettings() {
       cleanup_interval_minutes: 60,
       storage_alert_threshold_pct: 85,
       folder_size_interval_minutes: 1440,
+      share_deletion_interval_minutes: 15,
+    },
+    spaces: {
+      enabled: false,
+      sharing_allowed: true,
+      max_grant_level: 'write',
+      auto_create: false,
     },
     security: {
       audit_enabled: false,
@@ -91,8 +126,12 @@ const session = reactive({
   user: bootstrap.user ?? null,
   publicAccess: false,
   rootFolderId: 1,
-  appVersion: bootstrap.app_version ?? '1.0.0-alpha',
+  homeFolderId: 1,
+  navigationRoots: [],
+  canCreateLinkShares: false,
   shareEmbedsEnabled: Boolean(bootstrap.share_embeds_enabled),
+  space: null,
+  appVersion: bootstrap.app_version ?? '1.0.0-alpha',
   storage: { used_label: '0 B', total_label: 'Unknown' },
   diagnostic: { exposed: false, checked_at: '', message: '', probe_path: '', probe_url: '' },
   maintenance: { ...createDefaultMaintenance(), ...(bootstrap.maintenance ?? {}) },
@@ -109,6 +148,7 @@ const route = reactive({
 
 const folderState = reactive({
   loading: false,
+  error: '',
   folder: null,
   breadcrumbs: [],
   folders: [],
@@ -131,12 +171,15 @@ const adminState = reactive({
   settings: createDefaultSettings(),
   settingsTab: 'access',
   canManageSettings: false,
+  mediaValidation: null,
   permissionRows: [],
   permissionEntries: {},
   userPermissionRows: [],
   userPermissionEntries: {},
   automationJobs: [],
   automationBusy: false,
+  dbBackups: [],
+  dbBackupsBusy: false,
   auditLogs: [],
   auditPage: 1,
   auditTotalPages: 1,
@@ -153,21 +196,33 @@ const adminState = reactive({
 
 const shareState = reactive({
   fileId: 0,
+  error: '',
   loading: false,
   link: null,
+});
+const spaceShareState = reactive({
+  folderId: 0,
+  loading: false,
+  ready: false,
+  saving: false,
+  error: '',
+  grants: [],
+  users: [],
+  maxLevel: 'write',
+  draftUser: '',
+  draftLevel: 'view',
 });
 const shareForm = reactive({
   fileId: 0,
   expiresAtLocal: '',
+  deleteAfterLocal: '',
   maxViews: '',
   password: '',
   allowEmbed: false,
 });
 
 const authForm = reactive({ username: '', password: '' });
-const passwordForm = reactive({ current: '', password: '' });
-const needsPasswordChange = computed(() => Number(session.user?.force_password_reset) === 1);
-const newUserForm = reactive({ username: '', password: '', role: 'user', force_password_reset: false });
+const newUserForm = reactive({ username: '', password: '', role: 'user', force_password_reset: false, space_enabled: false });
 const banForm = reactive({ ipAddress: '', reason: '', expiresAtLocal: '' });
 
 const searchQuery = ref('');
@@ -179,11 +234,75 @@ const selectMode = ref(false);
 const selectedKey = ref('');
 const previewItem = ref(null);
 const previewText = ref('');
+const mediaRef = ref(null);
+const mediaState = reactive({
+  playing: false,
+  currentTime: 0,
+  duration: 0,
+  volume: 1,
+  muted: false,
+  ready: false,
+});
 const infoItem = ref(null);
 const helpOpen = ref(false);
 const contextMenu = ref(null);
 const statusMessage = ref('');
+const stickyMessage = ref('');
 const uploadQueue = ref(null);
+const encryptionDialog = ref(null);
+const encryptionProgress = ref(null);
+const localDecryption = ref(null);
+let settleEncryption;
+let encryptionController;
+
+function answerEncryption(result) {
+  encryptionDialog.value = null;
+  settleEncryption?.(result);
+  settleEncryption = null;
+}
+
+async function encryptUpload(file) {
+  const mode = session.uploadPolicy.encryption_mode ?? 'off';
+  if (mode === 'off') return { file, format: '' };
+  const result = await new Promise((resolve) => {
+    settleEncryption = resolve;
+    encryptionDialog.value = { name: file.name, required: mode === 'required' };
+  });
+  if (result.choice === 'cancel') throw new DOMException('Upload canceled.', 'AbortError');
+  if (result.choice === 'plain' && mode !== 'required') return { file, format: '' };
+  encryptionController = new AbortController();
+  encryptionProgress.value = 0;
+  try {
+    const pending = transformFile(file, result.password, {
+      signal: encryptionController.signal,
+      onProgress: (value) => { encryptionProgress.value = Math.round(value * 100); },
+    });
+    result.password = '';
+    const encrypted = await pending;
+    return { file: new File([encrypted], file.name, { type: 'application/x-wb-encrypted' }), format: ENCRYPTION_FORMAT };
+  } finally {
+    result.password = '';
+    encryptionProgress.value = null;
+    encryptionController = null;
+  }
+}
+const videoCompressor = createVideoCompressor();
+const compressionState = reactive({
+  phase: 'idle', // idle | asking | running
+  currentName: '',
+  currentFileBytes: 0,
+  currentProgress: 0,
+  completedFiles: 0,
+  totalFiles: 0,
+  processedBytes: 0,
+  totalBytes: 0,
+  originalBytes: 0,
+});
+const compressionDialog = reactive({
+  open: false,
+  mode: 'optional',
+  files: [],
+});
 const dragDepth = ref(0);
 const isBooting = ref(true);
 const fileInput = ref(null);
@@ -209,6 +328,7 @@ const blockedState = reactive({
 let searchTimer = 0;
 let automationTimer = 0;
 let blockedTimer = 0;
+let pendingOpfsCleanup = [];
 
 const isAdmin = computed(() => ['admin', 'super_admin'].includes(session.user?.role ?? ''));
 const isSuperAdmin = computed(() => session.user?.role === 'super_admin');
@@ -222,10 +342,23 @@ const currentEntries = computed(() => (searchActive.value ? [...searchState.fold
 const selectedItem = computed(() => currentEntries.value.find((item) => rowKey(item) === selectedKey.value) ?? null);
 const canUploadHere = computed(() => shell === 'app' && session.user !== null && folderState.can_upload);
 const canCreateFoldersHere = computed(() => shell === 'app' && folderState.can_create_folders);
-const canManageShares = computed(() => shell === 'app' && (isAdmin.value || session.shareEmbedsEnabled));
+const canManageShares = computed(() => shell === 'app' && (isAdmin.value || session.canCreateLinkShares));
+const canEmbedShares = computed(() => isAdmin.value || session.shareEmbedsEnabled);
+const canShareItem = (item) => {
+  if (!item || item.type !== 'file') {
+    return false;
+  }
+
+  if (isAdmin.value) {
+    return true;
+  }
+
+  return session.canCreateLinkShares && item.can_share === true;
+};
 const canEditDescription = computed(() => Boolean(infoItem.value?.can_edit));
+const canManageFolderSharing = (item) => item?.type === 'folder' && item.can_manage_sharing && (isAdmin.value || session.space?.can_share);
 const breadcrumbItems = computed(() => searchActive.value
-  ? [{ id: session.rootFolderId, name: 'Home' }, { id: -1, name: 'Search results' }]
+  ? [{ id: session.homeFolderId, name: 'Home' }, { id: -1, name: 'Search results' }]
   : folderState.breadcrumbs);
 const filteredUsers = computed(() => filterUsers(adminState.users, searchQuery.value, route.section));
 const filteredPermissionRows = computed(() => route.section === 'permissions'
@@ -256,13 +389,12 @@ const shareContextItem = computed(() => {
   if (!canManageShares.value) {
     return null;
   }
-
   if (infoItem.value?.type === 'file') {
-    return infoItem.value;
+    return canShareItem(infoItem.value) ? infoItem.value : null;
   }
 
   if (previewItem.value?.type === 'file') {
-    return previewItem.value;
+    return canShareItem(previewItem.value) ? previewItem.value : null;
   }
 
   return null;
@@ -281,6 +413,20 @@ const uploadQueueCurrentPercent = computed(() => {
 
   return Math.min(100, Math.round((uploadQueue.value.currentFileBytesSent / uploadQueue.value.currentFileBytesTotal) * 100));
 });
+const compressionOverallPercent = computed(() => {
+  if (compressionState.totalBytes === 0) {
+    return 0;
+  }
+
+  const weightedBytes = compressionState.processedBytes + compressionState.currentProgress * compressionState.currentFileBytes;
+
+  return Math.min(100, Math.round((weightedBytes / compressionState.totalBytes) * 100));
+});
+const compressionCurrentPercent = computed(() => Math.min(100, Math.round(compressionState.currentProgress * 100)));
+
+function cancelVideoCompression() {
+  videoCompressor.cancelActive();
+}
 
 function apiUrl(action, params = {}) {
   const url = new URL(`${window.location.origin}${basePath}/api/index.php`);
@@ -367,7 +513,9 @@ function syncRouteFromHash() {
     return;
   }
 
-  route.folderId = session.rootFolderId || 1;
+  // Space owners land inside their own space; the global root remains the
+  // fallback for admins and users without a space.
+  route.folderId = session.homeFolderId || session.rootFolderId || 1;
   if (window.location.hash === '') {
     window.location.hash = `#/folder/${route.folderId}`;
   }
@@ -380,8 +528,12 @@ async function refreshSession() {
   session.user = payload.user ?? null;
   session.publicAccess = Boolean(payload.public_access);
   session.rootFolderId = payload.root_folder_id ?? 1;
-  session.appVersion = payload.app_version ?? session.appVersion;
+  session.homeFolderId = payload.home_folder_id ?? payload.root_folder_id ?? 1;
+  session.space = payload.space ?? null;
+  session.canCreateLinkShares = payload.can_create_link_shares ?? Boolean(session.space?.can_share);
   session.shareEmbedsEnabled = Boolean(payload.share_embeds_enabled);
+  session.navigationRoots = payload.navigation_roots ?? [];
+  session.appVersion = payload.app_version ?? session.appVersion;
   session.storage = payload.storage ?? session.storage;
   session.diagnostic = payload.diagnostic ?? session.diagnostic;
   session.display = { ...createDefaultDisplaySettings(), ...(payload.display ?? session.display) };
@@ -401,6 +553,51 @@ function showMessage(message) {
   showMessage.timer = window.setTimeout(() => {
     statusMessage.value = '';
   }, 4200);
+}
+
+// Upload and optimization failures must outlive a 4-second toast: they can
+// end a multi-minute transfer whose error the user would otherwise miss.
+// Every sticky error is also mirrored to the server log so client-side
+// failures (which never reach the API) stay diagnosable.
+const reportedClientErrors = new Set();
+
+function showStickyMessage(message) {
+  stickyMessage.value = message;
+
+  const text = String(message);
+
+  if (reportedClientErrors.has(text)) {
+    return;
+  }
+
+  reportedClientErrors.add(text);
+  api('client.log', {
+    method: 'POST',
+    body: {
+      message: text,
+      context: `surface=${shell}`,
+    },
+  }).catch(() => {});
+}
+
+function dismissStickyMessage() {
+  stickyMessage.value = '';
+}
+
+let compressionHeartbeat = 0;
+
+// A long local transcode sends no requests; keep the server-side session
+// fresh so the upload that follows is not rejected as expired.
+function startCompressionHeartbeat() {
+  stopCompressionHeartbeat();
+  compressionHeartbeat = window.setInterval(() => {
+    api('auth.session', { params: { surface: shell } }).catch(() => {});
+  }, 4 * 60 * 1000);
+}
+
+function stopCompressionHeartbeat() {
+  window.clearInterval(compressionHeartbeat);
+  compressionHeartbeat = 0;
 }
 
 function setSearchForSection(section) {
@@ -429,15 +626,30 @@ function applyAutomationState(payload) {
   }
 }
 
+function mergeSettingsGroups(settings) {
+  const defaults = createDefaultSettings();
+  const incoming = settings ?? {};
+  const merged = { ...defaults, ...incoming };
+
+  for (const group of Object.keys(defaults)) {
+    merged[group] = { ...defaults[group], ...(incoming[group] ?? {}) };
+  }
+
+  return merged;
+}
+
 function applySettingsPayload(payload) {
   if (payload.settings) {
-    adminState.settings = cloneSettings(payload.settings);
+    adminState.settings = mergeSettingsGroups(payload.settings);
   }
   if (payload.can_manage_settings !== undefined) {
     adminState.canManageSettings = Boolean(payload.can_manage_settings);
   }
   if (payload.upload_policy) {
     session.uploadPolicy = payload.upload_policy;
+  }
+  if (payload.media_validation !== undefined) {
+    adminState.mediaValidation = payload.media_validation;
   }
   if (payload.settings?.display) {
     session.display = { ...createDefaultDisplaySettings(), ...payload.settings.display };
@@ -452,7 +664,6 @@ function applySecurityPayload(payload) {
 }
 
 async function refreshCurrentView() {
-  if (needsPasswordChange.value) return;
   if (isAdminShell.value) {
     if (isAdmin.value) {
       await loadAdminSection();
@@ -485,6 +696,10 @@ async function refreshCurrentView() {
 
 async function loadFolder(folderId = route.folderId) {
   folderState.loading = true;
+  folderState.error = '';
+  Object.assign(folderState, { folder: null, folders: [], files: [], breadcrumbs: [], can_upload: false, can_create_folders: false, can_edit: false, can_delete: false });
+  selectedKey.value = '';
+  infoItem.value = null;
   try {
     const payload = await api('tree.list', {
       params: {
@@ -493,10 +708,15 @@ async function loadFolder(folderId = route.folderId) {
         direction: sortDirection.value,
       },
     });
+    if (route.folderId !== folderId) return;
     Object.assign(folderState, payload.data);
     selectedKey.value = '';
+  } catch (error) {
+    if (route.folderId === folderId) {
+      folderState.error = error instanceof Error ? error.message : 'Unable to load this folder.';
+    }
   } finally {
-    folderState.loading = false;
+    if (route.folderId === folderId) folderState.loading = false;
   }
 }
 
@@ -582,14 +802,19 @@ function openUserDetails(user) {
   window.location.hash = nextHash;
 }
 
-function browseHome() {
+async function browseHome() {
   closeMobileNav();
   if (isAdminShell.value) {
     goToBrowserRoot();
     return;
   }
 
-  navigateToFolder(session.rootFolderId);
+  try {
+    await refreshSession();
+    navigateToFolder(session.homeFolderId || session.rootFolderId);
+  } catch (error) {
+    showMessage(error instanceof Error ? error.message : 'Unable to open your files.');
+  }
 }
 
 function redirectTo(url) {
@@ -647,7 +872,7 @@ function canEditItem(item) {
     return false;
   }
 
-  return Boolean(item.can_edit);
+  return Boolean(item.can_edit) && !item.protected_root;
 }
 
 function canDeleteItem(item) {
@@ -697,6 +922,17 @@ function syncDescriptionDraft(item = infoItem.value) {
   descriptionDraft.value = item ? String(item.description ?? '') : '';
 }
 
+function contextMenuPoint(event) {
+  const estimatedWidth = 200;
+  const estimatedHeight = 240;
+  const margin = 8;
+
+  return {
+    x: Math.max(margin, Math.min(event.clientX, window.innerWidth - estimatedWidth - margin)),
+    y: Math.max(margin, Math.min(event.clientY, window.innerHeight - estimatedHeight - margin)),
+  };
+}
+
 function handleContextMenu(event, item) {
   if (shell !== 'app' || !canShowItemActions(item)) {
     return;
@@ -704,7 +940,7 @@ function handleContextMenu(event, item) {
 
   event.preventDefault();
   selectEntry(item);
-  contextMenu.value = { kind: 'item', x: event.clientX, y: event.clientY, item };
+  contextMenu.value = { kind: 'item', ...contextMenuPoint(event), item };
 }
 
 function handleWorkspaceContextMenu(event) {
@@ -713,7 +949,7 @@ function handleWorkspaceContextMenu(event) {
   }
 
   event.preventDefault();
-  contextMenu.value = { kind: 'workspace', x: event.clientX, y: event.clientY };
+  contextMenu.value = { kind: 'workspace', ...contextMenuPoint(event) };
 }
 
 function previewMode(item) {
@@ -827,6 +1063,7 @@ const vThumbObserve = {
 async function openPreview(item) {
   previewItem.value = item;
   previewText.value = '';
+  resetMediaState();
 
   if (previewMode(item) === 'text') {
     const response = await fetch(item.preview_url, { credentials: 'same-origin', cache: 'no-store' });
@@ -837,6 +1074,117 @@ async function openPreview(item) {
 function closePreview() {
   previewItem.value = null;
   previewText.value = '';
+  resetMediaState();
+}
+
+function resetMediaState() {
+  mediaState.playing = false;
+  mediaState.currentTime = 0;
+  mediaState.duration = 0;
+  mediaState.volume = 1;
+  mediaState.muted = false;
+  mediaState.ready = false;
+}
+
+function formatMediaTime(seconds) {
+  const value = Math.max(0, Math.floor(Number(seconds) || 0));
+  const hours = Math.floor(value / 3600);
+  const minutes = Math.floor((value % 3600) / 60);
+  const secs = value % 60;
+  const pad = (input) => String(input).padStart(2, '0');
+  return hours > 0 ? `${hours}:${pad(minutes)}:${pad(secs)}` : `${minutes}:${pad(secs)}`;
+}
+
+function mediaProgressPercent() {
+  if (!mediaState.duration) {
+    return 0;
+  }
+  return Math.min(100, (mediaState.currentTime / mediaState.duration) * 100);
+}
+
+function togglePlay() {
+  const media = mediaRef.value;
+  if (!media) {
+    return;
+  }
+  if (media.paused) {
+    media.play();
+  } else {
+    media.pause();
+  }
+}
+
+function onMediaSeek(event) {
+  const media = mediaRef.value;
+  const value = Number(event.target.value);
+  if (!media || !Number.isFinite(value)) {
+    return;
+  }
+  media.currentTime = value;
+  mediaState.currentTime = value;
+}
+
+function onMediaVolume(event) {
+  const value = Number(event.target.value);
+  const media = mediaRef.value;
+  if (!media || !Number.isFinite(value)) {
+    return;
+  }
+  media.volume = value;
+  mediaState.volume = value;
+  if (value > 0 && media.muted) {
+    media.muted = false;
+    mediaState.muted = false;
+  }
+}
+
+function toggleMute() {
+  const media = mediaRef.value;
+  if (!media) {
+    return;
+  }
+  media.muted = !media.muted;
+  mediaState.muted = media.muted;
+}
+
+function onMediaTimeUpdate() {
+  const media = mediaRef.value;
+  if (!media) {
+    return;
+  }
+  mediaState.currentTime = media.currentTime;
+}
+
+function onMediaLoadedMetadata() {
+  const media = mediaRef.value;
+  if (!media) {
+    return;
+  }
+  mediaState.duration = Number.isFinite(media.duration) ? media.duration : 0;
+  mediaState.volume = media.volume;
+  mediaState.muted = media.muted;
+  mediaState.ready = true;
+}
+
+function onMediaPlay() {
+  mediaState.playing = true;
+}
+
+function onMediaPause() {
+  mediaState.playing = false;
+}
+
+function toggleFullscreen() {
+  const media = mediaRef.value;
+  const wrapper = media?.closest('.media-player');
+  if (!wrapper) {
+    return;
+  }
+  if (document.fullscreenElement) {
+    document.exitFullscreen?.();
+    return;
+  }
+  wrapper.requestFullscreen?.();
 }
 
 async function saveDescription() {
@@ -883,6 +1231,9 @@ async function submitLogin() {
     session.csrfToken = payload.csrf_token ?? session.csrfToken;
     authForm.password = '';
     await refreshSession();
+    if (!isAdminShell.value && (session.space?.status === 'active' || !window.location.hash || window.location.hash === `#/folder/${session.rootFolderId}`)) {
+      window.history.replaceState(null, '', `#/folder/${session.homeFolderId}`);
+    }
     syncRouteFromHash();
     startAutomationPulse();
 
@@ -897,25 +1248,6 @@ async function submitLogin() {
     }
   } catch (error) {
     showMessage(error instanceof Error ? error.message : 'Unable to sign in.');
-  }
-}
-
-async function submitPasswordChange() {
-  try {
-    const payload = await api('auth.password', {
-      method: 'POST',
-      body: { current_password: passwordForm.current, password: passwordForm.password },
-    });
-    passwordForm.current = '';
-    passwordForm.password = '';
-    session.user = payload.user;
-    session.csrfToken = payload.csrf_token;
-    await refreshSession();
-    startAutomationPulse();
-    await refreshCurrentView();
-    showMessage('Password changed.');
-  } catch (error) {
-    showMessage(error instanceof Error ? error.message : 'Unable to change password.');
   }
 }
 
@@ -936,6 +1268,8 @@ async function logout() {
   }
 
   await refreshSession();
+  window.history.replaceState(null, '', `#/folder/${session.homeFolderId}`);
+  syncRouteFromHash();
   await refreshCurrentView();
 }
 
@@ -1017,7 +1351,7 @@ function createUploadQueueState(items) {
   };
 }
 
-async function ensureDroppedDirectories(directories) {
+async function ensureDroppedDirectories(directories, folderId = route.folderId) {
   const seen = new Set();
 
   for (const directory of directories) {
@@ -1029,11 +1363,232 @@ async function ensureDroppedDirectories(directories) {
     await api('folders.ensure_path', {
       method: 'POST',
       body: {
-        parent_id: route.folderId,
+        parent_id: folderId,
         path_segments: directory.relativePathSegments,
       },
     });
   }
+}
+
+function askCompressionDecision(mode, files) {
+  compressionDialog.mode = mode;
+  compressionDialog.files = files;
+  compressionDialog.open = true;
+
+  return new Promise((resolve) => {
+    compressionDialog.resolve = resolve;
+  });
+}
+
+function settleCompressionDialog(decision) {
+  compressionDialog.open = false;
+  compressionDialog.resolve?.(decision);
+  compressionDialog.resolve = null;
+}
+
+function resetCompressionState() {
+  stopCompressionHeartbeat();
+  compressionState.phase = 'idle';
+  compressionState.currentName = '';
+  compressionState.currentFileBytes = 0;
+  compressionState.currentProgress = 0;
+  compressionState.completedFiles = 0;
+  compressionState.totalFiles = 0;
+  compressionState.processedBytes = 0;
+  compressionState.totalBytes = 0;
+  compressionState.originalBytes = 0;
+}
+
+/**
+ * Runs the client-side video compression pipeline over the queued items and
+ * returns the (possibly replaced) item list: compressed files swap in as
+ * normal File objects so the chunked uploader stays untouched. Returns null
+ * when the user canceled the whole upload.
+ */
+async function prepareVideosForUpload(items) {
+  const policy = normalizeVideoPolicy(session.uploadPolicy);
+
+  if (policy.mode === 'off') {
+    return items;
+  }
+
+  const candidates = items.filter((item) => shouldConsiderForCompression(item.file, policy));
+
+  if (candidates.length === 0) {
+    return items;
+  }
+
+  const support = await videoCompressor.checkSupport();
+
+  // Browsers without a native H.264 encoder (e.g. Firefox) can still
+  // compress through the in-browser ffmpeg engine when the admin allows it.
+  const fallbackUsable = policy.ffmpeg_fallback && support.fallbackCapable === true;
+
+  if (!support.supported && !fallbackUsable) {
+    if (policy.mode === 'required') {
+      throw new Error(
+        `This server requires videos to be optimized before upload, but this browser cannot compress them`
+        + `${support.reason ? ` (${support.reason.replace(/\.$/, '')})` : ''}. Use a current desktop browser and try again.`,
+      );
+    }
+
+    showMessage(
+      `Video optimization is unavailable in this browser${support.reason ? ` (${support.reason.replace(/\.$/, '')})` : ''}. `
+      + 'Uploading the original files.',
+    );
+
+    return items;
+  }
+
+  const inspected = [];
+
+  for (const item of candidates) {
+    const info = await videoCompressor.inspect(item.file).catch(() => null);
+    inspected.push({ item, info, compliant: inspectSummaryIsCompliant(info, policy) });
+  }
+
+  const toCompress = inspected.filter((entry) => !entry.compliant);
+  const alreadyOptimized = inspected.length - toCompress.length;
+
+  if (toCompress.length === 0) {
+    if (alreadyOptimized > 0) {
+      showMessage(
+        alreadyOptimized === 1
+          ? 'Skipped optimization: this video already matches the server policy.'
+          : `Skipped optimization: ${alreadyOptimized} videos already match the server policy.`,
+      );
+    }
+
+    return items;
+  }
+
+  const decision = await askCompressionDecision(
+    policy.mode,
+    toCompress.map((entry) => ({ name: entry.item.file.name, size: entry.item.file.size })),
+  );
+
+  if (decision === 'cancel') {
+    return null;
+  }
+
+  if (decision === 'original') {
+    return items;
+  }
+
+  compressionState.phase = 'running';
+  startCompressionHeartbeat();
+  compressionState.totalFiles = toCompress.length;
+  compressionState.completedFiles = 0;
+  compressionState.totalBytes = toCompress.reduce((sum, entry) => sum + entry.item.file.size, 0);
+  compressionState.originalBytes = compressionState.totalBytes;
+  compressionState.processedBytes = 0;
+
+  const replacements = [];
+  let savedBytes = 0;
+  let compressedCount = 0;
+
+  try {
+    for (const entry of toCompress) {
+      const { item, info } = entry;
+      compressionState.currentName = item.file.name;
+      compressionState.currentFileBytes = item.file.size;
+      compressionState.currentProgress = 0;
+
+      let result;
+
+      try {
+        result = await videoCompressor.compress(item.file, policy, {
+          sourceInfo: info,
+          onProgress: (value) => {
+            compressionState.currentProgress = value;
+          },
+        });
+      } catch (compressError) {
+        if (compressError?.code === 'CANCELED') {
+          throw compressError;
+        }
+
+        if (policy.mode === 'optional') {
+          // In optional mode the server accepts originals by design, so one
+          // stubborn video must not block the rest of the batch.
+          showMessage(`${item.file.name} could not be compressed locally (${compressError.message}). Uploading the original.`);
+          compressionState.processedBytes += item.file.size;
+          compressionState.completedFiles += 1;
+          continue;
+        }
+
+        throw compressError;
+      }
+
+      if (result.opfsToken) {
+        pendingOpfsCleanup.push(result.opfsToken);
+      }
+
+      const keepOriginal = policy.mode === 'optional' && !hasSufficientSavings(
+        result.originalSize,
+        result.newSize,
+        policy.min_savings_pct,
+      );
+
+      if (keepOriginal) {
+        // The re-encode barely helped (or grew): keep the untouched original
+        // in optional mode rather than trading quality for nothing.
+        showMessage(`${item.file.name} is already well optimized. Uploading the original.`);
+      } else {
+        replacements.push({ item, result });
+        savedBytes += Math.max(0, result.originalSize - result.newSize);
+        compressedCount += 1;
+      }
+
+      compressionState.processedBytes += item.file.size;
+      compressionState.completedFiles += 1;
+    }
+  } catch (error) {
+    videoCompressor.cancelActive();
+    resetCompressionState();
+
+    if (error?.code === 'CANCELED') {
+      showMessage('Upload canceled during video optimization.');
+      return null;
+    }
+
+    throw error;
+  } finally {
+    resetCompressionState();
+  }
+
+  if (compressedCount > 0) {
+    showMessage(
+      `Optimized ${compressedCount} video${compressedCount === 1 ? '' : 's'} locally`
+      + ` (saving about ${formatBytesPlain(savedBytes)}) before upload.`,
+    );
+  }
+
+  if (replacements.length === 0) {
+    return items;
+  }
+
+  const replacementByItem = new Map(replacements.map(({ item, result }) => [item, result]));
+
+  return items.map((item) => {
+    const result = replacementByItem.get(item);
+
+    if (!result) {
+      return item;
+    }
+
+    const newName = compressedFileName(item.file.name);
+
+    return {
+      file: result.file instanceof File ? result.file : new File([result.file], newName, { type: 'video/mp4' }),
+      relativePathSegments: item.relativePathSegments.length > 0
+        ? [...item.relativePathSegments.slice(0, -1), newName]
+        : item.relativePathSegments,
+      relativePath: item.relativePathSegments.length > 0
+        ? [...item.relativePathSegments.slice(0, -1), newName].join('/')
+        : newName,
+    };
+  });
 }
 
 async function uploadQueuedItems(items, emptyDirectories = []) {
@@ -1042,9 +1597,15 @@ async function uploadQueuedItems(items, emptyDirectories = []) {
     return;
   }
 
+  if (uploadQueue.value || compressionState.phase !== 'idle') {
+    showMessage('An upload or video optimization is already in progress.');
+    return;
+  }
+
   const uploadedFileCount = items.length;
   const uploadedFileName = items[0]?.file.name ?? 'file';
   const uploadedBy = session.user?.username ?? 'unknown user';
+  const destinationFolderId = route.folderId;
 
   for (const item of items) {
     const uploadError = validateUploadCandidate(item.file, session.uploadPolicy);
@@ -1059,15 +1620,45 @@ async function uploadQueuedItems(items, emptyDirectories = []) {
     return;
   }
 
-  uploadQueue.value = createUploadQueueState(items);
+  let uploadItems = items;
+  dismissStickyMessage();
+
+  try {
+    uploadItems = await prepareVideosForUpload(items);
+  } catch (error) {
+    showStickyMessage(error instanceof Error ? error.message : 'Video optimization failed.');
+    flushOpfsCleanup();
+    return;
+  }
+
+  if (!uploadItems) {
+    flushOpfsCleanup();
+    return;
+  }
+
+  for (const item of uploadItems) {
+    const uploadError = validateUploadCandidate(item.file, session.uploadPolicy);
+
+    if (uploadError) {
+      showMessage(uploadError);
+      return;
+    }
+  }
+
+  uploadQueue.value = createUploadQueueState(uploadItems);
+  startCompressionHeartbeat();
   let completedFiles = 0;
   let completedBytes = 0;
 
   try {
-    await ensureDroppedDirectories(emptyDirectories);
+    await ensureDroppedDirectories(emptyDirectories, destinationFolderId);
 
-    for (const item of items) {
-      const { file, relativePath, relativePathSegments } = item;
+    for (const item of uploadItems) {
+      const { relativePath, relativePathSegments } = item;
+      const { file, format } = await encryptUpload(item.file);
+      const uploadError = validateUploadCandidate(file, session.uploadPolicy);
+      if (uploadError) throw new Error(uploadError);
+      uploadQueue.value.totalBytes += file.size - item.file.size;
       const totalChunks = Math.max(1, Math.ceil(file.size / DEFAULT_CHUNK_SIZE));
       uploadQueue.value = {
         ...uploadQueue.value,
@@ -1084,12 +1675,13 @@ async function uploadQueuedItems(items, emptyDirectories = []) {
       const initPayload = await api('upload.init', {
         method: 'POST',
         body: {
-          folder_id: route.folderId,
+          folder_id: destinationFolderId,
           original_name: file.name,
           size: file.size,
           mime_type: file.type || 'application/octet-stream',
           total_chunks: totalChunks,
           relative_path_segments: relativePathSegments,
+          encryption_format: format,
         },
       });
       const token = initPayload.data.upload_token;
@@ -1115,8 +1707,9 @@ async function uploadQueuedItems(items, emptyDirectories = []) {
       } catch (error) {
         try {
           await api('upload.cancel', { method: 'POST', body: { upload_token: token } });
-        } catch (_) {
+        } catch (cancelError) {
           // Best-effort cleanup for incomplete uploads.
+          console.error('Failed to cancel upload:', cancelError);
         }
 
         throw error;
@@ -1146,10 +1739,20 @@ async function uploadQueuedItems(items, emptyDirectories = []) {
     );
   } catch (error) {
     const failedPath = uploadQueue.value?.currentFilePath || uploadedFileName;
-    showMessage(`${failedPath}: ${error instanceof Error ? error.message : 'Upload failed.'}`);
+    showStickyMessage(`${failedPath}: ${error instanceof Error ? error.message : 'Upload failed.'}`);
   } finally {
     uploadQueue.value = null;
+    stopCompressionHeartbeat();
+    flushOpfsCleanup();
   }
+}
+
+function flushOpfsCleanup() {
+  const opfsTokens = pendingOpfsCleanup;
+  pendingOpfsCleanup = [];
+  opfsTokens.forEach((token) => {
+    videoCompressor.cleanup(token);
+  });
 }
 
 async function createFolder() {
@@ -1223,9 +1826,23 @@ function buildFolderRows(folders) {
   return rows;
 }
 
-async function ensureMoveTargets() {
+async function ensureMoveTargets(item) {
   const payload = await api('tree.folders');
-  return buildFolderRows(payload.folders).filter((folder) => folder.can_edit);
+  const folders = payload.folders ?? [];
+  const sourceFolderId = item.type === 'folder' ? item.id : item.folder_id;
+  const source = folders.find((folder) => folder.id === sourceFolderId);
+  return buildFolderRows(folders).filter((folder) => {
+    if (!(folder.can_receive_moves ?? folder.can_edit)) return false;
+    if (!isAdmin.value && (folder.space_root_id ?? null) !== (source?.space_root_id ?? null)) return false;
+    let current = folder;
+    const visited = new Set();
+    while (item.type === 'folder' && current && !visited.has(current.id)) {
+      if (current.id === item.id) return false;
+      visited.add(current.id);
+      current = folders.find((entry) => entry.id === current.parent_id);
+    }
+    return folder.id !== (item.type === 'folder' ? item.parent_id : item.folder_id);
+  });
 }
 
 async function moveSelected(item = selectedItem.value) {
@@ -1239,11 +1856,20 @@ async function moveSelected(item = selectedItem.value) {
     return;
   }
 
-  const folderList = await ensureMoveTargets();
+  const folderList = await ensureMoveTargets(item);
+  if (folderList.length === 0) {
+    showMessage('No available destination folders.');
+    return;
+  }
   const choices = folderList.map((folder) => `${folder.id}: ${folder.path}`).join('\n');
-  const destination = window.prompt(`Move "${item.name}" to folder ID:\n${choices}`, String(route.folderId));
+  const destination = window.prompt(`Move "${item.name}" to folder ID:\n${choices}`, String(folderList[0].id));
 
   if (!destination) {
+    return;
+  }
+
+  if (!folderList.some((folder) => folder.id === Number(destination))) {
+    showMessage('Choose one of the available destination folders.');
     return;
   }
 
@@ -1285,11 +1911,13 @@ async function deleteSelected(item = selectedItem.value) {
 }
 
 function resetShareState() {
+  shareState.error = '';
   shareState.fileId = 0;
   shareState.loading = false;
   shareState.link = null;
   shareForm.fileId = 0;
   shareForm.expiresAtLocal = '';
+  shareForm.deleteAfterLocal = '';
   shareForm.maxViews = '';
   shareForm.password = '';
   shareForm.allowEmbed = false;
@@ -1321,6 +1949,7 @@ function fromLocalDateTimeInput(value) {
 function applyShareForm(item, link = null) {
   shareForm.fileId = item?.id ?? 0;
   shareForm.expiresAtLocal = toLocalDateTimeInput(link?.expires_at ?? '');
+  shareForm.deleteAfterLocal = toLocalDateTimeInput(link?.delete_after ?? '');
   shareForm.maxViews = link?.max_views ? String(link.max_views) : '';
   shareForm.password = '';
   shareForm.allowEmbed = Boolean(link?.allow_embed);
@@ -1328,7 +1957,7 @@ function applyShareForm(item, link = null) {
 
 function shareOptionsFor(item) {
   if (!item || item.type !== 'file') {
-    return { expires_at: null, max_views: null, allow_embed: false };
+    return { expires_at: null, delete_after: null, max_views: null, allow_embed: false };
   }
 
   const link = shareState.fileId === item.id ? shareState.link : null;
@@ -1336,6 +1965,7 @@ function shareOptionsFor(item) {
     ? shareForm
     : {
         expiresAtLocal: toLocalDateTimeInput(link?.expires_at ?? ''),
+        deleteAfterLocal: toLocalDateTimeInput(link?.delete_after ?? ''),
         maxViews: link?.max_views ? String(link.max_views) : '',
         password: '',
         allowEmbed: Boolean(link?.allow_embed),
@@ -1347,14 +1977,97 @@ function shareOptionsFor(item) {
 
   return {
     expires_at: fromLocalDateTimeInput(source.expiresAtLocal),
+    delete_after: fromLocalDateTimeInput(source.deleteAfterLocal),
     max_views: Number.isInteger(maxViews) && maxViews > 0 ? maxViews : null,
     password,
     allow_embed: Boolean(source.allowEmbed),
   };
 }
 
+async function loadSpaceSharing(item) {
+  if (!canManageFolderSharing(item)) {
+    return;
+  }
+
+  spaceShareState.folderId = item.id;
+  spaceShareState.loading = true;
+  spaceShareState.ready = false;
+  spaceShareState.error = '';
+  spaceShareState.grants = [];
+  spaceShareState.users = [];
+
+  try {
+    const payload = await api('space.permissions.get', {
+      params: { folder_id: item.id },
+    });
+
+    if (spaceShareState.folderId === item.id) {
+      spaceShareState.grants = payload.grants ?? [];
+      spaceShareState.ready = true;
+      spaceShareState.users = payload.users ?? [];
+      spaceShareState.maxLevel = payload.max_grant_level ?? 'write';
+      spaceShareState.draftUser = '';
+      spaceShareState.draftLevel = 'view';
+    }
+  } catch (error) {
+    if (spaceShareState.folderId === item.id) {
+      spaceShareState.error = error instanceof Error ? error.message : 'Unable to load sharing grants.';
+    }
+  } finally {
+    if (spaceShareState.folderId === item.id) {
+      spaceShareState.loading = false;
+    }
+  }
+}
+
+async function persistSpaceGrants(item, grants) {
+  if (spaceShareState.saving || spaceShareState.loading || !spaceShareState.ready) return;
+  spaceShareState.saving = true;
+  spaceShareState.error = '';
+  try {
+    const payload = await api('space.permissions.save', {
+      method: 'POST',
+      body: { folder_id: item.id, grants: grants.map(({ username, level }) => ({ username, level })) },
+    });
+    if (spaceShareState.folderId === item.id) {
+      spaceShareState.grants = payload.grants ?? grants;
+      spaceShareState.draftUser = '';
+    }
+    showMessage('Sharing permissions saved.');
+  } catch (error) {
+    if (spaceShareState.folderId === item.id) {
+      spaceShareState.error = error instanceof Error ? error.message : 'Unable to save sharing permissions.';
+    }
+  } finally {
+    spaceShareState.saving = false;
+  }
+}
+
+async function addSpaceGrant(item) {
+  if (spaceShareState.draftUser === '') {
+    return;
+  }
+
+  if (spaceShareState.grants.some((grant) => grant.username === spaceShareState.draftUser)) {
+    showMessage(`${spaceShareState.draftUser} already has access.`);
+    return;
+  }
+
+  await persistSpaceGrants(item, [...spaceShareState.grants, { username: spaceShareState.draftUser, level: spaceShareState.draftLevel }]);
+}
+
+async function removeSpaceGrant(grant) {
+  const item = infoItem.value;
+
+  if (!item || item.type !== 'folder') {
+    return;
+  }
+
+  await persistSpaceGrants(item, spaceShareState.grants.filter((entry) => entry.username !== grant.username));
+}
+
 async function loadShareState(item = shareContextItem.value) {
-  if (!canManageShares.value || item?.type !== 'file') {
+  if (!canShareItem(item)) {
     resetShareState();
     return;
   }
@@ -1362,6 +2075,8 @@ async function loadShareState(item = shareContextItem.value) {
   shareState.fileId = item.id;
   shareState.loading = true;
 
+  shareState.fileId = item.id;
+  shareState.error = '';
   try {
     const payload = await api('files.share.get', {
       params: { file_id: item.id },
@@ -1376,6 +2091,10 @@ async function loadShareState(item = shareContextItem.value) {
       shareState.loading = false;
     }
   }
+}
+
+async function writeShareLink(url) {
+  return copyText(url, 'Copy this share link');
 }
 
 async function copyText(text, promptLabel) {
@@ -1427,6 +2146,8 @@ async function createShareLink(item = shareContextItem.value, { open = false } =
     return;
   }
 
+  shareState.fileId = item.id;
+  shareState.error = '';
   try {
     const payload = await api('files.share.create', {
       method: 'POST',
@@ -1442,7 +2163,7 @@ async function createShareLink(item = shareContextItem.value, { open = false } =
 
     let copied = false;
     try {
-      copied = await copyText(payload.share.url, 'Copy this share link');
+      copied = await writeShareLink(payload.share.url);
     } catch (error) {
       window.prompt('Copy this share link', payload.share.url);
     }
@@ -1453,7 +2174,7 @@ async function createShareLink(item = shareContextItem.value, { open = false } =
 
     showMessage(copied ? 'Share link copied.' : 'Share link ready.');
   } catch (error) {
-    showMessage(error instanceof Error ? error.message : 'Unable to create a share link.');
+    showMessage(shareState.error = error instanceof Error ? error.message : 'Unable to create a share link.');
   }
 }
 
@@ -1464,8 +2185,11 @@ async function openShareLink(item = shareContextItem.value) {
     return;
   }
 
-  const popup = window.open('', '_blank', 'noopener');
+  const popup = window.open('', '_blank');
+  if (popup) popup.opener = null;
 
+  shareState.fileId = item.id;
+  shareState.error = '';
   try {
     const payload = await api('files.share.create', {
       method: 'POST',
@@ -1479,9 +2203,10 @@ async function openShareLink(item = shareContextItem.value) {
     shareState.link = payload.share;
     applyShareForm(item, payload.share);
     popup?.location.replace(payload.share.url);
+    if (!popup) shareState.error = 'Your browser blocked the new tab. Use the share link below.';
   } catch (error) {
     popup?.close();
-    showMessage(error instanceof Error ? error.message : 'Unable to open the shared view.');
+    showMessage(shareState.error = error instanceof Error ? error.message : 'Unable to open the shared view.');
   }
 }
 
@@ -1501,6 +2226,8 @@ async function removeSharePassword(item = shareContextItem.value) {
     return;
   }
 
+  shareState.fileId = item.id;
+  shareState.error = '';
   try {
     const payload = await api('files.share.create', {
       method: 'POST',
@@ -1517,7 +2244,7 @@ async function removeSharePassword(item = shareContextItem.value) {
     applyShareForm(item, payload.share);
     showMessage('Share password removed.');
   } catch (error) {
-    showMessage(error instanceof Error ? error.message : 'Unable to update the share password.');
+    showMessage(shareState.error = error instanceof Error ? error.message : 'Unable to update the share password.');
   }
 }
 
@@ -1548,7 +2275,7 @@ async function revokeShareLink(item = shareContextItem.value) {
     applyShareForm(item, null);
     showMessage('Share link disabled.');
   } catch (error) {
-    showMessage(error instanceof Error ? error.message : 'Unable to disable the share link.');
+    showMessage(shareState.error = error instanceof Error ? error.message : 'Unable to disable the share link.');
   }
 }
 
@@ -1559,7 +2286,12 @@ function downloadSelected() {
     return;
   }
 
-  window.location.href = item.download_url;
+  if (item.encryption_format) {
+    closePreview();
+    localDecryption.value.open(item);
+  } else {
+    window.location.href = item.download_url;
+  }
 }
 
 function selectCurrentItem() {
@@ -1571,10 +2303,29 @@ function selectCurrentItem() {
 
 async function loadAdminUsers() {
   const payload = await api('admin.users.list');
+  if (payload.spaces_policy) {
+    adminState.settings.spaces = payload.spaces_policy;
+    if (!newUserForm.username) newUserForm.space_enabled = Boolean(payload.spaces_policy.auto_create);
+  }
   adminState.users = (payload.users ?? []).map((user) => ({
     ...user,
     storage_quota_input: user.storage_quota_bytes === null ? '' : String(user.storage_quota_bytes),
+    link_shares_allowed: user.link_shares_allowed ?? null,
+    space_enabled: user.space?.status === 'active',
+    space_size_limit_input: user.space?.size_limit_bytes === null || user.space?.size_limit_bytes === undefined
+      ? ''
+      : String(user.space.size_limit_bytes),
   }));
+}
+
+function spaceStatusLabel(space) {
+  if (!space || space.status === 'none') {
+    return 'None';
+  }
+
+  return space.status === 'active'
+    ? (adminState.settings.spaces.enabled ? 'Active' : 'Unavailable — Spaces is disabled globally')
+    : 'Disabled';
 }
 
 async function loadAuditLogs(page = adminState.auditPage) {
@@ -1642,6 +2393,78 @@ async function runAuditCleanup() {
 async function loadSecurityState() {
   const payload = await api('admin.security.get');
   applySecurityPayload(payload);
+}
+
+async function loadDbBackups() {
+  if (!isSuperAdmin.value) {
+    adminState.dbBackups = [];
+    return;
+  }
+
+  try {
+    const payload = await api('dbbackup.list');
+    adminState.dbBackups = payload.backups ?? [];
+  } catch (error) {
+    adminState.dbBackups = [];
+  }
+}
+
+async function createDbBackup() {
+  adminState.dbBackupsBusy = true;
+  try {
+    const payload = await api('dbbackup.create', { method: 'POST', body: {} });
+    adminState.dbBackups = payload.backups ?? [];
+    showMessage('Backup created.');
+  } catch (error) {
+    showMessage(error instanceof Error ? error.message : 'Unable to create the backup.');
+  } finally {
+    adminState.dbBackupsBusy = false;
+  }
+}
+
+async function restoreDbBackup(backup) {
+  if (!backup || !window.confirm(`Restore "${backup.name}"? The current database is saved as a safety copy first.`)) {
+    return;
+  }
+
+  adminState.dbBackupsBusy = true;
+  try {
+    const payload = await api('dbbackup.restore', { method: 'POST', body: { name: backup.name } });
+    adminState.dbBackups = payload.backups ?? [];
+    showMessage('Database restored. Reload the page to see the restored state.');
+  } catch (error) {
+    showMessage(error instanceof Error ? error.message : 'Unable to restore this backup.');
+  } finally {
+    adminState.dbBackupsBusy = false;
+  }
+}
+
+async function deleteDbBackup(backup) {
+  if (!backup || !window.confirm(`Delete backup "${backup.name}"?`)) {
+    return;
+  }
+
+  adminState.dbBackupsBusy = true;
+  try {
+    const payload = await api('dbbackup.delete', { method: 'POST', body: { name: backup.name } });
+    adminState.dbBackups = payload.backups ?? [];
+    showMessage('Backup deleted.');
+  } catch (error) {
+    showMessage(error instanceof Error ? error.message : 'Unable to delete the backup.');
+  } finally {
+    adminState.dbBackupsBusy = false;
+  }
+}
+
+function downloadDbBackup(backup) {
+  if (backup?.download_url) {
+    window.location.href = backup.download_url;
+  }
+}
+
+function formatBackupDate(iso) {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
 }
 
 function createPermissionEntry() {
@@ -1814,6 +2637,7 @@ async function loadAdminSection() {
 
     if (route.section === 'security') {
       await loadSecurityState();
+      await loadDbBackups();
       return;
     }
 
@@ -1829,6 +2653,7 @@ function resetNewUserForm() {
   newUserForm.password = '';
   newUserForm.role = 'user';
   newUserForm.force_password_reset = false;
+  newUserForm.space_enabled = Boolean(adminState.settings.spaces.auto_create);
 }
 
 async function createUser() {
@@ -1843,8 +2668,17 @@ async function saveUser(user) {
     ? Number(user.storage_quota_input)
     : null;
 
-  if (quotaBytes !== null && (!Number.isInteger(quotaBytes) || quotaBytes < 1)) {
+  if (quotaBytes !== null && (!Number.isSafeInteger(quotaBytes) || quotaBytes < 1)) {
     showMessage('Storage quota must be a whole number of bytes or left empty for unlimited.');
+    return;
+  }
+
+  const spaceLimitBytes = user.space_size_limit_input !== ''
+    ? Number(user.space_size_limit_input)
+    : null;
+
+  if (spaceLimitBytes !== null && (!Number.isSafeInteger(spaceLimitBytes) || spaceLimitBytes < 1)) {
+    showMessage('Space size limit must be a whole number of bytes or left empty for unlimited.');
     return;
   }
 
@@ -1856,6 +2690,9 @@ async function saveUser(user) {
       status: user.status,
       force_password_reset: user.force_password_reset,
       storage_quota_bytes: quotaBytes,
+      space_enabled: user.role === 'user' ? Boolean(user.space_enabled) : false,
+      link_shares_allowed: user.link_shares_allowed ?? null,
+      space_size_limit_bytes: spaceLimitBytes,
     },
   });
   await loadAdminUsers();
@@ -1863,6 +2700,19 @@ async function saveUser(user) {
     await loadUserPermissions(route.userId);
   }
   showMessage(`Saved ${user.username}.`);
+}
+
+async function purgeUserSpace(user) {
+  if (!window.confirm(`Purge the space of ${user.username}? The space folders, its files and their blobs are deleted. This cannot be undone.`)) {
+    return;
+  }
+
+  await api('admin.users.space.purge', {
+    method: 'POST',
+    body: { user_id: user.id },
+  });
+  await loadAdminUsers();
+  showMessage(`Purged the space of ${user.username}.`);
 }
 
 async function resetPassword(user) {
@@ -1955,7 +2805,6 @@ async function goToAuditPage(page) {
 }
 
 async function tickAutomation({ silent = false } = {}) {
-  if (needsPasswordChange.value) return;
   if (!isAdmin.value) {
     return;
   }
@@ -2199,6 +3048,7 @@ function restoreBlockedState() {
       return;
     }
   } catch (_) {
+    // Ignore parsing errors from session storage.
   }
 
   window.sessionStorage.removeItem(BLOCKED_STORAGE_KEY);
@@ -2214,7 +3064,6 @@ function uploadLimitLabel(policy = session.uploadPolicy) {
 
 function startAutomationPulse() {
   stopAutomationPulse();
-  if (needsPasswordChange.value) return;
   if (!isAdminShell.value || !isAdmin.value) {
     return;
   }
@@ -2289,8 +3138,22 @@ watch(() => shareContextItem.value?.id ?? 0, async (fileId) => {
   try {
     await loadShareState(shareContextItem.value);
   } catch (error) {
-    resetShareState();
-    showMessage(error instanceof Error ? error.message : 'Unable to load the share link.');
+    shareState.error = error instanceof Error ? error.message : 'Unable to load the share link.';
+    showMessage(shareState.error);
+  }
+});
+
+watch(() => infoItem.value ? rowKey(infoItem.value) : '', async () => {
+  const item = infoItem.value;
+
+  if (!canManageFolderSharing(item)) {
+    return;
+  }
+
+  try {
+    await loadSpaceSharing(item);
+  } catch (error) {
+    showMessage(error instanceof Error ? error.message : 'Unable to load sharing grants.');
   }
 });
 
@@ -2348,6 +3211,8 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  answerEncryption({ choice: 'cancel', password: '' });
+  encryptionController?.abort();
   window.removeEventListener('hashchange', syncRouteFromHash);
   window.removeEventListener('click', handleGlobalClick);
   window.removeEventListener('dragenter', onDragEnter);
@@ -2357,10 +3222,22 @@ onBeforeUnmount(() => {
   document.body.style.overflow = '';
   stopAutomationPulse();
   stopBlockedTimer();
+  stopCompressionHeartbeat();
+  videoCompressor.dispose();
+
+  if (compressionDialog.open) {
+    settleCompressionDialog(compressionDialog.mode === 'required' ? 'cancel' : 'original');
+  }
 });
 </script>
 
 <template>
+  <EncryptionDialog v-if="encryptionDialog" v-bind="encryptionDialog" @answer="answerEncryption" />
+  <LocalDecryption ref="localDecryption" />
+  <section v-if="encryptionProgress !== null" class="upload-queue-card" aria-live="polite">
+    <p>Encrypting locally: {{ encryptionProgress }}%. No plaintext is sent to the server.</p>
+    <button class="header-button" type="button" @click="encryptionController?.abort()">Cancel upload</button>
+  </section>
   <div v-if="blockedState.active" class="install-shell blocked-shell">
     <main class="install-layout">
       <section class="install-card blocked-card">
@@ -2399,11 +3276,14 @@ onBeforeUnmount(() => {
 
     <aside class="wb-sidebar">
       <button class="sidebar-brand sidebar-brand--icon" type="button" @click="browseHome">
-        <img :src="basePath + '/media/logo.svg'" alt="wb-filebrowser" class="brand-mark brand-mark--large">
+        <img :src="basePath + '/media/forum-logo.webp'" alt="wb-filebrowser" class="brand-mark brand-mark--large">
       </button>
 
       <nav class="sidebar-nav">
         <button class="sidebar-link" type="button" @click="browseHome">My files</button>
+        <template v-if="shell === 'app'">
+          <button v-for="folder in session.navigationRoots.filter((entry) => entry.id !== session.homeFolderId)" :key="folder.id" class="sidebar-link" type="button" @click="navigateToFolder(folder.id)">{{ folder.id === session.rootFolderId ? 'Library' : `Shared: ${folder.name}` }}</button>
+        </template>
         <button class="sidebar-link" type="button" :disabled="shell === 'admin' || !canCreateFoldersHere" @click="createFolder">New folder</button>
         <button class="sidebar-link" type="button" :disabled="shell === 'admin' || !canUploadHere" @click="triggerUpload">New file</button>
         <button class="sidebar-link" type="button" @click="openSettings">Settings</button>
@@ -2415,6 +3295,11 @@ onBeforeUnmount(() => {
       </p>
 
       <div class="sidebar-footer">
+        <div v-if="session.space?.status === 'active'" class="storage-meter">
+          <div class="storage-meter__label">Personal space</div>
+          <strong>{{ session.space.used_label ?? formatBytes(session.space.used_bytes ?? 0) }}</strong>
+          <span>{{ session.space.size_limit_bytes == null ? 'Unlimited space' : `of ${formatBytes(session.space.size_limit_bytes)} used` }}</span>
+        </div>
         <div v-if="session.user" class="storage-meter">
           <div class="storage-meter__label">Storage Used</div>
           <strong>{{ session.storage.used_label }}</strong>
@@ -2469,6 +3354,7 @@ onBeforeUnmount(() => {
             <button v-if="isAdmin" class="header-button" type="button" @click="openAdminPanel">Admin</button>
             <button class="header-button" type="button" @click="toggleViewMode">{{ viewMode === 'list' ? 'Grid view' : 'List view' }}</button>
             <button class="header-button" type="button" @click="downloadSelected">Download</button>
+            <button class="header-button" type="button" @click="localDecryption.pickLocal()">Decrypt local file</button>
             <button class="header-button" type="button" :disabled="!canUploadHere" @click="triggerUpload">Upload</button>
             <button class="header-button" type="button" @click="topActionInfo">Info</button>
             <button class="header-button" type="button" @click="selectCurrentItem">{{ selectMode ? 'Cancel select' : 'Select' }}</button>
@@ -2481,6 +3367,38 @@ onBeforeUnmount(() => {
         {{ session.diagnostic.message }}
       </div>
       <div v-if="statusMessage" class="status-banner">{{ statusMessage }}</div>
+      <div v-if="stickyMessage" class="status-banner status-banner--sticky">
+        <span>{{ stickyMessage }}</span>
+        <button type="button" @click="dismissStickyMessage">Dismiss</button>
+      </div>
+      <section v-if="compressionState.phase === 'running'" class="upload-queue-card">
+        <div class="upload-queue-card__summary">
+          <div>
+            <p class="panel-kicker">Video Optimization</p>
+            <h2>Compressing {{ compressionState.completedFiles + 1 }} of {{ compressionState.totalFiles }} videos</h2>
+            <p class="panel-meta">
+              {{ formatBytes(compressionState.processedBytes) }} of {{ formatBytes(compressionState.totalBytes) }} processed locally
+            </p>
+          </div>
+          <strong>{{ compressionOverallPercent }}%</strong>
+        </div>
+        <div class="upload-meter" aria-hidden="true">
+          <span class="upload-meter__fill" :style="{ width: `${compressionOverallPercent}%` }" />
+        </div>
+        <div class="upload-queue-card__detail">
+          <div>
+            <strong>{{ compressionState.currentName || 'Preparing compression...' }}</strong>
+            <p class="panel-meta">Compressed on this device before anything is uploaded.</p>
+          </div>
+          <span>{{ compressionCurrentPercent }}%</span>
+        </div>
+        <div class="upload-meter upload-meter--file" aria-hidden="true">
+          <span class="upload-meter__fill" :style="{ width: `${compressionCurrentPercent}%` }" />
+        </div>
+        <div>
+          <button type="button" @click="cancelVideoCompression">Cancel</button>
+        </div>
+      </section>
       <section v-if="uploadQueue" class="upload-queue-card">
         <div class="upload-queue-card__summary">
           <div>
@@ -2528,16 +3446,6 @@ onBeforeUnmount(() => {
         </form>
       </section>
 
-      <section v-else-if="needsPasswordChange" class="auth-card">
-        <h1>Change your password</h1>
-        <p>Your administrator requires a new password before you continue.</p>
-        <form class="auth-form" @submit.prevent="submitPasswordChange">
-          <label><span>Current password</span><input v-model="passwordForm.current" type="password" autocomplete="current-password" required></label>
-          <label><span>New password</span><input v-model="passwordForm.password" type="password" autocomplete="new-password" minlength="12" required></label>
-          <button type="submit">Change password</button>
-        </form>
-      </section>
-
       <section v-else-if="accessDenied" class="auth-card">
         <h1>Access denied</h1>
         <p>This account can use the file browser, but it does not have admin rights.</p>
@@ -2575,6 +3483,10 @@ onBeforeUnmount(() => {
               <p class="panel-kicker">Storage</p>
               <h2>{{ adminState.dashboard.stats.used_label }}</h2>
               <p>of {{ adminState.dashboard.stats.total_label }} used.</p>
+              <p v-if="adminState.dashboard.stats.dedup_enabled && adminState.dashboard.stats.saved_bytes > 0" class="panel-meta">
+                Physical: {{ adminState.dashboard.stats.physical_label }} · Saved by deduplication: {{ adminState.dashboard.stats.saved_label }}
+              </p>
+              <p v-else-if="adminState.dashboard.stats.dedup_enabled" class="panel-meta">Deduplication is on — no duplicates detected yet.</p>
               <p class="panel-meta">Upload limit: {{ uploadLimitLabel(session.uploadPolicy) }}</p>
             </article>
 
@@ -2655,6 +3567,12 @@ onBeforeUnmount(() => {
                   <span class="checkbox-control__indicator" aria-hidden="true"></span>
                   <span class="checkbox-control__label">Require password reset at next login</span>
                 </label>
+                <label v-if="newUserForm.role === 'user'" class="checkbox-control checkbox-control--row">
+                  <input v-model="newUserForm.space_enabled" class="checkbox-control__input" type="checkbox">
+                  <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                  <span class="checkbox-control__label">Create a personal space for this user</span>
+                </label>
+                <p v-if="newUserForm.role === 'user' && !adminState.settings.spaces.enabled" class="panel-meta">Spaces is disabled globally. Created spaces become accessible after enabling Spaces in Settings.</p>
                 <button type="submit">Create account</button>
               </form>
             </article>
@@ -2680,6 +3598,7 @@ onBeforeUnmount(() => {
                   <th>Username</th>
                   <th>Role</th>
                   <th>Status</th>
+                  <th>Space</th>
                   <th>Storage used</th>
                   <th>Last login</th>
                   <th></th>
@@ -2693,6 +3612,7 @@ onBeforeUnmount(() => {
                   </td>
                   <td>{{ user.role }}</td>
                   <td>{{ user.status }}</td>
+                  <td>{{ spaceStatusLabel(user.space) }}</td>
                   <td>{{ user.storage_used_label }} / {{ user.storage_quota_label }}</td>
                   <td>{{ user.last_login_at || 'Never' }}</td>
                   <td class="table-actions">
@@ -2727,6 +3647,15 @@ onBeforeUnmount(() => {
           <article v-if="activeAdminUser" class="panel">
             <p class="panel-kicker">Account</p>
             <h2>Profile and access</h2>
+            <label v-if="activeAdminUser.role === 'user'">
+              <span>Public file share links</span>
+              <select v-model="activeAdminUser.link_shares_allowed" :disabled="!canEditUser(activeAdminUser)">
+                <option :value="null">Use global default</option>
+                <option :value="true">Allow</option>
+                <option :value="false">Deny</option>
+              </select>
+              <small>Overrides the global default for this user. Denying also blocks their existing links.</small>
+            </label>
             <label>
               <span>Role</span>
               <select v-model="activeAdminUser.role" :disabled="!canEditUser(activeAdminUser)">
@@ -2768,6 +3697,37 @@ onBeforeUnmount(() => {
               >
               <small class="panel-meta">Leave empty for unlimited. Quotas apply only to standard users.</small>
             </label>
+          </article>
+
+          <article v-if="activeAdminUser && activeAdminUser.role === 'user'" class="panel">
+            <p class="panel-kicker">Space</p>
+            <h2>Personal space</h2>
+            <p>Current status: {{ spaceStatusLabel(activeAdminUser.space) }}</p>
+            <p v-if="!adminState.settings.spaces.enabled" class="panel-meta">Enable Spaces in Settings to let this user access their personal space.</p>
+            <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !canEditUser(activeAdminUser) }]">
+              <input v-model="activeAdminUser.space_enabled" class="checkbox-control__input" type="checkbox" :disabled="!canEditUser(activeAdminUser)">
+              <span class="checkbox-control__indicator" aria-hidden="true"></span>
+              <span class="checkbox-control__label">Space enabled<small class="panel-meta">Disabling hides the space and its data from the user without deleting anything.</small></span>
+            </label>
+            <label>
+              <span>Space size limit in bytes</span>
+              <input
+                v-model="activeAdminUser.space_size_limit_input"
+                type="number"
+                min="1"
+                step="1"
+                :disabled="!canEditUser(activeAdminUser) || !activeAdminUser.space_enabled"
+                placeholder="Leave empty for unlimited"
+              >
+            </label>
+            <div class="quick-actions">
+              <button
+                v-if="isSuperAdmin && activeAdminUser.space?.folder_id"
+                type="button"
+                class="danger"
+                @click="purgeUserSpace(activeAdminUser)"
+              >Purge space</button>
+            </div>
           </article>
 
           <article v-if="activeAdminUser" class="panel panel-table panel-wide">
@@ -2933,17 +3893,21 @@ onBeforeUnmount(() => {
             <div v-if="adminState.settingsTab === 'access'" class="settings-pane">
               <p class="panel-kicker">Access</p>
               <h2>Published browsing and maintenance</h2>
+              <label class="checkbox-control checkbox-control--row">
+                <input v-model="adminState.settings.access.user_link_shares_allowed" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                <span class="checkbox-control__label">Allow users to create public file links by default<small>Users can share their uploads and files in their own space. Individual user settings can override this default.</small></span>
+              </label>
+              <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
+                <input v-model="adminState.settings.access.share_embeds_enabled" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                <span class="checkbox-control__label">Allow users to embed shared media<small>Users with link-share access can mark video and audio shares as embeddable on websites and in Discord. Administrators can always embed.</small></span>
+              </label>
               <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
                 <input v-model="adminState.settings.access.public_access" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
                 <span class="checkbox-control__indicator" aria-hidden="true"></span>
                 <span class="checkbox-control__label">Allow published folders to be browsed without login</span>
               </label>
-              <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
-                <input v-model="adminState.settings.access.share_embeds_enabled" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
-                <span class="checkbox-control__indicator" aria-hidden="true"></span>
-                <span class="checkbox-control__label">Allow users to create share links and embed media</span>
-              </label>
-              <p class="panel-meta">Users can share files they can access and embed video and audio. Administrators can always embed.</p>
               <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
                 <input v-model="adminState.settings.access.maintenance_enabled" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
                 <span class="checkbox-control__indicator" aria-hidden="true"></span>
@@ -2984,6 +3948,11 @@ onBeforeUnmount(() => {
             </div>
 
             <div v-else-if="adminState.settingsTab === 'display'" class="settings-pane">
+              <label class="checkbox-control checkbox-control--row">
+                <input v-model="adminState.settings.display.show_uploader" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                <span class="checkbox-control__label">Show uploader beside file names</span>
+              </label>
               <p class="panel-kicker">Display</p>
               <h2>Grid thumbnails</h2>
               <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
@@ -3015,7 +3984,87 @@ onBeforeUnmount(() => {
                 <span>Abandoned upload retention (hours)</span>
                 <input v-model.number="adminState.settings.uploads.stale_upload_ttl_hours" type="number" min="1" :disabled="!adminState.canManageSettings">
               </label>
+              <label :class="['checkbox-control', 'checkbox-control--row', { 'is-disabled': !adminState.canManageSettings }]">
+                <input v-model="adminState.settings.uploads.dedup_enabled" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                <span class="checkbox-control__label">Deduplicate identical uploads<small class="panel-meta">Identical content is stored once and reference-counted. Deleting one copy never affects another user's file; the physical blob is removed with the last copy.</small></span>
+              </label>
               <p class="panel-meta">Empty extension list means any file type is accepted.</p>
+
+              <h2>Video optimization</h2>
+              <label>
+                <span>Client-side file encryption</span>
+                <select v-model="adminState.settings.uploads.encryption_mode" :disabled="!adminState.canManageSettings">
+                  <option value="off">Disabled - no encryption option</option>
+                  <option value="optional">Ask users - encrypt or upload normally</option>
+                  <option value="required">Required - every upload needs an encryption password</option>
+                </select>
+                <small class="panel-meta">AES-256 runs locally in WebAssembly. Names and sizes stay visible. Encrypted uploads cannot be combined with required server video verification. Existing encrypted files remain decryptable in every mode.</small>
+              </label>
+              <label>
+                <span>Compression policy</span>
+                <select id="video-compression-mode" v-model="adminState.settings.video_compression.mode" :disabled="!adminState.canManageSettings">
+                  <option value="off">Disabled - upload originals as-is</option>
+                  <option value="optional">Ask users - offer local compression before upload</option>
+                  <option value="required">Required - videos must comply with the policy below</option>
+                </select>
+              </label>
+              <label>
+                <span>Maximum video resolution</span>
+                <select v-model.number="adminState.settings.video_compression.max_height" :disabled="!adminState.canManageSettings">
+                  <option :value="480">480p</option>
+                  <option :value="720">720p</option>
+                  <option :value="1080">1080p</option>
+                  <option :value="1440">1440p</option>
+                  <option :value="2160">2160p (4K)</option>
+                </select>
+              </label>
+              <label>
+                <span>Maximum frame rate</span>
+                <select v-model.number="adminState.settings.video_compression.max_fps" :disabled="!adminState.canManageSettings">
+                  <option :value="30">30 FPS</option>
+                  <option :value="60">60 FPS</option>
+                  <option :value="120">120 FPS</option>
+                </select>
+              </label>
+              <label>
+                <span>Maximum video bitrate (kbps)</span>
+                <input v-model.number="adminState.settings.video_compression.max_video_bitrate_kbps" type="number" min="500" max="100000" :disabled="!adminState.canManageSettings">
+              </label>
+              <label>
+                <span>Maximum audio bitrate (kbps)</span>
+                <input v-model.number="adminState.settings.video_compression.max_audio_bitrate_kbps" type="number" min="64" max="512" :disabled="!adminState.canManageSettings">
+              </label>
+              <label>
+                <span>Only optimize videos larger than (MB)</span>
+                <input v-model.number="adminState.settings.video_compression.min_source_mb" type="number" min="0" max="20480" :disabled="!adminState.canManageSettings">
+                <small class="panel-meta">Smaller videos are uploaded and stored untouched.</small>
+              </label>
+              <label>
+                <span>Keep original when savings are below (%)</span>
+                <input v-model.number="adminState.settings.video_compression.min_savings_pct" type="number" min="0" max="90" :disabled="!adminState.canManageSettings">
+                <small class="panel-meta">In ask mode, the untouched original is uploaded instead when the compressed copy saves less than this.</small>
+              </label>
+              <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
+                <input v-model="adminState.settings.video_compression.ffmpeg_fallback" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                <span class="checkbox-control__label">Allow the in-browser ffmpeg fallback for exotic formats</span>
+              </label>
+              <label>
+                <span>ffprobe path (optional)</span>
+                <input v-model="adminState.settings.video_compression.media_ffprobe_path" type="text" placeholder="Auto-detect from PATH" :disabled="!adminState.canManageSettings">
+                <small class="panel-meta">
+                  Required for "Required" mode so the server can verify uploads.
+                  <template v-if="adminState.mediaValidation">
+                    {{ adminState.mediaValidation.available ? `Detected: ${adminState.mediaValidation.binary}` : 'Not detected - install ffprobe or set the full path above.' }}
+                  </template>
+                </small>
+              </label>
+              <p class="panel-meta">
+                Compression runs in the user's browser (WebCodecs, with an in-browser ffmpeg fallback for
+                unsupported formats); the server never transcodes. In "Required" mode every video upload is
+                verified with ffprobe against the limits above and rejected when it does not comply.
+              </p>
             </div>
 
             <div v-else-if="adminState.settingsTab === 'automation'" class="settings-pane">
@@ -3057,6 +4106,33 @@ onBeforeUnmount(() => {
                   <button type="button" :disabled="adminState.automationBusy" @click="runAutomationJob(job.job_key)">Run now</button>
                 </div>
               </div>
+            </div>
+
+            <div v-else-if="adminState.settingsTab === 'spaces'" class="settings-pane">
+              <p class="panel-kicker">Spaces</p>
+              <h2>Per-user spaces</h2>
+              <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
+                <input v-model="adminState.settings.spaces.enabled" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                <span class="checkbox-control__label">Enable per-user spaces<small class="panel-meta">Saving with Spaces enabled creates missing spaces for existing standard users. Individually disabled spaces stay disabled. Users land in their private folder after login; admins retain full visibility.</small></span>
+              </label>
+              <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
+                <input v-model="adminState.settings.spaces.sharing_allowed" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                <span class="checkbox-control__label">Allow space owners to share folders<small class="panel-meta">Owners can grant other users view or write access inside their own space.</small></span>
+              </label>
+              <label>
+                <span>Highest grant level owners may hand out</span>
+                <select v-model="adminState.settings.spaces.max_grant_level" :disabled="!adminState.canManageSettings">
+                  <option value="view">View only</option>
+                  <option value="write">View and write</option>
+                </select>
+              </label>
+              <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
+                <input v-model="adminState.settings.spaces.auto_create" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                <span class="checkbox-control__label">Select personal space creation by default for new standard users<small class="panel-meta">You can change this choice when creating an account.</small></span>
+              </label>
             </div>
           </article>
         </section>
@@ -3272,6 +4348,35 @@ onBeforeUnmount(() => {
             </form>
           </article>
 
+          <article v-if="isSuperAdmin" class="panel panel-wide">
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">Database backups</p>
+                <h2>One restore point for every file and share</h2>
+              </div>
+              <button class="primary-button" type="button" :disabled="adminState.dbBackupsBusy" @click="createDbBackup">Create backup now</button>
+            </div>
+            <div class="settings-pane">
+              <p v-if="adminState.dbBackups.length === 0" class="panel-meta">No backups yet. A nightly copy is also kept outside the web space automatically.</p>
+              <table v-if="adminState.dbBackups.length > 0" class="backup-table">
+                <thead>
+                  <tr><th>Backup</th><th>Size</th><th>Created</th><th>Actions</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="backup in adminState.dbBackups" :key="backup.name">
+                    <td><code>{{ backup.name }}</code></td>
+                    <td>{{ backup.size_label }}</td>
+                    <td>{{ formatBackupDate(backup.created_at) }}</td>
+                    <td class="backup-actions">
+                      <button type="button" :disabled="adminState.dbBackupsBusy" @click="restoreDbBackup(backup)">Restore</button>
+                      <button type="button" :disabled="adminState.dbBackupsBusy" @click="downloadDbBackup(backup)">Download</button>
+                      <button type="button" class="danger" :disabled="adminState.dbBackupsBusy" @click="deleteDbBackup(backup)">Delete</button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
           <article class="panel panel-table panel-wide">
             <div class="panel-header">
               <div>
@@ -3347,12 +4452,19 @@ onBeforeUnmount(() => {
       </template>
 
       <template v-else>
+        <p v-if="session.space && session.space.status !== 'active'" class="panel-meta" role="status">{{ session.space.status === 'none' ? 'Your personal space has not been created. Ask an administrator to enable it.' : session.space.status === 'disabled' ? 'Your personal space is disabled. Ask an administrator to restore access.' : 'Personal spaces are currently disabled by the administrator.' }}</p>
+        <div v-if="folderState.error && !searchActive" role="alert" class="panel">
+          <p>{{ folderState.error }}</p>
+          <button type="button" @click="browseHome">Open my files</button>
+          <button type="button" @click="loadFolder()">Retry</button>
+        </div>
         <div class="breadcrumb-bar">
           <button class="crumb-home" type="button" @click="browseHome">Home</button>
           <template v-for="crumb in breadcrumbItems" :key="crumb.id">
             <span class="crumb-separator">/</span>
             <button class="crumb-link" type="button" @click="crumb.id > 0 && navigateToFolder(crumb.id)">{{ crumb.name }}</button>
           </template>
+          <button v-if="folderState.folder && !searchActive" type="button" class="crumb-link" @click="infoItem = folderState.folder">Folder info</button>
         </div>
 
 
@@ -3378,7 +4490,7 @@ onBeforeUnmount(() => {
               >
               <div v-else class="grid-card__icon">{{ item.type === 'folder' ? '📁' : '📄' }}</div>
             </div>
-            <strong>{{ item.name }}</strong>
+            <strong>{{ item.name }}<small class="uploader-attribution" v-if="item.type === 'file' && session.display.show_uploader && item.uploader_username"> - {{ item.uploader_username }}</small></strong>
             <span>{{ item.size_label }}</span>
             <small>{{ item.updated_relative }}</small>
           </button>
@@ -3402,7 +4514,7 @@ onBeforeUnmount(() => {
                 @click="handleEntryClick(item)"
                 @contextmenu="handleContextMenu($event, item)"
               >
-                <td class="name-cell"><span class="row-icon">{{ item.type === 'folder' ? '📁' : '📄' }}</span><span>{{ item.name }}</span></td>
+                <td class="name-cell"><span class="row-icon">{{ item.type === 'folder' ? '📁' : '📄' }}</span><span>{{ item.name }}<small class="uploader-attribution" v-if="item.type === 'file' && session.display.show_uploader && item.uploader_username"> - {{ item.uploader_username }}</small></span><span v-if="item.type === 'file' && item.locked" class="entry-locked">Locked</span></td>
                 <td>{{ item.size_label }}</td>
                 <td>{{ item.updated_relative }}</td>
               </tr>
@@ -3416,12 +4528,14 @@ onBeforeUnmount(() => {
       <section class="preview-modal">
         <header class="preview-modal__header">
           <div>
-            <h2>{{ previewItem.name }}</h2>
+            <h2>{{ previewItem.name }} <span v-if="previewItem.type === 'file' && previewItem.locked" class="entry-locked">Locked</span></h2>
             <p>{{ previewItem.mime_type }}</p>
+            <p v-if="shareState.fileId === previewItem.id && shareState.error" role="alert">{{ shareState.error }}</p>
+            <p v-if="session.user && !canShareItem(previewItem)">Public file links are not permitted for this file or your account.</p>
           </div>
           <div class="header-actions">
-            <button v-if="canManageShares && previewItem.type === 'file'" class="header-button" type="button" @click="createShareLink(previewItem)">Share link</button>
-            <button v-if="canManageShares && previewItem.type === 'file'" class="header-button" type="button" @click="openShareLink(previewItem)">Open share</button>
+            <button v-if="canShareItem(previewItem) && !previewItem.locked" class="header-button" type="button" @click="createShareLink(previewItem)">Share link</button>
+            <button v-if="canShareItem(previewItem)" class="header-button" type="button" @click="openShareLink(previewItem)">Open share</button>
             <button class="header-button" type="button" @click="downloadSelected">Download</button>
             <button class="header-button" type="button" @click="closePreview">Close</button>
           </div>
@@ -3430,8 +4544,122 @@ onBeforeUnmount(() => {
           <div class="preview-frame">
             <img v-if="previewMode(previewItem) === 'image'" class="preview-frame__image" :src="previewItem.preview_url" :alt="previewItem.name">
             <iframe v-else-if="previewMode(previewItem) === 'pdf'" :src="previewItem.preview_url" title="PDF preview"></iframe>
-            <video v-else-if="previewMode(previewItem) === 'video'" :src="previewItem.preview_url" controls></video>
-            <audio v-else-if="previewMode(previewItem) === 'audio'" :src="previewItem.preview_url" controls></audio>
+            <div v-else-if="previewMode(previewItem) === 'video'" class="media-player media-player--video" :class="{ 'is-playing': mediaState.playing, 'is-paused': !mediaState.playing, 'is-muted': mediaState.muted || mediaState.volume === 0 }">
+              <div class="media-player__stage">
+                <video
+                  ref="mediaRef"
+                  :src="previewItem.preview_url"
+                  preload="metadata"
+                  @click="togglePlay"
+                  @timeupdate="onMediaTimeUpdate"
+                  @loadedmetadata="onMediaLoadedMetadata"
+                  @durationchange="onMediaLoadedMetadata"
+                  @play="onMediaPlay"
+                  @pause="onMediaPause"
+                  @ended="onMediaPause"
+                ></video>
+              </div>
+              <div class="media-player__bar">
+                <div class="media-player__controls">
+                  <button class="media-player__btn media-player__btn--play" type="button" :aria-label="mediaState.playing ? 'Pause' : 'Play'" @click="togglePlay">
+                    <svg class="media-player__icon media-player__icon--play" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14l12-7z"/></svg>
+                    <svg class="media-player__icon media-player__icon--pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 5h3.4c.55 0 1 .45 1 1v12c0 .55-.45 1-1 1H5.5c-.55 0-1-.45-1-1V6c0-.55.45-1 1-1Zm9.6 0h3.4c.55 0 1 .45 1 1v12c0 .55-.45 1-1 1h-3.4c-.55 0-1-.45-1-1V6c0-.55.45-1 1-1Z"/></svg>
+                  </button>
+                  <span class="media-player__time">{{ formatMediaTime(mediaState.currentTime) }}</span>
+                  <input
+                  class="media-player__seek"
+                  type="range"
+                  min="0"
+                  :max="mediaState.duration || 0"
+                  step="0.1"
+                  :value="mediaState.currentTime"
+                  :style="{ '--mp-fill': mediaProgressPercent() + '%' }"
+                  aria-label="Seek"
+                  @input="onMediaSeek"
+                >
+                  <span class="media-player__time">{{ formatMediaTime(mediaState.duration) }}</span>
+                  <span class="media-player__volume">
+                    <button class="media-player__btn" type="button" :aria-label="mediaState.muted || mediaState.volume === 0 ? 'Unmute' : 'Mute'" @click="toggleMute">
+                      <svg class="media-player__icon media-player__icon--unmuted" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5c0 .55.45 1 1 1h2.6l3.7 3.1c.66.55 1.65.08 1.65-.77V6.17c0-.85-1-1.32-1.65-.77L7.6 8.5H5c-.55 0-1 .45-1 1Z"/><path d="M15.4 9.3a.9.9 0 0 1 1.26-.14 4.4 4.4 0 0 1 0 5.68.9.9 0 1 1-1.4-1.13 2.6 2.6 0 0 0 0-3.42.9.9 0 0 1 .14-1.13Z"/><path d="M17.6 6.5a.9.9 0 0 1 1.26-.15 7.6 7.6 0 0 1 0 11.3.9.9 0 1 1-1.2-1.34 5.8 5.8 0 0 0 0-8.62.9.9 0 0 1-.06-1.19Z"/></svg>
+                      <svg class="media-player__icon media-player__icon--muted" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5c0 .55.45 1 1 1h2.6l3.7 3.1c.66.55 1.65.08 1.65-.77V6.17c0-.85-1-1.32-1.65-.77L7.6 8.5H5c-.55 0-1 .45-1 1Z"/><path d="M15.3 9.05a.9.9 0 0 1 1.27 0l1.63 1.64 1.63-1.64a.9.9 0 1 1 1.27 1.28L19.47 12l1.63 1.64a.9.9 0 1 1-1.27 1.27L18.2 13.27l-1.63 1.64a.9.9 0 1 1-1.27-1.27L16.93 12 15.3 10.33a.9.9 0 0 1 0-1.28Z"/></svg>
+                    </button>
+                    <input
+                      class="media-player__volume"
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      :value="mediaState.muted ? 0 : mediaState.volume"
+                      :style="{ '--mp-fill': (mediaState.muted ? 0 : mediaState.volume * 100) + '%' }"
+                      aria-label="Volume"
+                      @input="onMediaVolume"
+                    >
+                  </span>
+                  <button class="media-player__btn" type="button" aria-label="Fullscreen" @click="toggleFullscreen">
+                    <svg class="media-player__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h4.5a1 1 0 0 1 0 2H6v2.5a1 1 0 0 1-2 0V4Zm11.5 0H20v4.5a1 1 0 0 1-2 0V6h-2.5a1 1 0 0 1 0-2ZM4 15.5a1 1 0 0 1 2 0V18h2.5a1 1 0 0 1 0 2H4v-4.5Zm16 0V20h-4.5a1 1 0 0 1 0-2H18v-2.5a1 1 0 0 1 2 0Z"/></svg>
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div v-else-if="previewMode(previewItem) === 'audio'" class="media-player media-player--audio" :class="{ 'is-playing': mediaState.playing, 'is-paused': !mediaState.playing, 'is-muted': mediaState.muted || mediaState.volume === 0 }">
+              <div class="media-player__stage">
+                <div class="media-player__audio-art">
+                  <div class="media-player__art">
+                    <span class="media-player__eq" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></span>
+                  </div>
+                  <strong>{{ previewItem.name }}</strong>
+                </div>
+              </div>
+              <div class="media-player__bar">
+                <div class="media-player__controls">
+                  <button class="media-player__btn media-player__btn--play" type="button" :aria-label="mediaState.playing ? 'Pause' : 'Play'" @click="togglePlay">
+                    <svg class="media-player__icon media-player__icon--play" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14l12-7z"/></svg>
+                    <svg class="media-player__icon media-player__icon--pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 5h3.4c.55 0 1 .45 1 1v12c0 .55-.45 1-1 1H5.5c-.55 0-1-.45-1-1V6c0-.55.45-1 1-1Zm9.6 0h3.4c.55 0 1 .45 1 1v12c0 .55-.45 1-1 1h-3.4c-.55 0-1-.45-1-1V6c0-.55.45-1 1-1Z"/></svg>
+                  </button>
+                  <span class="media-player__time">{{ formatMediaTime(mediaState.currentTime) }}</span>
+                  <input
+                    class="media-player__seek"
+                    type="range"
+                    min="0"
+                    :max="mediaState.duration || 0"
+                    step="0.1"
+                    :value="mediaState.currentTime"
+                    :style="{ '--mp-fill': mediaProgressPercent() + '%' }"
+                    aria-label="Seek"
+                    @input="onMediaSeek"
+                  >
+                  <span class="media-player__time">{{ formatMediaTime(mediaState.duration) }}</span>
+                  <span class="media-player__volume">
+                    <button class="media-player__btn" type="button" :aria-label="mediaState.muted || mediaState.volume === 0 ? 'Unmute' : 'Mute'" @click="toggleMute">
+                      <svg class="media-player__icon media-player__icon--unmuted" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5c0 .55.45 1 1 1h2.6l3.7 3.1c.66.55 1.65.08 1.65-.77V6.17c0-.85-1-1.32-1.65-.77L7.6 8.5H5c-.55 0-1 .45-1 1Z"/><path d="M15.4 9.3a.9.9 0 0 1 1.26-.14 4.4 4.4 0 0 1 0 5.68.9.9 0 1 1-1.4-1.13 2.6 2.6 0 0 0 0-3.42.9.9 0 0 1 .14-1.13Z"/><path d="M17.6 6.5a.9.9 0 0 1 1.26-.15 7.6 7.6 0 0 1 0 11.3.9.9 0 1 1-1.2-1.34 5.8 5.8 0 0 0 0-8.62.9.9 0 0 1-.06-1.19Z"/></svg>
+                      <svg class="media-player__icon media-player__icon--muted" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5c0 .55.45 1 1 1h2.6l3.7 3.1c.66.55 1.65.08 1.65-.77V6.17c0-.85-1-1.32-1.65-.77L7.6 8.5H5c-.55 0-1 .45-1 1Z"/><path d="M15.3 9.05a.9.9 0 0 1 1.27 0l1.63 1.64 1.63-1.64a.9.9 0 1 1 1.27 1.28L19.47 12l1.63 1.64a.9.9 0 1 1-1.27 1.27L18.2 13.27l-1.63 1.64a.9.9 0 1 1-1.27-1.27L16.93 12 15.3 10.33a.9.9 0 0 1 0-1.28Z"/></svg>
+                    </button>
+                    <input
+                      class="media-player__volume"
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      :value="mediaState.muted ? 0 : mediaState.volume"
+                      :style="{ '--mp-fill': (mediaState.muted ? 0 : mediaState.volume * 100) + '%' }"
+                      aria-label="Volume"
+                      @input="onMediaVolume"
+                    >
+                  </span>
+                  <audio
+                    ref="mediaRef"
+                    :src="previewItem.preview_url"
+                    preload="metadata"
+                    @timeupdate="onMediaTimeUpdate"
+                    @loadedmetadata="onMediaLoadedMetadata"
+                    @durationchange="onMediaLoadedMetadata"
+                    @play="onMediaPlay"
+                    @pause="onMediaPause"
+                    @ended="onMediaPause"
+                  ></audio>
+                </div>
+              </div>
+            </div>
             <pre v-else-if="previewMode(previewItem) === 'text'">{{ previewText }}</pre>
             <div v-else class="file-fallback">
               <img class="file-fallback__icon" :src="fallbackIconUrl(previewItem)" alt="">
@@ -3445,12 +4673,13 @@ onBeforeUnmount(() => {
             <dl>
               <div><dt>Name</dt><dd>{{ previewItem.name }}</dd></div>
               <div><dt>Size</dt><dd>{{ previewItem.size_label }}</dd></div>
+              <div v-if="session.display.show_uploader && previewItem.uploader_username"><dt>Shared by</dt><dd class="uploader-attribution">{{ previewItem.uploader_username }}</dd></div>
               <div><dt>Updated</dt><dd>{{ previewItem.updated_relative }}</dd></div>
               <div><dt>Checksum</dt><dd>{{ previewItem.checksum }}</dd></div>
             </dl>
-            <div v-if="canManageShares && previewItem.type === 'file'" class="share-panel">
+            <div v-if="canShareItem(previewItem)" class="share-panel">
               <strong>Public share</strong>
-              <p v-if="shareState.fileId === previewItem.id && shareState.link" class="share-panel__url">{{ shareState.link.url }}</p>
+              <p v-if="shareState.fileId === previewItem.id && shareState.link" class="share-panel__url"><a :href="shareState.link.url" target="_blank" rel="noopener noreferrer">{{ shareState.link.url }}</a></p>
               <p v-else>No public share link is active for this file yet.</p>
               <p class="share-panel__hint">
                 {{ shareState.fileId === previewItem.id && shareState.link?.requires_password ? 'Password protected' : 'No password required' }}
@@ -3459,6 +4688,11 @@ onBeforeUnmount(() => {
                 <span>Expires at</span>
                 <input v-model="shareForm.expiresAtLocal" class="share-panel__input" type="datetime-local">
               </label>
+              <label>
+                <span>Deletion after</span>
+                <input v-model="shareForm.deleteAfterLocal" class="share-panel__input" type="datetime-local">
+              </label>
+              <small class="share-panel__hint">Deletion after removes the file from the server once this moment passes. Leave blank to keep it.</small>
               <label>
                 <span>Max page opens</span>
                 <input v-model="shareForm.maxViews" class="share-panel__input" type="number" min="1" step="1" placeholder="Unlimited">
@@ -3474,14 +4708,21 @@ onBeforeUnmount(() => {
                   :disabled="shareForm.allowEmbed"
                 >
               </label>
-              <label class="checkbox-control checkbox-control--row">
+              <label v-if="canEmbedShares" :class="['checkbox-control', 'checkbox-control--row']">
                 <input v-model="shareForm.allowEmbed" class="checkbox-control__input" type="checkbox">
-                <span class="checkbox-control__indicator" aria-hidden="true"></span>
-                <span class="checkbox-control__label">Allow embedding (websites & Discord)</span>
+                <span class="checkbox-control__indicator"></span>
+                <span class="checkbox-control__label">Allow embedding (websites &amp; Discord)</span>
               </label>
+              <div
+                v-if="shareState.fileId === previewItem.id && shareState.link?.allow_embed && shareState.link?.embed_html && ['video', 'audio'].includes(previewMode(previewItem))"
+                class="share-panel__embed-actions"
+              >
+                <button type="button" @click="copyEmbedCode(previewItem)">Copy embed code</button>
+                <button type="button" @click="copyDiscordEmbed(previewItem)">Copy Discord embed code</button>
+              </div>
               <small class="panel-meta">
                 <template v-if="shareState.fileId === previewItem.id && shareState.link">
-                  Views: {{ shareState.link.view_count }}<span v-if="shareState.link.remaining_views !== null"> · Remaining: {{ shareState.link.remaining_views }}</span>
+                  Views: {{ shareState.link.view_count }}<span v-if="shareState.link.remaining_views !== null"> · Remaining: {{ shareState.link.remaining_views }}</span><span v-if="shareState.link.delete_after"> · File deleted after: {{ formatBackupDate(shareState.link.delete_after) }}</span>
                 </template>
               </small>
               <button
@@ -3491,13 +4732,6 @@ onBeforeUnmount(() => {
               >
                 Remove password
               </button>
-              <div
-                v-if="shareState.fileId === previewItem.id && shareState.link?.allow_embed && shareState.link?.embed_html && ['video', 'audio'].includes(previewMode(previewItem))"
-                class="share-panel__embed-actions"
-              >
-                <button type="button" @click="copyEmbedCode(previewItem)">Copy embed code</button>
-                <button type="button" @click="copyDiscordEmbed(previewItem)">Copy Discord embed code</button>
-              </div>
             </div>
           </aside>
         </div>
@@ -3513,15 +4747,26 @@ onBeforeUnmount(() => {
       </section>
     </div>
 
+    <VideoCompressionDialog
+      :open="compressionDialog.open"
+      :mode="compressionDialog.mode"
+      :files="compressionDialog.files"
+      @confirm="settleCompressionDialog('compress')"
+      @dismiss="settleCompressionDialog(compressionDialog.mode === 'required' ? 'cancel' : 'original')"
+    />
+
     <aside v-if="infoItem" class="info-drawer">
       <header>
         <h2>Info</h2>
         <button class="header-button" type="button" @click="infoItem = null">Close</button>
       </header>
+      <p v-if="shareState.fileId === infoItem.id && shareState.error" role="alert">{{ shareState.error }}</p>
+      <p v-if="infoItem.type === 'file' && session.user && !canShareItem(infoItem)">Public file links are not permitted for this file or your account.</p>
       <dl>
         <div><dt>Name</dt><dd>{{ infoItem.name }}</dd></div>
         <div><dt>Type</dt><dd>{{ infoItem.type }}</dd></div>
         <div><dt>Size</dt><dd>{{ infoItem.size_label }}</dd></div>
+        <div v-if="session.display.show_uploader && infoItem.uploader_username"><dt>Shared by</dt><dd class="uploader-attribution">{{ infoItem.uploader_username }}</dd></div>
         <div><dt>Last modified</dt><dd>{{ infoItem.updated_relative }}</dd></div>
       </dl>
       <div class="note-panel">
@@ -3544,10 +4789,39 @@ onBeforeUnmount(() => {
           {{ descriptionSaving ? 'Saving...' : 'Save description' }}
         </button>
       </div>
-      <div v-if="canManageShares && infoItem.type === 'file'" class="share-panel">
+      <div v-if="canManageFolderSharing(infoItem)" class="share-panel">
+        <strong>Share access</strong>
+        <p class="share-panel__hint">Give other users view or write access to this folder inside your space.</p>
+        <p v-if="spaceShareState.loading && spaceShareState.folderId === infoItem.id">Loading grants...</p>
+        <p v-if="spaceShareState.error" role="alert">{{ spaceShareState.error }}</p>
+        <button v-if="!spaceShareState.loading && !spaceShareState.ready" type="button" @click="loadSpaceSharing(infoItem)">Retry loading permissions</button>
+        <template v-if="!spaceShareState.loading && spaceShareState.ready">
+          <p v-if="spaceShareState.grants.length === 0" class="share-panel__hint">No other users have access yet.</p>
+          <div v-for="grant in spaceShareState.grants" :key="grant.username" class="space-share-row">
+            <span><strong>{{ grant.username }}</strong> · {{ grant.level === 'write' ? 'View + write' : 'View only' }}</span>
+            <button type="button" :disabled="spaceShareState.saving" @click="removeSpaceGrant(grant)">Remove</button>
+          </div>
+          <label>
+            <span>User</span>
+            <select v-model="spaceShareState.draftUser">
+              <option value="" disabled>Choose a user</option>
+              <option v-for="user in spaceShareState.users" :key="user.id" :value="user.username">{{ user.username }}</option>
+            </select>
+          </label>
+          <label>
+            <span>Access level</span>
+            <select v-model="spaceShareState.draftLevel">
+              <option value="view">View only</option>
+              <option v-if="spaceShareState.maxLevel === 'write'" value="write">View + write</option>
+            </select>
+          </label>
+          <button type="button" :disabled="spaceShareState.saving || spaceShareState.draftUser === ''" @click="addSpaceGrant(infoItem)">Grant access</button>
+        </template>
+      </div>
+      <div v-if="canShareItem(infoItem)" class="share-panel">
         <strong>Public share</strong>
         <p v-if="shareState.loading && shareState.fileId === infoItem.id">Checking share link...</p>
-        <p v-else-if="shareState.fileId === infoItem.id && shareState.link" class="share-panel__url">{{ shareState.link.url }}</p>
+        <p v-else-if="shareState.fileId === infoItem.id && shareState.link" class="share-panel__url"><a :href="shareState.link.url" target="_blank" rel="noopener noreferrer">{{ shareState.link.url }}</a></p>
         <p v-else>No public share link is active for this file yet.</p>
         <p class="share-panel__hint">
           {{ shareState.fileId === infoItem.id && shareState.link?.requires_password ? 'Password protected' : 'No password required' }}
@@ -3556,6 +4830,11 @@ onBeforeUnmount(() => {
           <span>Expires at</span>
           <input v-model="shareForm.expiresAtLocal" class="share-panel__input" type="datetime-local">
         </label>
+        <label>
+          <span>Deletion after</span>
+          <input v-model="shareForm.deleteAfterLocal" class="share-panel__input" type="datetime-local">
+        </label>
+        <small class="share-panel__hint">Deletion after removes the file from the server once this moment passes. Leave blank to keep it.</small>
         <label>
           <span>Max page opens</span>
           <input v-model="shareForm.maxViews" class="share-panel__input" type="number" min="1" step="1" placeholder="Unlimited">
@@ -3568,17 +4847,11 @@ onBeforeUnmount(() => {
             type="password"
             autocomplete="new-password"
             placeholder="Leave blank to keep the current password"
-            :disabled="shareForm.allowEmbed"
           >
-        </label>
-        <label class="checkbox-control checkbox-control--row">
-          <input v-model="shareForm.allowEmbed" class="checkbox-control__input" type="checkbox">
-          <span class="checkbox-control__indicator" aria-hidden="true"></span>
-          <span class="checkbox-control__label">Allow embedding (websites & Discord)</span>
         </label>
         <small class="panel-meta">
           <template v-if="shareState.fileId === infoItem.id && shareState.link">
-            Views: {{ shareState.link.view_count }}<span v-if="shareState.link.remaining_views !== null"> · Remaining: {{ shareState.link.remaining_views }}</span>
+            Views: {{ shareState.link.view_count }}<span v-if="shareState.link.remaining_views !== null"> · Remaining: {{ shareState.link.remaining_views }}</span><span v-if="shareState.link.delete_after"> · File deleted after: {{ formatBackupDate(shareState.link.delete_after) }}</span>
           </template>
         </small>
         <button
@@ -3588,18 +4861,11 @@ onBeforeUnmount(() => {
         >
           Remove password
         </button>
-        <div
-          v-if="shareState.fileId === infoItem.id && shareState.link?.allow_embed && shareState.link?.embed_html && ['video', 'audio'].includes(previewMode(infoItem))"
-          class="share-panel__embed-actions"
-        >
-          <button type="button" @click="copyEmbedCode(infoItem)">Copy embed code</button>
-          <button type="button" @click="copyDiscordEmbed(infoItem)">Copy Discord embed code</button>
-        </div>
       </div>
       <div v-if="shell === 'app' && canShowItemActions(infoItem)" class="drawer-actions">
-        <button v-if="canManageShares && infoItem.type === 'file'" type="button" @click="createShareLink(infoItem)">Share link</button>
-        <button v-if="canManageShares && infoItem.type === 'file'" type="button" @click="openShareLink(infoItem)">Open share</button>
-        <button v-if="canManageShares && infoItem.type === 'file' && shareState.fileId === infoItem.id && shareState.link" type="button" @click="revokeShareLink(infoItem)">Disable share</button>
+        <button v-if="canShareItem(infoItem) && !infoItem.locked" type="button" @click="createShareLink(infoItem)">Share link</button>
+        <button v-if="canShareItem(infoItem)" type="button" @click="openShareLink(infoItem)">Open share</button>
+        <button v-if="canShareItem(infoItem) && !infoItem.locked && shareState.fileId === infoItem.id && shareState.link" type="button" @click="revokeShareLink(infoItem)">Disable share</button>
         <button v-if="canEditItem(infoItem)" type="button" @click="renameSelected(infoItem)">Rename</button>
         <button v-if="canEditItem(infoItem)" type="button" @click="moveSelected(infoItem)">Move</button>
         <button v-if="canDeleteItem(infoItem)" type="button" class="danger" @click="deleteSelected(infoItem)">Delete</button>
@@ -3608,7 +4874,7 @@ onBeforeUnmount(() => {
 
     <div v-if="contextMenu" class="context-menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }">
       <template v-if="contextMenu.kind === 'item'">
-        <button v-if="canManageShares && contextMenu.item.type === 'file'" type="button" @click="createShareLink(contextMenu.item)">Share link</button>
+        <button v-if="canShareItem(contextMenu.item) && !contextMenu.item.locked" type="button" @click="createShareLink(contextMenu.item)">Share link</button>
         <button v-if="canEditItem(contextMenu.item)" type="button" @click="renameSelected(contextMenu.item)">Rename</button>
         <button v-if="canEditItem(contextMenu.item)" type="button" @click="moveSelected(contextMenu.item)">Move</button>
         <button v-if="canDeleteItem(contextMenu.item)" type="button" class="danger" @click="deleteSelected(contextMenu.item)">Delete</button>

@@ -14,7 +14,7 @@ function wb_h(?string $value): string
 
 function wb_detect_base_path(): string
 {
-    if (PHP_SAPI === 'cli') {
+    if (PHP_SAPI === 'cli' && empty($_SERVER['WB_TESTING_BASE_PATH'])) {
         return '';
     }
 
@@ -115,15 +115,7 @@ function wb_is_json_request(): bool
 function wb_request_data(): array
 {
     if (wb_is_json_request()) {
-        $limit = 1024 * 1024;
-        if ((int) ($_SERVER['CONTENT_LENGTH'] ?? 0) > $limit) {
-            wb_error_response('The JSON request body is too large.', 413);
-        }
-        $body = (string) file_get_contents('php://input', false, null, 0, $limit + 1);
-        if (strlen($body) > $limit) {
-            wb_error_response('The JSON request body is too large.', 413);
-        }
-        $payload = json_decode($body, true);
+        $payload = json_decode((string) file_get_contents('php://input'), true);
 
         return is_array($payload) ? $payload : [];
     }
@@ -147,24 +139,6 @@ function wb_error_response(string $message, int $status = 400, array $extra = []
         'message' => $message,
         'errors' => $extra,
     ], $status);
-}
-
-function wb_internal_error_response(string $message, \Throwable $exception): never
-{
-    $action = (string) ($_GET['action'] ?? '');
-    $requestLabel = trim(wb_request_method() . ' ' . $action);
-
-    error_log(sprintf(
-        '[wb-filebrowser] %s during %s: %s: %s in %s:%d',
-        $message,
-        $requestLabel === '' ? 'request' : $requestLabel,
-        $exception::class,
-        $exception->getMessage(),
-        $exception->getFile(),
-        $exception->getLine()
-    ));
-
-    wb_error_response($message, 500);
 }
 
 /**
@@ -191,14 +165,6 @@ function wb_blocked_response(WbFileBrowser\BlockedAccessException $exception, in
 function wb_redirect(string $path): never
 {
     header('Location: ' . $path);
-    exit;
-}
-
-function wb_forbidden_page(string $title = 'Access blocked', string $message = 'This request has been blocked.'): never
-{
-    WbFileBrowser\Security::sendPageHeaders();
-    http_response_code(403);
-    echo '<!doctype html><html lang="en"><head>' . wb_page_head($title . ' | wb-filebrowser') . '</head><body class="install-shell"><main class="install-layout"><section class="install-card"><div class="install-header"><p class="install-kicker">Forbidden</p><h1>' . wb_h($title) . '</h1><p>' . wb_h($message) . '</p></div><div class="quick-actions"><a class="header-button primary-button" href="' . wb_h(wb_url('/')) . '">Open the file browser</a></div></section></main></body></html>';
     exit;
 }
 
@@ -275,29 +241,6 @@ function wb_random_token(int $bytes = 16): string
     return bin2hex(random_bytes($bytes));
 }
 
-function wb_embed_media_mime_type(string $extension): ?string
-{
-    $extension = strtolower(ltrim(trim($extension), '.'));
-    $embedMediaMimeTypes = [
-        'mp4' => 'video/mp4',
-        'm4v' => 'video/mp4',
-        'webm' => 'video/webm',
-        'mov' => 'video/quicktime',
-        'ogv' => 'video/ogg',
-        'mp3' => 'audio/mpeg',
-        'm4a' => 'audio/mp4',
-        'aac' => 'audio/aac',
-        'ogg' => 'audio/ogg',
-        'oga' => 'audio/ogg',
-        'opus' => 'audio/ogg',
-        'wav' => 'audio/wav',
-        'flac' => 'audio/flac',
-        'weba' => 'audio/webm',
-    ];
-
-    return $embedMediaMimeTypes[$extension] ?? null;
-}
-
 function wb_json_html(mixed $value): string
 {
     return (string) json_encode(
@@ -318,20 +261,25 @@ function wb_bootstrap_script_tag(array $bootstrap): string
 
 function wb_asset_url(string $path): string
 {
-    $assetPath = dirname(__DIR__) . $path;
-    $version = is_file($assetPath) ? (string) filemtime($assetPath) : '1';
+    // App assets are served with long-lived default caching (browsers and any
+    // CDN in front), so every deploy must produce a different URL. The
+    // filemtime changes whenever the build output is replaced.
+    $version = is_file(dirname(__DIR__) . $path) ? (string) filemtime(dirname(__DIR__) . $path) : '1';
 
     return wb_url($path . '?v=' . $version);
 }
 
 function wb_page_head(string $title): string
 {
+    $stylesheetPath = dirname(__DIR__) . '/assets/app.css';
+    $stylesheetVersion = is_file($stylesheetPath) ? (string) filemtime($stylesheetPath) : '1';
+
     return implode("\n", [
         '<meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
         '<title>' . wb_h($title) . '</title>',
-        '<link rel="icon" type="image/svg+xml" href="' . wb_h(wb_url('/media/logo.svg')) . '">',
-        '<link rel="stylesheet" href="' . wb_h(wb_asset_url('/assets/app.css')) . '">',
+        '<link rel="icon" type="image/webp" href="' . wb_h(wb_url('/media/forum-logo.webp')) . '">',
+        '<link rel="stylesheet" href="' . wb_h(wb_url('/assets/app.css?v=' . $stylesheetVersion)) . '">',
     ]);
 }
 
@@ -510,6 +458,27 @@ function wb_file_fallback_metadata(string $extension, string $mimeType = ''): ar
  *   fallback_label: ?string
  * }
  */
+function wb_embed_media_mime_type(string $extension): ?string
+{
+    return match (strtolower(trim($extension))) {
+        'mp4' => 'video/mp4',
+        'm4v' => 'video/mp4',
+        'webm' => 'video/webm',
+        'mov' => 'video/quicktime',
+        'ogv' => 'video/ogg',
+        'mp3' => 'audio/mpeg',
+        'm4a' => 'audio/mp4',
+        'aac' => 'audio/aac',
+        'ogg' => 'audio/ogg',
+        'oga' => 'audio/ogg',
+        'opus' => 'audio/ogg',
+        'wav' => 'audio/wav',
+        'flac' => 'audio/flac',
+        'weba' => 'audio/webm',
+        default => null,
+    };
+}
+
 function wb_file_preview_metadata(string $mimeType, string $extension): array
 {
     $mimeType = strtolower(trim($mimeType));
@@ -561,11 +530,14 @@ function wb_file_preview_metadata(string $mimeType, string $extension): array
     }
 
     $fallback = wb_file_fallback_metadata($extension, $mimeType);
+    $fallbackIconName = $fallback['icon'] . '.svg';
+    $fallbackIconPath = dirname(__DIR__) . '/media/file-fallbacks/' . $fallbackIconName;
+    $fallbackIconVersion = is_file($fallbackIconPath) ? (string) filemtime($fallbackIconPath) : '1';
 
     return [
         'preview_mode' => 'download',
         'fallback_variant' => $fallback['variant'],
-        'fallback_icon_url' => wb_url('/media/file-fallbacks/' . $fallback['icon'] . '.svg'),
+        'fallback_icon_url' => wb_url('/media/file-fallbacks/' . $fallbackIconName . '?v=' . $fallbackIconVersion),
         'fallback_label' => $fallback['label'],
     ];
 }

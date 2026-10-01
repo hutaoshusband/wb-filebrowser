@@ -4,15 +4,24 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vite build",
-    "test:frontend": "vitest run"
+    "build:crypto": "cargo build --manifest-path crypto/Cargo.toml --release --target wasm32-unknown-unknown --locked && wasm-bindgen crypto/target/wasm32-unknown-unknown/release/wb_file_crypto.wasm --target web --out-dir frontend/src/lib/wasm",
+    "build": "npm run build:crypto && vite build",
+    "test:frontend": "vitest run",
+    "test:crypto:browser": "node tests/browser/encryption.mjs",
+    "test:crypto:upload": "node tests/browser/upload-encryption.mjs"
   },
   "dependencies": {
+    "@ffmpeg/core": "^0.12.10",
+    "@ffmpeg/core-mt": "^0.12.10",
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "@mediabunny/aac-encoder": "^1.56.1",
     "highlight.js": "^11.11.1",
+    "mediabunny": "^1.56.1",
     "pdfjs-dist": "^5.5.207",
     "vue": "^3.5.13"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@vitejs/plugin-vue": "^5.2.3",
     "@vue/test-utils": "^2.4.6",
     "jsdom": "^26.1.0",

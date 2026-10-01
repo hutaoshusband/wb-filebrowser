@@ -30,6 +30,7 @@ final class IpBanService
         $statement = $pdo->prepare(
             'INSERT INTO ip_bans (
                 ip_address,
+                active_ip_address,
                 reason,
                 created_by,
                 created_by_username,
@@ -42,6 +43,7 @@ final class IpBanService
                 updated_at
              ) VALUES (
                 :ip_address,
+                :active_ip_address,
                 :reason,
                 :created_by,
                 :created_by_username,
@@ -57,6 +59,7 @@ final class IpBanService
         $now = wb_now();
         $statement->execute([
             ':ip_address' => $ipAddress,
+            ':active_ip_address' => $ipAddress,
             ':reason' => $reason,
             ':created_by' => (int) ($actor['id'] ?? 0) ?: null,
             ':created_by_username' => (string) ($actor['username'] ?? ''),
@@ -64,7 +67,7 @@ final class IpBanService
             ':expires_at' => self::normalizeExpiry($expiresAt),
             ':updated_at' => $now,
         ]);
-        $ban = self::banById((int) $pdo->lastInsertId(), $pdo);
+        $ban = self::banById(Database::lastInsertId($pdo, 'ip_bans'), $pdo);
 
         if ($ban === null) {
             throw new RuntimeException('Unable to create the IP ban right now.');
@@ -102,6 +105,7 @@ final class IpBanService
         $statement = $pdo->prepare(
             'UPDATE ip_bans
              SET revoked_at = :revoked_at,
+                 active_ip_address = NULL,
                  revoked_by = :revoked_by,
                  revoked_by_username = :revoked_by_username,
                  revoked_reason = :revoked_reason,
@@ -201,7 +205,7 @@ final class IpBanService
         $statement = $pdo->prepare(
             'SELECT *
              FROM ip_bans
-             WHERE ip_address = :ip_address
+             WHERE active_ip_address = :ip_address
                AND revoked_at IS NULL
                AND (expires_at IS NULL OR expires_at > :now)
              ORDER BY id DESC
@@ -238,6 +242,7 @@ final class IpBanService
             $statement = $pdo->prepare(
                 'UPDATE ip_bans
                  SET revoked_at = :revoked_at,
+                     active_ip_address = NULL,
                      revoked_reason = :revoked_reason,
                      updated_at = :updated_at
                  WHERE id = :id'

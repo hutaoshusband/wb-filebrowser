@@ -30,6 +30,7 @@ final class FileShareTest extends DatabaseTestCase
         $this->assertFalse($share['requires_password']);
         $this->assertSame(1, $payload['share']['view_count']);
         $this->assertSame(2, $payload['share']['remaining_views']);
+        $this->assertStringStartsWith('http://localhost/', $payload['file']['preview_url']);
         $this->assertStringContainsString('grant=', $payload['file']['preview_url']);
     }
 
@@ -53,7 +54,7 @@ final class FileShareTest extends DatabaseTestCase
         $file = $this->createFile('notes.txt');
 
         $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('Only administrators can manage share links.');
+        $this->expectExceptionMessage('You do not have permission to manage share links for this file.');
 
         FileShares::create($member, (int) $file['id']);
     }
@@ -111,6 +112,23 @@ final class FileShareTest extends DatabaseTestCase
         $this->assertSame('jar', $payload['file']['fallback_variant']);
         $this->assertSame('Java archive', $payload['file']['fallback_label']);
         $this->assertStringContainsString('/media/file-fallbacks/jar.svg', $payload['file']['fallback_icon_url']);
+        $this->assertStringStartsWith('http://localhost/', $payload['file']['download_url']);
+        $this->assertStringStartsWith('http://localhost/', $payload['file']['direct_url']);
+        $this->assertSame($payload['file']['download_url'], $payload['file']['direct_url']);
+    }
+
+    public function testPdfSharesExposeAnInlineDirectUrl(): void
+    {
+        $file = $this->createFile('brochure.pdf', '%PDF-1.7 demo', 'application/pdf');
+        $share = FileShares::create($this->superAdmin(), (int) $file['id']);
+        $payload = FileShares::viewPayload($share['token']);
+
+        $this->assertSame('pdf', $payload['preview_mode']);
+        $this->assertSame('pdf', $payload['file']['preview_mode']);
+        $this->assertStringStartsWith('http://localhost/', $payload['file']['preview_url']);
+        $this->assertStringStartsWith('http://localhost/', $payload['file']['direct_url']);
+        $this->assertSame($payload['file']['preview_url'], $payload['file']['direct_url']);
+        $this->assertNotSame($payload['file']['download_url'], $payload['file']['direct_url']);
     }
 
     public function testPasswordProtectedSharesRequireUnlockAndInvalidateOldSessions(): void

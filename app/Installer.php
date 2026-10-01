@@ -119,22 +119,6 @@ final class Installer
 
     public static function install(string $username, string $password, array $settings = []): array
     {
-        self::ensureRuntimeDirectories();
-        $lock = fopen(wb_storage_path('installation.mutex'), 'c');
-        if ($lock === false || !flock($lock, LOCK_EX)) {
-            throw new RuntimeException('Unable to lock installation.');
-        }
-        try {
-            return self::installLocked($username, $password, $settings);
-        } finally {
-            flock($lock, LOCK_UN);
-            fclose($lock);
-        }
-    }
-
-    private static function installLocked(string $username, string $password, array $settings): array
-    {
-        clearstatcache();
         if (self::isInstalled()) {
             throw new RuntimeException('wb-filebrowser is already installed.');
         }
@@ -148,8 +132,7 @@ final class Installer
 
         $databaseInput = is_array($settings['database'] ?? null) ? $settings['database'] : [];
         $config = DatabaseConfig::normalize($databaseInput);
-        $driver = (string) $config['driver'];
-        self::assertDatabaseDriverAvailable($driver);
+        self::assertDatabaseDriverAvailable((string) $config['driver']);
         self::assertDatabaseConfigValid($config);
 
         self::createStorageLayout();
@@ -161,19 +144,19 @@ final class Installer
         $dropSchemaOnFailure = false;
 
         try {
-            if ($driver === 'sqlite') {
+            if ((string) $config['driver'] === 'sqlite') {
                 self::ensureSqlitePathReady((string) $config['path']);
                 $createdSqliteFile = !is_file((string) $config['path']);
             }
 
             $pdo = self::connect($config);
-            self::assertInstallTargetIsEmpty($pdo, $driver);
+            self::assertInstallTargetIsEmpty($pdo, (string) $config['driver']);
             DatabaseConfig::write($config);
             $configWritten = true;
             $dropSchemaOnFailure = true;
 
-            foreach (DatabasePlatform::schemaStatements($driver) as $statement) {
-                self::executeSchemaStatement($pdo, $driver, $statement);
+            foreach (DatabasePlatform::schemaStatements((string) $config['driver']) as $statement) {
+                self::executeSchemaStatement($pdo, (string) $config['driver'], $statement);
             }
 
             $now = wb_now();
@@ -193,7 +176,7 @@ final class Installer
                 ':created_at' => $now,
                 ':updated_at' => $now,
             ]);
-            $superAdminId = DatabasePlatform::lastInsertId($pdo, $driver, 'users');
+            $superAdminId = DatabasePlatform::lastInsertId($pdo, (string) $config['driver'], 'users');
 
             $folderStatement = $pdo->prepare(
                 'INSERT INTO folders (parent_id, name, created_by, created_at, updated_at)
@@ -205,7 +188,7 @@ final class Installer
                 ':created_at' => $now,
                 ':updated_at' => $now,
             ]);
-            $rootFolderId = DatabasePlatform::lastInsertId($pdo, $driver, 'folders');
+            $rootFolderId = DatabasePlatform::lastInsertId($pdo, (string) $config['driver'], 'folders');
 
             $probeName = 'public-' . wb_random_token(10) . '.txt';
             $probeRelativePath = 'probe/' . $probeName;
@@ -325,49 +308,68 @@ XML;
             return;
         }
 
-        $driver = (string) $config['driver'];
+        $storageLock = new StorageLock();
         $pdo = self::connect($config);
 
-        $schemaStatements = DatabasePlatform::schemaStatements($driver);
+        $schemaStatements = DatabasePlatform::schemaStatements((string) $config['driver']);
         $tableStatements = array_slice($schemaStatements, 0, count(DatabasePlatform::coreTables()));
         $indexStatements = array_slice($schemaStatements, count(DatabasePlatform::coreTables()));
 
         foreach ($tableStatements as $statement) {
-            self::executeSchemaStatement($pdo, $driver, $statement);
+            self::executeSchemaStatement($pdo, (string) $config['driver'], $statement);
         }
 
         self::ensureTableColumns($pdo, 'users', [
-            'storage_quota_bytes ' . self::bytesType($driver) . ' NULL',
-        ], $driver);
+            'link_shares_allowed INTEGER NULL',
+            'storage_quota_bytes ' . self::bytesType((string) $config['driver']) . ' NULL',
+        ], (string) $config['driver']);
         self::ensureTableColumns($pdo, 'file_shares', [
-            'expires_at ' . self::timestampType($driver) . ' NULL',
+            'expires_at ' . self::timestampType((string) $config['driver']) . ' NULL',
+            'delete_after ' . self::timestampType((string) $config['driver']) . ' NULL',
             'max_views INTEGER NULL',
             'view_count INTEGER NOT NULL DEFAULT 0',
             'password_hash TEXT NULL',
             'password_version INTEGER NOT NULL DEFAULT 0',
-            'allow_embed ' . self::booleanType($driver) . ' NOT NULL DEFAULT 0',
-        ], $driver);
+            'allow_embed ' . self::booleanType((string) $config['driver']) . ' NOT NULL DEFAULT 0',
+            'active_file_id ' . self::referenceType((string) $config['driver']) . ' NULL',
+        ], (string) $config['driver']);
         self::ensureTableColumns($pdo, 'folders', [
-            'description ' . self::descriptionType($driver) . ' NOT NULL DEFAULT \'\'',
-            'cached_size_bytes ' . self::bytesType($driver) . ' NULL',
-            'cached_size_calculated_at ' . self::timestampType($driver) . ' NULL',
-        ], $driver);
+            'description ' . self::descriptionType((string) $config['driver']) . ' NOT NULL DEFAULT \'\'',
+            'cached_size_bytes ' . self::bytesType((string) $config['driver']) . ' NULL',
+            'cached_size_calculated_at ' . self::timestampType((string) $config['driver']) . ' NULL',
+        ], (string) $config['driver']);
+        self::ensureTableColumns($pdo, 'spaces', [
+            'size_limit_bytes ' . self::bytesType((string) $config['driver']) . ' NULL',
+        ], (string) $config['driver']);
         self::ensureTableColumns($pdo, 'files', [
-            'description ' . self::descriptionType($driver) . ' NOT NULL DEFAULT \'\'',
-        ], $driver);
+            'uploader_username VARCHAR(255) NOT NULL DEFAULT \'\'',
+            'encryption_format VARCHAR(16) NOT NULL DEFAULT \'\'',
+            'description ' . self::descriptionType((string) $config['driver']) . ' NOT NULL DEFAULT \'\'',
+            'blob_id ' . self::referenceType((string) $config['driver']) . ' NULL',
+        ], (string) $config['driver']);
         self::ensureTableColumns($pdo, 'folder_permissions', [
-            'can_edit ' . self::booleanType($driver) . ' NOT NULL DEFAULT 0',
-            'can_delete ' . self::booleanType($driver) . ' NOT NULL DEFAULT 0',
-            'can_create_folders ' . self::booleanType($driver) . ' NOT NULL DEFAULT 0',
-        ], $driver);
+            'can_edit ' . self::booleanType((string) $config['driver']) . ' NOT NULL DEFAULT 0',
+            'can_delete ' . self::booleanType((string) $config['driver']) . ' NOT NULL DEFAULT 0',
+            'can_create_folders ' . self::booleanType((string) $config['driver']) . ' NOT NULL DEFAULT 0',
+        ], (string) $config['driver']);
+        self::ensureTableColumns($pdo, 'ip_bans', [
+            'active_ip_address ' . self::ipType((string) $config['driver']) . ' NULL',
+        ], (string) $config['driver']);
+
+        if (Database::setting('migration_uploader_names_v1', '0') !== '1') {
+            $pdo->exec("UPDATE files SET uploader_username = COALESCE((SELECT username FROM users WHERE users.id = files.created_by), '') WHERE uploader_username = ''");
+            Database::updateSetting('migration_uploader_names_v1', '1');
+        }
+        self::syncActiveConstraintColumns($pdo);
 
         foreach ($indexStatements as $statement) {
-            self::executeSchemaStatement($pdo, $driver, $statement);
+            self::executeSchemaStatement($pdo, (string) $config['driver'], $statement);
         }
 
         Settings::seedDefaults($pdo);
+        self::backfillFileBlobs($pdo, (string) $config['driver']);
         $statement = $pdo->prepare(
-            DatabasePlatform::upsertSql($driver, 'settings', ['key', 'value', 'updated_at'], ['value', 'updated_at'], ['key'])
+            DatabasePlatform::upsertSql((string) $config['driver'], 'settings', ['key', 'value', 'updated_at'], ['value', 'updated_at'], ['key'])
         );
         $statement->execute([
             ':key' => 'app_version',
@@ -375,6 +377,153 @@ XML;
             ':updated_at' => wb_now(),
         ]);
         AutomationRunner::seedJobs($pdo);
+    }
+
+    /**
+     * One-time migration for content-addressed storage: every pre-dedup
+     * files row is attached to a file_blobs row keyed by its (sha256
+     * checksum, size) group. Metadata-only — no file on disk is moved or
+     * deleted, superseded physical duplicates are reclaimed later by the
+     * reconcile automation job. Guarded by a settings flag so it runs at
+     * most once and stays a no-op on every subsequent request.
+     */
+    private static function backfillFileBlobs(PDO $pdo, string $driver): void
+    {
+        $keyColumn = DatabasePlatform::quoteIdentifier($driver, 'key');
+        $selectFlag = $pdo->prepare('SELECT value FROM settings WHERE ' . $keyColumn . ' = :key LIMIT 1');
+        $selectFlag->execute([':key' => 'file_blobs_backfill_v1']);
+        $flag = $selectFlag->fetchColumn();
+
+        if ($flag !== false && (string) $flag === '1') {
+            return;
+        }
+
+        $rows = $pdo->query(
+            'SELECT id, checksum, size, disk_name, disk_extension
+             FROM files
+             WHERE blob_id IS NULL AND LENGTH(checksum) = 64
+             ORDER BY checksum ASC, size ASC, id ASC'
+        )->fetchAll();
+
+        $groups = [];
+
+        foreach ($rows as $row) {
+            if (!preg_match('/^[a-f0-9]{64}$/D', (string) $row['checksum'])) {
+                continue;
+            }
+            $groupKey = (string) $row['checksum'] . '|' . (string) $row['size'];
+            $groups[$groupKey][] = $row;
+        }
+
+        if ($groups !== []) {
+            $pdo->beginTransaction();
+
+            try {
+                $insertBlob = $pdo->prepare(
+                    // Idempotent upsert: a concurrent request may have created
+                    // the same checksum row; PostgreSQL aborts transactions on
+                    // unique violations, so the conflict must be a no-op.
+                    DatabasePlatform::upsertSql(
+                        $driver,
+                        'file_blobs',
+                        ['checksum', 'disk_name', 'disk_extension', 'size', 'ref_count', 'created_at'],
+                        ['checksum'],
+                        ['checksum']
+                    )
+                );
+                $selectBlob = $pdo->prepare(
+                    'SELECT id, size, disk_name, disk_extension FROM file_blobs WHERE checksum = :checksum LIMIT 1'
+                );
+                $now = wb_now();
+                $blobIds = [];
+                $blobIdsByFileId = [];
+
+                foreach ($groups as $groupRows) {
+                    $canonical = null;
+                    foreach ($groupRows as $candidate) {
+                        $path = FileManager::blobPathFor((string) $candidate['disk_name'], (string) $candidate['disk_extension']);
+                        if (is_file($path) && filesize($path) === (int) $candidate['size']) {
+                            $canonical = $candidate;
+                            break;
+                        }
+                    }
+                    if ($canonical === null) {
+                        continue;
+                    }
+                    $checksum = (string) $canonical['checksum'];
+
+                    $insertBlob->execute([
+                        ':checksum' => $checksum,
+                        ':disk_name' => (string) $canonical['disk_name'],
+                        ':disk_extension' => (string) $canonical['disk_extension'],
+                        ':size' => (int) $canonical['size'],
+                        ':ref_count' => 0,
+                        ':created_at' => $now,
+                    ]);
+
+                    $selectBlob->execute([':checksum' => $checksum]);
+                    $found = $selectBlob->fetch();
+
+                    if ($found === false) {
+                        throw new RuntimeException('Unable to create the deduplication record.');
+                    }
+
+                    if ((int) $found['size'] !== (int) $canonical['size']) {
+                        continue;
+                    }
+                    $existingPath = FileManager::blobPathFor((string) $found['disk_name'], (string) $found['disk_extension']);
+                    if (!is_file($existingPath)) {
+                        $pdo->prepare('UPDATE file_blobs SET disk_name = :name, disk_extension = :extension WHERE id = :id')->execute([
+                            ':name' => $canonical['disk_name'], ':extension' => $canonical['disk_extension'], ':id' => $found['id'],
+                        ]);
+                    }
+                    $blob = (int) $found['id'];
+                    $blobIds[$blob] = $checksum;
+
+                    foreach ($groupRows as $row) {
+                        $blobIdsByFileId[(int) $row['id']] = $blob;
+                    }
+                }
+
+                foreach (array_chunk($blobIdsByFileId, 250, true) as $chunk) {
+                    $cases = [];
+                    $params = [];
+
+                    foreach ($chunk as $fileId => $blobId) {
+                        $cases[] = sprintf('WHEN %d THEN %d', (int) $fileId, (int) $blobId);
+                    }
+
+                    $ids = implode(', ', array_map('intval', array_keys($chunk)));
+                    $sql = 'UPDATE files SET blob_id = CASE id ' . implode(' ', $cases) . ' END WHERE id IN (' . $ids . ')';
+                    $pdo->prepare($sql)->execute($params);
+                }
+
+                foreach ($blobIds as $blobId => $checksum) {
+                    $pdo->prepare(
+                        'UPDATE file_blobs
+                         SET ref_count = (SELECT COUNT(*) FROM files WHERE blob_id = :blob_id)
+                         WHERE id = :id'
+                    )->execute([':blob_id' => $blobId, ':id' => $blobId]);
+                }
+
+                $pdo->commit();
+            } catch (\Throwable $exception) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+
+                throw $exception;
+            }
+        }
+
+        $upsertFlag = $pdo->prepare(
+            DatabasePlatform::upsertSql($driver, 'settings', ['key', 'value', 'updated_at'], ['value', 'updated_at'], ['key'])
+        );
+        $upsertFlag->execute([
+            ':key' => 'file_blobs_backfill_v1',
+            ':value' => '1',
+            ':updated_at' => wb_now(),
+        ]);
     }
 
     /**
@@ -499,6 +648,23 @@ XML;
         }
     }
 
+    private static function syncActiveConstraintColumns(PDO $pdo): void
+    {
+        $pdo->exec(
+            'UPDATE file_shares
+             SET active_file_id = CASE WHEN revoked_at IS NULL THEN file_id ELSE NULL END'
+        );
+        $statement = $pdo->prepare(
+            'UPDATE ip_bans
+             SET active_ip_address = CASE
+                 WHEN revoked_at IS NULL AND (expires_at IS NULL OR expires_at > :now)
+                 THEN ip_address
+                 ELSE NULL
+             END'
+        );
+        $statement->execute([':now' => wb_now()]);
+    }
+
     private static function executeSchemaStatement(PDO $pdo, string $driver, string $statement): void
     {
         if (preg_match('/CREATE\s+(UNIQUE\s+)?INDEX\s+IF\s+NOT\s+EXISTS\s+([A-Za-z0-9_]+)\s+ON\s+([A-Za-z0-9_]+)/i', $statement, $matches) === 1) {
@@ -591,6 +757,15 @@ XML;
         };
     }
 
+    private static function referenceType(string $driver): string
+    {
+        return match ($driver) {
+            'mysql' => 'BIGINT UNSIGNED',
+            'pgsql' => 'BIGINT',
+            default => 'INTEGER',
+        };
+    }
+
     private static function bytesType(string $driver): string
     {
         return $driver === 'sqlite' ? 'INTEGER' : 'BIGINT';
@@ -604,5 +779,10 @@ XML;
     private static function descriptionType(string $driver): string
     {
         return $driver === 'sqlite' ? 'TEXT' : 'VARCHAR(1000)';
+    }
+
+    private static function ipType(string $driver): string
+    {
+        return $driver === 'sqlite' ? 'TEXT' : 'VARCHAR(45)';
     }
 }

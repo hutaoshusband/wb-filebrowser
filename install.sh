@@ -8,28 +8,27 @@ err() { echo "[error] $1"; exit 1; }
 
 # php
 command -v php >/dev/null || err "php not found"
-[ "$(php -r 'echo PHP_VERSION_ID;')" -ge 80000 ] || err "php 8.0+ required"
-for ext in pdo_sqlite fileinfo mbstring; do
-    php -m | grep -qi "^${ext}$" || err "missing php extension: ${ext}"
+[ "$(php -r 'echo PHP_VERSION_ID;')" -ge 80100 ] || err "php 8.1+ required"
+
+PDO_DRIVERS=()
+for ext in pdo_sqlite pdo_mysql pdo_pgsql; do
+    if php -m | grep -qi "^${ext}$"; then
+        PDO_DRIVERS+=("$ext")
+    fi
 done
 
-INSTALL_TMP="$(mktemp -d)"
-trap 'rm -rf -- "$INSTALL_TMP"' EXIT
+[ "${#PDO_DRIVERS[@]}" -gt 0 ] || err "missing supported PDO extension: enable pdo_sqlite, pdo_mysql, or pdo_pgsql"
+
+for ext in fileinfo mbstring; do
+    php -m | grep -qi "^${ext}$" || err "missing php extension: ${ext}"
+done
 
 # composer
 if ! command -v composer >/dev/null; then
     echo "composer not found, installing locally..."
-    php -r '
-        $expected = trim((string) file_get_contents("https://composer.github.io/installer.sig"));
-        $path = $argv[1];
-        if (!preg_match("/^[a-f0-9]{96}$/D", $expected)
-            || !copy("https://getcomposer.org/installer", $path)
-            || !hash_equals($expected, hash_file("sha384", $path))) {
-            fwrite(STDERR, "Composer installer checksum verification failed.\n");
-            exit(1);
-        }
-    ' "$INSTALL_TMP/composer-setup.php"
-    php "$INSTALL_TMP/composer-setup.php" --install-dir="$DIR" --filename=composer
+    php -r "copy('https://getcomposer.org/installer', '/tmp/composer-setup.php');"
+    php /tmp/composer-setup.php --install-dir="$DIR" --filename=composer
+    rm -f /tmp/composer-setup.php
     COMPOSER="$DIR/composer"
 else
     COMPOSER="composer"
@@ -41,10 +40,7 @@ if ! command -v node >/dev/null || ! command -v npm >/dev/null; then
         echo "node not found, installing via nvm..."
         export NVM_DIR="$HOME/.nvm"
         if [ ! -d "$NVM_DIR" ]; then
-            curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
-                https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh -o "$INSTALL_TMP/nvm-install.sh"
-            php -r 'if (!hash_equals("abdb525ee9f5b48b34d8ed9fc67c6013fb0f659712e401ecd88ab989b3af8f53", hash_file("sha256", $argv[1]))) { fwrite(STDERR, "nvm installer checksum verification failed.\n"); exit(1); }' "$INSTALL_TMP/nvm-install.sh"
-            bash "$INSTALL_TMP/nvm-install.sh"
+            curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
         fi
         [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
         nvm install --lts
@@ -55,10 +51,17 @@ command -v node >/dev/null || err "node still not available after install attemp
 command -v npm  >/dev/null || err "npm still not available after install attempt"
 
 echo "-- php ok ($(php -r 'echo PHP_VERSION;'))"
+echo "-- pdo drivers ok (${PDO_DRIVERS[*]})"
 echo "-- node ok ($(node -v))"
 echo "-- npm ok ($(npm -v))"
 
 # dependencies
+command -v cargo >/dev/null || err "Rust is required to build local encryption. Install Rust from https://rustup.rs and rerun."
+command -v rustup >/dev/null || err "rustup is required to install the WebAssembly target."
+rustup target add wasm32-unknown-unknown
+if ! command -v wasm-bindgen >/dev/null || [ "$(wasm-bindgen --version)" != "wasm-bindgen 0.2.100" ]; then
+    cargo install wasm-bindgen-cli --version 0.2.100 --locked
+fi
 echo "-- composer install"
 $COMPOSER install --no-dev --optimize-autoloader --no-interaction 2>&1
 

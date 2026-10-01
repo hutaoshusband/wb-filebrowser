@@ -16,18 +16,42 @@ final class Settings
         $settings = array_merge(self::defaultMap(), $overrides);
         $existing = $pdo->query('SELECT ' . DatabasePlatform::quoteIdentifier(Database::driver(), 'key') . ' FROM settings')->fetchAll(PDO::FETCH_COLUMN) ?: [];
         $existingMap = array_flip(array_map('strval', $existing));
-        $statement = Database::prepareUpsert($pdo, 'settings', ['key', 'value', 'updated_at'], ['value', 'updated_at'], ['key']);
+        $statement = Database::prepareUpsert(
+            $pdo,
+            'settings',
+            ['key', 'value', 'updated_at'],
+            ['value', 'updated_at'],
+            ['key']
+        );
 
-        foreach ($settings as $key => $value) {
-            if (!$overrideExisting && isset($existingMap[$key])) {
-                continue;
+        $inTransaction = $pdo->inTransaction();
+
+        if (!$inTransaction) {
+            $pdo->beginTransaction();
+        }
+
+        try {
+            foreach ($settings as $key => $value) {
+                if (!$overrideExisting && isset($existingMap[$key])) {
+                    continue;
+                }
+
+                $statement->execute([
+                    ':key' => $key,
+                    ':value' => (string) $value,
+                    ':updated_at' => wb_now(),
+                ]);
             }
 
-            $statement->execute([
-                ':key' => $key,
-                ':value' => (string) $value,
-                ':updated_at' => wb_now(),
-            ]);
+            if (!$inTransaction) {
+                $pdo->commit();
+            }
+        } catch (\Throwable $exception) {
+            if (!$inTransaction) {
+                $pdo->rollBack();
+            }
+
+            throw $exception;
         }
     }
 
@@ -45,15 +69,26 @@ final class Settings
             'maintenance_message' => $normalized['access']['maintenance_message'],
             'share_terms_enabled' => $normalized['access']['share_terms_enabled'] ? '1' : '0',
             'share_terms_message' => $normalized['access']['share_terms_message'],
-            'share_embeds_enabled' => $normalized['access']['share_embeds_enabled'] ? '1' : '0',
             'uploads_max_file_size_mb' => (string) $normalized['uploads']['max_file_size_mb'],
+            'uploads_encryption_mode' => $normalized['uploads']['encryption_mode'],
             'uploads_allowed_extensions' => self::implodeExtensions($normalized['uploads']['allowed_extensions']),
             'uploads_stale_upload_ttl_hours' => (string) $normalized['uploads']['stale_upload_ttl_hours'],
+            'dedup_enabled' => $normalized['uploads']['dedup_enabled'] ? '1' : '0',
+            'video_compression_mode' => $normalized['video_compression']['mode'],
+            'video_max_height' => (string) $normalized['video_compression']['max_height'],
+            'video_max_fps' => (string) $normalized['video_compression']['max_fps'],
+            'video_max_video_bitrate_kbps' => (string) $normalized['video_compression']['max_video_bitrate_kbps'],
+            'video_max_audio_bitrate_kbps' => (string) $normalized['video_compression']['max_audio_bitrate_kbps'],
+            'video_min_source_mb' => (string) $normalized['video_compression']['min_source_mb'],
+            'video_min_savings_pct' => (string) $normalized['video_compression']['min_savings_pct'],
+            'video_ffmpeg_fallback' => $normalized['video_compression']['ffmpeg_fallback'] ? '1' : '0',
+            'media_ffprobe_path' => $normalized['video_compression']['media_ffprobe_path'],
             'automation_runner_enabled' => $normalized['automation']['runner_enabled'] ? '1' : '0',
             'automation_diagnostic_interval_minutes' => (string) $normalized['automation']['diagnostic_interval_minutes'],
             'automation_cleanup_interval_minutes' => (string) $normalized['automation']['cleanup_interval_minutes'],
             'automation_storage_alert_threshold_pct' => (string) $normalized['automation']['storage_alert_threshold_pct'],
             'automation_folder_size_interval_minutes' => (string) $normalized['automation']['folder_size_interval_minutes'],
+            'automation_share_deletion_interval_minutes' => (string) $normalized['automation']['share_deletion_interval_minutes'],
             'audit_enabled' => $normalized['security']['audit_enabled'] ? '1' : '0',
             'audit_retention_days' => (string) $normalized['security']['audit_retention_days'],
             'log_auth_success' => $normalized['security']['log_auth_success'] ? '1' : '0',
@@ -66,6 +101,9 @@ final class Settings
             'log_admin_actions' => $normalized['security']['log_admin_actions'] ? '1' : '0',
             'log_security_actions' => $normalized['security']['log_security_actions'] ? '1' : '0',
             'display_grid_thumbnails_enabled' => $normalized['display']['grid_thumbnails_enabled'] ? '1' : '0',
+            'display_show_uploader' => $normalized['display']['show_uploader'] ? '1' : '0',
+            'user_link_shares_allowed' => $normalized['access']['user_link_shares_allowed'] ? '1' : '0',
+            'user_link_share_level' => $normalized['access']['user_link_share_level'],
             'diagnostic_message' => 'Storage shield checks will start after setup.',
         ];
     }
@@ -77,6 +115,9 @@ final class Settings
         return [
             'access' => [
                 'public_access' => wb_parse_bool(Database::setting('public_access', '0')),
+                'user_link_shares_allowed' => wb_parse_bool(Database::setting('user_link_shares_allowed', '1')),
+                'user_link_share_level' => self::parseLinkShareLevel(Database::setting('user_link_share_level', 'write')),
+                'share_embeds_enabled' => wb_parse_bool(Database::setting('share_embeds_enabled', '0')),
                 'maintenance_enabled' => wb_parse_bool(Database::setting('maintenance_enabled', '0')),
                 'maintenance_scope' => self::parseMaintenanceScope(Database::setting('maintenance_scope', MaintenanceMode::SCOPE_APP_ONLY)),
                 'maintenance_message' => self::parseText(
@@ -94,13 +135,15 @@ final class Settings
                     false,
                     self::defaultShareTermsMessage()
                 ),
-                'share_embeds_enabled' => wb_parse_bool(Database::setting('share_embeds_enabled', '0')),
             ],
             'uploads' => [
+                'encryption_mode' => FileEncryption::mode(Database::setting('uploads_encryption_mode', 'off')),
                 'max_file_size_mb' => self::parseUploadLimitMb(Database::setting('uploads_max_file_size_mb', '0')),
                 'allowed_extensions' => implode(', ', self::allowedExtensions($pdo)),
                 'stale_upload_ttl_hours' => self::parseInteger(Database::setting('uploads_stale_upload_ttl_hours', '24'), 'Upload retention window', 1, 720),
+                'dedup_enabled' => wb_parse_bool(Database::setting('dedup_enabled', '0')),
             ],
+            'video_compression' => self::videoCompressionGroup(),
             'automation' => [
                 'runner_enabled' => wb_parse_bool(Database::setting('automation_runner_enabled', '1')),
                 'diagnostic_interval_minutes' => self::parseInteger(Database::setting('automation_diagnostic_interval_minutes', '30'), 'Storage shield interval', 5, 1440),
@@ -111,6 +154,12 @@ final class Settings
                     'Folder size refresh interval',
                     60,
                     10080
+                ),
+                'share_deletion_interval_minutes' => self::parseInteger(
+                    Database::setting('automation_share_deletion_interval_minutes', '15'),
+                    'Share deletion interval',
+                    5,
+                    1440
                 ),
             ],
             'security' => [
@@ -128,6 +177,13 @@ final class Settings
             ],
             'display' => [
                 'grid_thumbnails_enabled' => wb_parse_bool(Database::setting('display_grid_thumbnails_enabled', '1')),
+                'show_uploader' => wb_parse_bool(Database::setting('display_show_uploader', '1')),
+            ],
+            'spaces' => [
+                'enabled' => wb_parse_bool(Database::setting('spaces_enabled', '0')),
+                'sharing_allowed' => wb_parse_bool(Database::setting('spaces_user_sharing_allowed', '1')),
+                'max_grant_level' => Database::setting('spaces_max_grant_level', 'write') === 'view' ? 'view' : 'write',
+                'auto_create' => wb_parse_bool(Database::setting('spaces_auto_create_on_user_create', '0')),
             ],
         ];
     }
@@ -140,6 +196,7 @@ final class Settings
             'settings' => self::grouped($pdo),
             'diagnostics' => self::diagnosticState(),
             'upload_policy' => self::uploadPolicy($pdo),
+            'media_validation' => MediaValidator::diagnostics($pdo),
             'automation' => [
                 'jobs' => AutomationRunner::jobs($pdo),
                 'runner_enabled' => wb_parse_bool(Database::setting('automation_runner_enabled', '1')),
@@ -150,6 +207,11 @@ final class Settings
     /**
      * @return array{enabled: bool, message: string, version: int}
      */
+    public static function shareEmbedsEnabled(?PDO $pdo = null): bool
+    {
+        return wb_parse_bool(Database::setting('share_embeds_enabled', '0'));
+    }
+
     public static function shareTermsPolicy(?PDO $pdo = null): array
     {
         $pdo ??= Database::connection();
@@ -167,19 +229,20 @@ final class Settings
         ];
     }
 
-    public static function shareEmbedsEnabled(?PDO $pdo = null): bool
-    {
-        $pdo ??= Database::connection();
-
-        return wb_parse_bool(Database::setting('share_embeds_enabled', '0'));
-    }
-
     public static function saveAdminSettings(array $payload, ?PDO $pdo = null): array
     {
+        $storageLock = new StorageLock();
         $pdo ??= Database::connection();
         $normalized = self::normalizePayload($payload, self::grouped($pdo));
+        self::assertVideoCompressionPolicyIsEnforceable($normalized['video_compression']);
         $currentShareTerms = self::shareTermsPolicy($pdo);
-        $statement = Database::prepareUpsert($pdo, 'settings', ['key', 'value', 'updated_at'], ['value', 'updated_at'], ['key']);
+        $statement = Database::prepareUpsert(
+            $pdo,
+            'settings',
+            ['key', 'value', 'updated_at'],
+            ['value', 'updated_at'],
+            ['key']
+        );
         $shareTermsVersion = $currentShareTerms['version'];
 
         if (
@@ -196,16 +259,27 @@ final class Settings
             'maintenance_message' => $normalized['access']['maintenance_message'],
             'share_terms_enabled' => $normalized['access']['share_terms_enabled'] ? '1' : '0',
             'share_terms_message' => $normalized['access']['share_terms_message'],
-            'share_embeds_enabled' => $normalized['access']['share_embeds_enabled'] ? '1' : '0',
             'share_terms_version' => (string) $shareTermsVersion,
             'uploads_max_file_size_mb' => (string) $normalized['uploads']['max_file_size_mb'],
+            'uploads_encryption_mode' => $normalized['uploads']['encryption_mode'],
             'uploads_allowed_extensions' => self::implodeExtensions($normalized['uploads']['allowed_extensions']),
             'uploads_stale_upload_ttl_hours' => (string) $normalized['uploads']['stale_upload_ttl_hours'],
+            'dedup_enabled' => $normalized['uploads']['dedup_enabled'] ? '1' : '0',
+            'video_compression_mode' => $normalized['video_compression']['mode'],
+            'video_max_height' => (string) $normalized['video_compression']['max_height'],
+            'video_max_fps' => (string) $normalized['video_compression']['max_fps'],
+            'video_max_video_bitrate_kbps' => (string) $normalized['video_compression']['max_video_bitrate_kbps'],
+            'video_max_audio_bitrate_kbps' => (string) $normalized['video_compression']['max_audio_bitrate_kbps'],
+            'video_min_source_mb' => (string) $normalized['video_compression']['min_source_mb'],
+            'video_min_savings_pct' => (string) $normalized['video_compression']['min_savings_pct'],
+            'video_ffmpeg_fallback' => $normalized['video_compression']['ffmpeg_fallback'] ? '1' : '0',
+            'media_ffprobe_path' => $normalized['video_compression']['media_ffprobe_path'],
             'automation_runner_enabled' => $normalized['automation']['runner_enabled'] ? '1' : '0',
             'automation_diagnostic_interval_minutes' => (string) $normalized['automation']['diagnostic_interval_minutes'],
             'automation_cleanup_interval_minutes' => (string) $normalized['automation']['cleanup_interval_minutes'],
             'automation_storage_alert_threshold_pct' => (string) $normalized['automation']['storage_alert_threshold_pct'],
             'automation_folder_size_interval_minutes' => (string) $normalized['automation']['folder_size_interval_minutes'],
+            'automation_share_deletion_interval_minutes' => (string) $normalized['automation']['share_deletion_interval_minutes'],
             'audit_enabled' => $normalized['security']['audit_enabled'] ? '1' : '0',
             'audit_retention_days' => (string) $normalized['security']['audit_retention_days'],
             'log_auth_success' => $normalized['security']['log_auth_success'] ? '1' : '0',
@@ -218,19 +292,54 @@ final class Settings
             'log_admin_actions' => $normalized['security']['log_admin_actions'] ? '1' : '0',
             'log_security_actions' => $normalized['security']['log_security_actions'] ? '1' : '0',
             'display_grid_thumbnails_enabled' => $normalized['display']['grid_thumbnails_enabled'] ? '1' : '0',
+            'display_show_uploader' => $normalized['display']['show_uploader'] ? '1' : '0',
+            'user_link_shares_allowed' => $normalized['access']['user_link_shares_allowed'] ? '1' : '0',
+            'user_link_share_level' => $normalized['access']['user_link_share_level'],
+            'share_embeds_enabled' => $normalized['access']['share_embeds_enabled'] ? '1' : '0',
+            'spaces_enabled' => $normalized['spaces']['enabled'] ? '1' : '0',
+            'spaces_user_sharing_allowed' => $normalized['spaces']['sharing_allowed'] ? '1' : '0',
+            'spaces_max_grant_level' => $normalized['spaces']['max_grant_level'],
+            'spaces_auto_create_on_user_create' => $normalized['spaces']['auto_create'] ? '1' : '0',
         ];
 
-        foreach ($updates as $key => $value) {
-            $statement->execute([
-                ':key' => $key,
-                ':value' => $value,
-                ':updated_at' => wb_now(),
-            ]);
+        $inTransaction = $pdo->inTransaction();
+
+        if (!$inTransaction) {
+            $pdo->beginTransaction();
+        }
+
+        try {
+            foreach ($updates as $key => $value) {
+                $statement->execute([
+                    ':key' => $key,
+                    ':value' => $value,
+                    ':updated_at' => wb_now(),
+                ]);
+            }
+
+            if (isset($payload['spaces']) && $normalized['spaces']['enabled']) {
+                SpaceService::provisionMissingUsers(Auth::currentUser($pdo) ?? [], $pdo);
+            }
+
+            if (!$inTransaction) {
+                $pdo->commit();
+            }
+        } catch (\Throwable $exception) {
+            if (!$inTransaction) {
+                $pdo->rollBack();
+            }
+
+            throw $exception;
         }
 
         AutomationRunner::syncJobs($pdo);
 
         return $normalized;
+    }
+
+    public static function dedupEnabled(?PDO $pdo = null): bool
+    {
+        return wb_parse_bool(Database::setting('dedup_enabled', '0'));
     }
 
     public static function uploadPolicy(?PDO $pdo = null): array
@@ -251,7 +360,101 @@ final class Settings
                 ? 'Any file type'
                 : implode(', ', array_map(static fn (string $extension): string => '.' . $extension, $allowedExtensions)),
             'stale_upload_ttl_hours' => $staleUploadTtlHours,
+            'encryption_mode' => FileEncryption::mode(Database::setting('uploads_encryption_mode', 'off')),
+            'video_compression' => self::videoCompressionPolicy($pdo),
         ];
+    }
+
+    /**
+     * The video optimization policy shared with clients and enforced by
+     * MediaValidator. Returned even when compression is disabled so clients can
+     * rely on a stable shape.
+     */
+    public static function videoCompressionPolicy(?PDO $pdo = null): array
+    {
+        $maxHeight = self::parseInteger(Database::setting('video_max_height', '1080'), 'Maximum video resolution', 240, 4320);
+        // The resolution policy is expressed as one "class" height (e.g. 1080p);
+        // the matching 16:9 width is derived so landscape, portrait and other
+        // aspect ratios are judged consistently (see MediaValidator).
+        $maxWidth = (int) (round($maxHeight * 16 / 9 / 2) * 2);
+
+        return [
+            'mode' => self::parseVideoCompressionMode(Database::setting('video_compression_mode', 'off')),
+            'max_height' => $maxHeight,
+            'max_width' => $maxWidth,
+            'max_fps' => self::parseInteger(Database::setting('video_max_fps', '60'), 'Maximum video frame rate', 24, 144),
+            'max_video_bitrate_kbps' => self::parseInteger(Database::setting('video_max_video_bitrate_kbps', '8000'), 'Maximum video bitrate', 500, 100000),
+            'max_audio_bitrate_kbps' => self::parseInteger(Database::setting('video_max_audio_bitrate_kbps', '192'), 'Maximum audio bitrate', 64, 512),
+            'min_source_mb' => self::parseInteger(Database::setting('video_min_source_mb', '20'), 'Video optimization minimum size', 0, 20480),
+            'min_savings_pct' => self::parseInteger(Database::setting('video_min_savings_pct', '5'), 'Minimum video savings', 0, 90),
+            'ffmpeg_fallback' => wb_parse_bool(Database::setting('video_ffmpeg_fallback', '1')),
+        ];
+    }
+
+    private static function videoCompressionGroup(): array
+    {
+        $policy = self::videoCompressionPolicy();
+
+        return [
+            'mode' => $policy['mode'],
+            'max_height' => $policy['max_height'],
+            'max_fps' => $policy['max_fps'],
+            'max_video_bitrate_kbps' => $policy['max_video_bitrate_kbps'],
+            'max_audio_bitrate_kbps' => $policy['max_audio_bitrate_kbps'],
+            'min_source_mb' => $policy['min_source_mb'],
+            'min_savings_pct' => $policy['min_savings_pct'],
+            'ffmpeg_fallback' => $policy['ffmpeg_fallback'],
+            // Stored verbatim: a path that later disappeared must not wedge
+            // every admin save - ffprobe resolution degrades to PATH and the
+            // admin diagnostics surface the stale path instead.
+            'media_ffprobe_path' => trim((string) Database::setting('media_ffprobe_path', '')),
+        ];
+    }
+
+    private static function parseVideoCompressionMode(mixed $value): string
+    {
+        $mode = strtolower(trim((string) $value));
+
+        if (!in_array($mode, ['off', 'optional', 'required'], true)) {
+            throw new InvalidArgumentException('Video optimization mode must be off, optional, or required.');
+        }
+
+        return $mode;
+    }
+
+    private static function parseFfprobePath(mixed $value): string
+    {
+        $path = str_replace(["\r\n", "\r", "\n"], '', trim((string) $value));
+
+        if ($path === '') {
+            return '';
+        }
+
+        if (!is_file($path)) {
+            throw new InvalidArgumentException('The ffprobe path does not point to an existing file.');
+        }
+
+        return $path;
+    }
+
+    /**
+     * "Required" mode is only honest when the server can actually verify video
+     * uploads, so refuse to save it while ffprobe is unavailable rather than
+     * silently accepting unverified videos. The check honors an ffprobe path
+     * submitted in the same payload, which is not stored yet at this point.
+     */
+    private static function assertVideoCompressionPolicyIsEnforceable(array $group): void
+    {
+        if ($group['mode'] !== 'required') {
+            return;
+        }
+
+        if (!MediaValidator::isAvailableWith($group['media_ffprobe_path'])) {
+            throw new InvalidArgumentException(
+                'Required video optimization needs ffprobe on the server so uploads can be verified. '
+                . 'Install ffprobe (or set its path above) before enabling required mode.'
+            );
+        }
     }
 
     public static function assertUploadAllowed(string $originalName, int $size, ?PDO $pdo = null): void
@@ -305,19 +508,25 @@ final class Settings
         $accessInput = self::normalizeGroupInput(
             $payload,
             'access',
-            ['public_access', 'maintenance_enabled', 'maintenance_scope', 'maintenance_message', 'share_terms_enabled', 'share_terms_message', 'share_embeds_enabled'],
+            ['public_access', 'user_link_share_level', 'user_link_shares_allowed', 'share_embeds_enabled', 'maintenance_enabled', 'maintenance_scope', 'maintenance_message', 'share_terms_enabled', 'share_terms_message'],
             $base['access']
         );
         $uploadInput = self::normalizeGroupInput(
             $payload,
             'uploads',
-            ['max_file_size_mb', 'allowed_extensions', 'stale_upload_ttl_hours'],
+            ['max_file_size_mb', 'allowed_extensions', 'stale_upload_ttl_hours', 'dedup_enabled', 'encryption_mode'],
             $base['uploads']
+        );
+        $videoInput = self::normalizeGroupInput(
+            $payload,
+            'video_compression',
+            ['mode', 'max_height', 'max_fps', 'max_video_bitrate_kbps', 'max_audio_bitrate_kbps', 'min_source_mb', 'min_savings_pct', 'ffmpeg_fallback', 'media_ffprobe_path'],
+            $base['video_compression']
         );
         $automationInput = self::normalizeGroupInput(
             $payload,
             'automation',
-            ['runner_enabled', 'diagnostic_interval_minutes', 'cleanup_interval_minutes', 'storage_alert_threshold_pct', 'folder_size_interval_minutes'],
+            ['runner_enabled', 'diagnostic_interval_minutes', 'cleanup_interval_minutes', 'storage_alert_threshold_pct', 'folder_size_interval_minutes', 'share_deletion_interval_minutes'],
             $base['automation']
         );
         $securityInput = self::normalizeGroupInput(
@@ -341,13 +550,27 @@ final class Settings
         $displayInput = self::normalizeGroupInput(
             $payload,
             'display',
-            ['grid_thumbnails_enabled'],
+            ['grid_thumbnails_enabled', 'show_uploader'],
             $base['display']
         );
+        $spacesInput = self::normalizeGroupInput(
+            $payload,
+            'spaces',
+            ['enabled', 'sharing_allowed', 'max_grant_level', 'auto_create'],
+            $base['spaces']
+        );
+
+        $encryptionMode = FileEncryption::mode($uploadInput['encryption_mode'] ?? $base['uploads']['encryption_mode'] ?? 'off');
+        if ($encryptionMode !== 'off' && ($videoInput['mode'] ?? $base['video_compression']['mode']) === 'required') {
+            throw new InvalidArgumentException('Local encryption cannot be enabled with required server video verification. Disable one of these policies.');
+        }
 
         return [
             'access' => [
                 'public_access' => wb_parse_bool($accessInput['public_access'] ?? $base['access']['public_access']),
+                'user_link_shares_allowed' => wb_parse_bool($accessInput['user_link_shares_allowed'] ?? $base['access']['user_link_shares_allowed']),
+                'user_link_share_level' => self::parseLinkShareLevel($accessInput['user_link_share_level'] ?? $base['access']['user_link_share_level']),
+                'share_embeds_enabled' => wb_parse_bool($accessInput['share_embeds_enabled'] ?? $base['access']['share_embeds_enabled']),
                 'maintenance_enabled' => wb_parse_bool($accessInput['maintenance_enabled'] ?? $base['access']['maintenance_enabled']),
                 'maintenance_scope' => self::parseMaintenanceScope($accessInput['maintenance_scope'] ?? $base['access']['maintenance_scope']),
                 'maintenance_message' => self::parseText(
@@ -365,7 +588,6 @@ final class Settings
                     false,
                     self::defaultShareTermsMessage()
                 ),
-                'share_embeds_enabled' => wb_parse_bool($accessInput['share_embeds_enabled'] ?? $base['access']['share_embeds_enabled']),
             ],
             'uploads' => [
                 'max_file_size_mb' => self::parseUploadLimitMb(
@@ -378,6 +600,53 @@ final class Settings
                     1,
                     720
                 ),
+                'dedup_enabled' => wb_parse_bool($uploadInput['dedup_enabled'] ?? $base['uploads']['dedup_enabled']),
+                'encryption_mode' => $encryptionMode,
+            ],
+            'video_compression' => [
+                'mode' => self::parseVideoCompressionMode($videoInput['mode'] ?? $base['video_compression']['mode']),
+                'max_height' => self::parseInteger(
+                    $videoInput['max_height'] ?? $base['video_compression']['max_height'],
+                    'Maximum video resolution',
+                    240,
+                    4320
+                ),
+                'max_fps' => self::parseInteger(
+                    $videoInput['max_fps'] ?? $base['video_compression']['max_fps'],
+                    'Maximum video frame rate',
+                    24,
+                    144
+                ),
+                'max_video_bitrate_kbps' => self::parseInteger(
+                    $videoInput['max_video_bitrate_kbps'] ?? $base['video_compression']['max_video_bitrate_kbps'],
+                    'Maximum video bitrate',
+                    500,
+                    100000
+                ),
+                'max_audio_bitrate_kbps' => self::parseInteger(
+                    $videoInput['max_audio_bitrate_kbps'] ?? $base['video_compression']['max_audio_bitrate_kbps'],
+                    'Maximum audio bitrate',
+                    64,
+                    512
+                ),
+                'min_source_mb' => self::parseInteger(
+                    $videoInput['min_source_mb'] ?? $base['video_compression']['min_source_mb'],
+                    'Video optimization minimum size',
+                    0,
+                    20480
+                ),
+                'min_savings_pct' => self::parseInteger(
+                    $videoInput['min_savings_pct'] ?? $base['video_compression']['min_savings_pct'],
+                    'Minimum video savings',
+                    0,
+                    90
+                ),
+                'ffmpeg_fallback' => wb_parse_bool($videoInput['ffmpeg_fallback'] ?? $base['video_compression']['ffmpeg_fallback']),
+                // Strictly validate only a freshly submitted path; a stored
+                // path that later disappeared must not wedge unrelated saves.
+                'media_ffprobe_path' => ($payload['video_compression']['media_ffprobe_path'] ?? $payload['media_ffprobe_path'] ?? null) === null
+                    ? $base['video_compression']['media_ffprobe_path']
+                    : self::parseFfprobePath($payload['video_compression']['media_ffprobe_path'] ?? $payload['media_ffprobe_path']),
             ],
             'automation' => [
                 'runner_enabled' => wb_parse_bool($automationInput['runner_enabled'] ?? $base['automation']['runner_enabled']),
@@ -405,6 +674,12 @@ final class Settings
                     60,
                     10080
                 ),
+                'share_deletion_interval_minutes' => self::parseInteger(
+                    $automationInput['share_deletion_interval_minutes'] ?? $base['automation']['share_deletion_interval_minutes'],
+                    'Share deletion interval',
+                    5,
+                    1440
+                ),
             ],
             'security' => [
                 'audit_enabled' => wb_parse_bool($securityInput['audit_enabled'] ?? $base['security']['audit_enabled']),
@@ -426,8 +701,34 @@ final class Settings
             ],
             'display' => [
                 'grid_thumbnails_enabled' => wb_parse_bool($displayInput['grid_thumbnails_enabled'] ?? $base['display']['grid_thumbnails_enabled']),
+                'show_uploader' => wb_parse_bool($displayInput['show_uploader'] ?? $base['display']['show_uploader']),
+            ],
+            'spaces' => [
+                'enabled' => wb_parse_bool($spacesInput['enabled'] ?? $base['spaces']['enabled']),
+                'sharing_allowed' => wb_parse_bool($spacesInput['sharing_allowed'] ?? $base['spaces']['sharing_allowed']),
+                'max_grant_level' => self::parseSpaceGrantLevel($spacesInput['max_grant_level'] ?? $base['spaces']['max_grant_level']),
+                'auto_create' => wb_parse_bool($spacesInput['auto_create'] ?? $base['spaces']['auto_create']),
             ],
         ];
+    }
+
+    private static function parseLinkShareLevel(mixed $value): string
+    {
+        if (!in_array($value, ['none', 'view', 'write'], true)) {
+            throw new InvalidArgumentException('Link permissions must be none, view or write.');
+        }
+        return $value;
+    }
+
+    private static function parseSpaceGrantLevel(mixed $value): string
+    {
+        $level = strtolower(trim((string) $value));
+
+        if (!in_array($level, ['view', 'write'], true)) {
+            throw new InvalidArgumentException('Space grant level must be view or write.');
+        }
+
+        return $level;
     }
 
     public static function defaultGrouped(): array
@@ -435,17 +736,32 @@ final class Settings
         return [
             'access' => [
                 'public_access' => false,
+                'user_link_shares_allowed' => true,
+                'user_link_share_level' => 'write',
+                'share_embeds_enabled' => false,
                 'maintenance_enabled' => false,
                 'maintenance_scope' => MaintenanceMode::SCOPE_APP_ONLY,
                 'maintenance_message' => MaintenanceMode::defaultMessage(),
                 'share_terms_enabled' => false,
                 'share_terms_message' => self::defaultShareTermsMessage(),
-                'share_embeds_enabled' => false,
             ],
             'uploads' => [
                 'max_file_size_mb' => 0,
                 'allowed_extensions' => '',
                 'stale_upload_ttl_hours' => 24,
+                'dedup_enabled' => false,
+                'encryption_mode' => 'off',
+            ],
+            'video_compression' => [
+                'mode' => 'off',
+                'max_height' => 1080,
+                'max_fps' => 60,
+                'max_video_bitrate_kbps' => 8000,
+                'max_audio_bitrate_kbps' => 192,
+                'min_source_mb' => 20,
+                'min_savings_pct' => 5,
+                'ffmpeg_fallback' => true,
+                'media_ffprobe_path' => '',
             ],
             'automation' => [
                 'runner_enabled' => true,
@@ -453,6 +769,7 @@ final class Settings
                 'cleanup_interval_minutes' => 60,
                 'storage_alert_threshold_pct' => 85,
                 'folder_size_interval_minutes' => 1440,
+                'share_deletion_interval_minutes' => 15,
             ],
             'security' => [
                 'audit_enabled' => false,
@@ -469,6 +786,13 @@ final class Settings
             ],
             'display' => [
                 'grid_thumbnails_enabled' => true,
+                'show_uploader' => true,
+            ],
+            'spaces' => [
+                'enabled' => false,
+                'sharing_allowed' => true,
+                'max_grant_level' => 'write',
+                'auto_create' => false,
             ],
         ];
     }
@@ -485,7 +809,6 @@ final class Settings
             'share_terms_enabled' => '0',
             'share_terms_message' => self::defaultShareTermsMessage(),
             'share_terms_version' => '1',
-            'share_embeds_enabled' => '0',
             'diagnostic_exposed' => '0',
             'diagnostic_checked_at' => '',
             'diagnostic_message' => 'Storage shield checks will start after setup.',
@@ -496,11 +819,23 @@ final class Settings
             'uploads_max_file_size_mb' => '0',
             'uploads_allowed_extensions' => '',
             'uploads_stale_upload_ttl_hours' => '24',
+            'dedup_enabled' => '0',
+            'uploads_encryption_mode' => 'off',
+            'video_compression_mode' => 'off',
+            'video_max_height' => '1080',
+            'video_max_fps' => '60',
+            'video_max_video_bitrate_kbps' => '8000',
+            'video_max_audio_bitrate_kbps' => '192',
+            'video_min_source_mb' => '20',
+            'video_min_savings_pct' => '5',
+            'video_ffmpeg_fallback' => '1',
+            'media_ffprobe_path' => '',
             'automation_runner_enabled' => '1',
             'automation_diagnostic_interval_minutes' => '30',
             'automation_cleanup_interval_minutes' => '60',
             'automation_storage_alert_threshold_pct' => '85',
             'automation_folder_size_interval_minutes' => '1440',
+            'automation_share_deletion_interval_minutes' => '15',
             'audit_enabled' => '0',
             'audit_retention_days' => '30',
             'log_auth_success' => '1',
@@ -513,8 +848,17 @@ final class Settings
             'log_admin_actions' => '1',
             'log_security_actions' => '1',
             'display_grid_thumbnails_enabled' => '1',
+            'display_show_uploader' => '1',
+            'user_link_shares_allowed' => '1',
+            'user_link_share_level' => 'write',
+            'share_embeds_enabled' => '0',
+            'spaces_enabled' => '0',
+            'spaces_user_sharing_allowed' => '1',
+            'spaces_max_grant_level' => 'write',
+            'spaces_auto_create_on_user_create' => '0',
             'audit_last_pruned_at' => '',
             'ip_bans_last_pruned_at' => '',
+            'file_blobs_backfill_v1' => '0',
             'automation_lock_token' => '',
             'automation_lock_until' => '',
         ];

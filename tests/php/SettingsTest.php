@@ -72,8 +72,9 @@ final class SettingsTest extends DatabaseTestCase
         $this->assertSame(14, $payload['settings']['security']['audit_retention_days']);
         $this->assertFalse($payload['settings']['security']['log_file_downloads']);
         $this->assertFalse($payload['settings']['display']['grid_thumbnails_enabled']);
-        $this->assertCount(4, $payload['automation']['jobs']);
+        $this->assertCount(6, $payload['automation']['jobs']);
         $this->assertSame(15, AutomationRunner::jobs()[0]['interval_minutes']);
+        $this->assertSame(15, $payload['settings']['automation']['share_deletion_interval_minutes']);
     }
 
     public function testUploadPolicyReportsWhenTheAppLevelLimitIsDisabled(): void

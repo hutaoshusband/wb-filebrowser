@@ -10,6 +10,31 @@ use RuntimeException;
 
 final class FileShares
 {
+    public static function userLinksAllowed(array $user, ?PDO $pdo = null): bool
+    {
+        $pdo ??= Database::connection();
+        $statement = $pdo->prepare('SELECT role, status, link_shares_allowed FROM users WHERE id = :id');
+        $statement->execute([':id' => $user['id']]);
+        $current = $statement->fetch();
+        if (!$current || $current['status'] !== 'active') return false;
+        if (in_array($current['role'], ['admin', 'super_admin'], true)) return true;
+        if (Database::setting('user_link_share_level', 'write') === 'none') return false;
+        return $current['link_shares_allowed'] === null
+            ? wb_parse_bool(Database::setting('user_link_shares_allowed', '1'))
+            : (int) $current['link_shares_allowed'] === 1;
+    }
+
+    public static function canManageFile(array $user, array $file, ?PDO $pdo = null): bool
+    {
+        $pdo ??= Database::connection();
+        if (!self::userLinksAllowed($user, $pdo) || !Permissions::canViewFolderContents((int) $file['folder_id'], $user, $pdo)) return false;
+        if (Permissions::canManageStructure($user)) return true;
+        if ((int) ($file['created_by'] ?? 0) === (int) $user['id']) return true;
+        $space = SpaceService::featureEnabled($pdo) ? SpaceService::findForUser((int) $user['id'], true, $pdo) : null;
+        return $space !== null && SpaceService::spaceRootIdForFolder((int) $file['folder_id'], $pdo) === (int) $space['folder_id'];
+    }
+    public const MSG_RATE_LIMIT_SHARE = 'Shared file unavailable right now.';
+
     private const TEXT_PREVIEW_LIMIT_BYTES = 262144;
     private const STREAM_GRANT_TTL_SECONDS = 600;
 
@@ -24,6 +49,7 @@ final class FileShares
         }
 
         self::assertCanManageShares($user, $file, $pdo);
+        FileManager::assertFileNotLockedFor($file, $user, $pdo);
         $share = self::activeShareRow($fileId, $pdo);
 
         return $share === null ? null : self::serializeShare($share, $file);
@@ -31,6 +57,7 @@ final class FileShares
 
     public static function create(array $user, int $fileId, array $options = [], ?PDO $pdo = null): array
     {
+        $storageLock = new StorageLock();
         $pdo ??= Database::connection();
         self::cleanupInactiveShares($pdo);
         $file = self::fileById($fileId, $pdo);
@@ -40,9 +67,14 @@ final class FileShares
         }
 
         self::assertCanManageShares($user, $file, $pdo);
+        FileManager::assertFileNotLockedFor($file, $user, $pdo);
         $options = self::normalizeOptions($options);
+        if ($options['delete_after'] !== null && !Permissions::canDeleteFolder((int) $file['folder_id'], $user, $pdo)) {
+            throw new RuntimeException('You do not have permission to schedule deletion of this file.');
+        }
         $existing = self::activeShareRow($fileId, $pdo);
         $now = wb_now();
+        $pdo->prepare('UPDATE file_shares SET delete_after = NULL WHERE file_id = :id AND active_file_id IS NULL')->execute([':id' => $fileId]);
         $passwordAuditEvent = null;
 
         if ($existing !== null) {
@@ -55,6 +87,7 @@ final class FileShares
             $update = $pdo->prepare(
                 'UPDATE file_shares
                  SET expires_at = :expires_at,
+                     delete_after = :delete_after,
                      max_views = :max_views,
                      password_hash = :password_hash,
                      password_version = :password_version,
@@ -64,6 +97,7 @@ final class FileShares
             );
             $update->execute([
                 ':expires_at' => $options['expires_at'],
+                ':delete_after' => $options['delete_after'],
                 ':max_views' => $options['max_views'],
                 ':password_hash' => $passwordHash,
                 ':password_version' => $passwordVersion,
@@ -87,6 +121,7 @@ final class FileShares
                 'summary' => 'Updated share link for ' . $file['original_name'],
                 'metadata' => [
                     'expires_at' => $serialized['expires_at'],
+                    'delete_after' => $serialized['delete_after'],
                     'max_views' => $serialized['max_views'],
                     'share_url' => $serialized['url'],
                     'requires_password' => $serialized['requires_password'],
@@ -104,9 +139,11 @@ final class FileShares
         $statement = $pdo->prepare(
             'INSERT INTO file_shares (
                 file_id,
+                active_file_id,
                 token,
                 created_by,
                 expires_at,
+                delete_after,
                 max_views,
                 view_count,
                 password_hash,
@@ -117,9 +154,11 @@ final class FileShares
                 revoked_at
              ) VALUES (
                 :file_id,
+                :active_file_id,
                 :token,
                 :created_by,
                 :expires_at,
+                :delete_after,
                 :max_views,
                 0,
                 :password_hash,
@@ -134,9 +173,11 @@ final class FileShares
         try {
             $statement->execute([
                 ':file_id' => $fileId,
+                ':active_file_id' => $fileId,
                 ':token' => wb_random_token(24),
                 ':created_by' => (int) $user['id'],
                 ':expires_at' => $options['expires_at'],
+                ':delete_after' => $options['delete_after'],
                 ':max_views' => $options['max_views'],
                 ':password_hash' => $passwordHash,
                 ':password_version' => $passwordVersion,
@@ -182,6 +223,7 @@ final class FileShares
 
     public static function revoke(array $user, int $fileId, ?PDO $pdo = null): void
     {
+        $storageLock = new StorageLock();
         $pdo ??= Database::connection();
         $file = self::fileById($fileId, $pdo);
 
@@ -190,9 +232,10 @@ final class FileShares
         }
 
         self::assertCanManageShares($user, $file, $pdo);
+        FileManager::assertFileNotLockedFor($file, $user, $pdo);
         $statement = $pdo->prepare(
             'UPDATE file_shares
-             SET revoked_at = :revoked_at, updated_at = :updated_at
+             SET revoked_at = :revoked_at, delete_after = NULL, active_file_id = NULL, updated_at = :updated_at
              WHERE file_id = :file_id AND revoked_at IS NULL'
         );
         $now = wb_now();
@@ -286,6 +329,7 @@ final class FileShares
 
     public static function viewPayload(string $token, ?PDO $pdo = null): array
     {
+        $storageLock = new StorageLock();
         $pdo ??= Database::connection();
         self::cleanupInactiveShares($pdo);
         $pdo->beginTransaction();
@@ -301,9 +345,10 @@ final class FileShares
             $textPreviewTruncated = false;
 
             if ($previewMode === 'text') {
+                $location = self::effectiveDiskLocation($share);
                 [$textPreview, $textPreviewTruncated] = self::readTextPreview(
-                    (string) $share['disk_name'],
-                    (string) $share['disk_extension']
+                    $location['disk_name'],
+                    $location['disk_extension']
                 );
             }
 
@@ -352,11 +397,13 @@ final class FileShares
             ], $pdo);
         }
 
+        $location = self::effectiveDiskLocation($share);
+
         Security::sendFile(
-            self::blobPath((string) $share['disk_name'], (string) $share['disk_extension']),
-            (string) $share['mime_type'],
-            (string) $share['original_name'],
-            $disposition
+            self::blobPath($location['disk_name'], $location['disk_extension']),
+            ($share['encryption_format'] ?? '') !== '' ? 'application/octet-stream' : (string) $share['mime_type'],
+            (string) $share['original_name'] . (($share['encryption_format'] ?? '') !== '' ? '.wbencrypted' : ''),
+            ($share['encryption_format'] ?? '') !== '' ? 'attachment' : $disposition
         );
     }
 
@@ -383,25 +430,44 @@ final class FileShares
             ], $pdo);
         }
 
+        $location = self::effectiveDiskLocation($share);
+
         Security::sendFile(
-            self::blobPath((string) $share['disk_name'], (string) $share['disk_extension']),
-            (string) $share['mime_type'],
-            (string) $share['original_name'],
-            $disposition
+            self::blobPath($location['disk_name'], $location['disk_extension']),
+            ($share['encryption_format'] ?? '') !== '' ? 'application/octet-stream' : (string) $share['mime_type'],
+            (string) $share['original_name'] . (($share['encryption_format'] ?? '') !== '' ? '.wbencrypted' : ''),
+            ($share['encryption_format'] ?? '') !== '' ? 'attachment' : $disposition
         );
+    }
+
+    /**
+     * Deduplicated rows resolve their bytes through the blob record; classic
+     * rows own their blob. Falls back to the row's own disk name when the
+     * blob record is missing.
+     *
+     * @return array{disk_name: string, disk_extension: string}
+     */
+    private static function effectiveDiskLocation(array $share): array
+    {
+        $blobDiskName = $share['blob_disk_name'] ?? null;
+
+        if ($blobDiskName !== null && $blobDiskName !== '') {
+            return [
+                'disk_name' => (string) $blobDiskName,
+                'disk_extension' => (string) ($share['blob_disk_extension'] ?? 'blob'),
+            ];
+        }
+
+        return [
+            'disk_name' => (string) $share['disk_name'],
+            'disk_extension' => (string) $share['disk_extension'],
+        ];
     }
 
     private static function assertCanManageShares(array $user, array $file, PDO $pdo): void
     {
-        $canViewFolder = Permissions::canViewFolderContents((int) $file['folder_id'], $user, $pdo);
-
-        if (!Permissions::canManageStructure($user)
-            && !(Settings::shareEmbedsEnabled($pdo) && $canViewFolder)) {
-            throw new RuntimeException('Only administrators can manage share links.');
-        }
-
-        if (!$canViewFolder) {
-            throw new RuntimeException('You do not have access to this file.');
+        if (!self::canManageFile($user, $file, $pdo)) {
+            throw new RuntimeException('You do not have permission to manage share links for this file.');
         }
     }
 
@@ -410,7 +476,7 @@ final class FileShares
         $now = wb_now();
         $statement = $pdo->prepare(
             'UPDATE file_shares
-             SET revoked_at = :now, updated_at = :now
+             SET revoked_at = :now, active_file_id = NULL, updated_at = :now
              WHERE revoked_at IS NULL
                AND (
                     (expires_at IS NOT NULL AND expires_at <= :now)
@@ -419,6 +485,96 @@ final class FileShares
                )'
         );
         $statement->execute([':now' => $now]);
+
+        $dueStatement = $pdo->prepare(
+            'SELECT 1 FROM file_shares WHERE delete_after IS NOT NULL AND delete_after <= :now LIMIT 1'
+        );
+        $dueStatement->execute([':now' => $now]);
+
+        if ($dueStatement->fetchColumn() !== false) {
+            self::processDueDeletions($pdo);
+        }
+    }
+
+    /**
+     * Deletes every file whose share scheduled it for deletion ("Deletion
+     * after") once that moment has passed. Idempotent: the share rows
+     * cascade away with the file, so the next run finds nothing due. The
+     * blob unlinks happen after the surrounding transaction commits.
+     *
+     * @return array{deleted: int}
+     */
+    public static function processDueDeletions(?PDO $pdo = null): array
+    {
+        $storageLock = new StorageLock();
+        $pdo ??= Database::connection();
+        $statement = $pdo->prepare(
+            'SELECT DISTINCT file_id FROM file_shares WHERE delete_after IS NOT NULL AND delete_after <= :now ORDER BY file_id LIMIT 500'
+        );
+        $statement->execute([':now' => wb_now()]);
+        $fileIds = array_map('intval', $statement->fetchAll(PDO::FETCH_COLUMN) ?: []);
+
+        if ($fileIds === []) {
+            return ['deleted' => 0];
+        }
+
+        if ($pdo->inTransaction()) {
+            throw new RuntimeException('Scheduled deletion requires its own transaction.');
+        }
+        $ownsTransaction = true;
+
+        if ($ownsTransaction) {
+            $pdo->beginTransaction();
+        }
+
+        $paths = [];
+        $labels = [];
+        $fetch = $pdo->prepare('SELECT * FROM files WHERE id = :id LIMIT 1');
+
+        try {
+            foreach ($fileIds as $fileId) {
+                $fetch->execute([':id' => $fileId]);
+                $file = $fetch->fetch();
+
+                if ($file === false) {
+                    continue;
+                }
+
+                $labels[] = (string) $file['original_name'];
+                foreach (FileManager::detachFileReference($pdo, $file) as $reference) {
+                    $paths[] = $reference;
+                }
+            }
+
+            if ($ownsTransaction) {
+                $pdo->commit();
+            }
+        } catch (\Throwable $exception) {
+            if ($ownsTransaction && $pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+
+            throw $exception;
+        }
+
+        foreach ($paths as $entry) {
+            $path = FileManager::blobPathFor((string) $entry['disk_name'], (string) $entry['disk_extension']);
+
+            if (is_file($path)) {
+                @unlink($path);
+            }
+        }
+
+        if ($labels !== []) {
+            AuditLog::record('share.file_deletion.processed', 'deletions', [
+                'target_type' => 'file',
+                'target_id' => 0,
+                'target_label' => count($labels) . ' file(s)',
+                'summary' => 'Deleted ' . count($labels) . ' share-scheduled file(s).',
+            ], $pdo);
+        }
+
+        return ['deleted' => count($labels)];
     }
 
     private static function resolveActiveShare(string $token, PDO $pdo): array
@@ -431,52 +587,7 @@ final class FileShares
                 file_shares.file_id,
                 file_shares.token,
                 file_shares.expires_at,
-                file_shares.max_views,
-                file_shares.view_count,
-                file_shares.password_hash,
-                file_shares.password_version,
-                file_shares.revoked_at,
-                file_shares.created_at AS share_created_at,
-                file_shares.updated_at AS share_updated_at,
-                files.folder_id,
-                files.original_name,
-                files.disk_name,
-                files.disk_extension,
-                files.mime_type,
-                files.size,
-                files.checksum,
-                files.updated_at
-             FROM file_shares
-             INNER JOIN files ON files.id = file_shares.file_id
-             WHERE file_shares.token = :token
-               AND file_shares.revoked_at IS NULL
-               AND (file_shares.expires_at IS NULL OR file_shares.expires_at > :now)
-               AND (file_shares.max_views IS NULL OR file_shares.view_count < file_shares.max_views)
-             LIMIT 1'
-        );
-        $statement->execute([
-            ':token' => $token,
-            ':now' => $now,
-        ]);
-        $share = $statement->fetch();
-
-        if (!is_array($share)) {
-            throw new RuntimeException('Shared file not found.');
-        }
-
-        return $share;
-    }
-
-    private static function resolveEmbeddableShare(string $token, PDO $pdo): array
-    {
-        self::assertToken($token);
-        $now = wb_now();
-        $statement = $pdo->prepare(
-            'SELECT
-                file_shares.id,
-                file_shares.file_id,
-                file_shares.token,
-                file_shares.expires_at,
+                file_shares.delete_after,
                 file_shares.max_views,
                 file_shares.view_count,
                 file_shares.password_hash,
@@ -485,20 +596,27 @@ final class FileShares
                 file_shares.revoked_at,
                 file_shares.created_at AS share_created_at,
                 file_shares.updated_at AS share_updated_at,
-                share_creators.role AS creator_role,
+                file_shares.created_by AS share_creator_id,
+                files.created_by,
                 files.folder_id,
                 files.original_name,
+                files.uploader_username,
                 files.disk_name,
                 files.disk_extension,
                 files.mime_type,
+                files.encryption_format,
                 files.size,
                 files.checksum,
+                files.blob_id,
+                blobs.disk_name AS blob_disk_name,
+                blobs.disk_extension AS blob_disk_extension,
                 files.updated_at
              FROM file_shares
              INNER JOIN files ON files.id = file_shares.file_id
-             LEFT JOIN users AS share_creators ON share_creators.id = file_shares.created_by
+             LEFT JOIN file_blobs blobs ON blobs.id = files.blob_id
              WHERE file_shares.token = :token
                AND file_shares.revoked_at IS NULL
+               AND (file_shares.delete_after IS NULL OR file_shares.delete_after > :delete_now)
                AND (file_shares.expires_at IS NULL OR file_shares.expires_at > :now)
                AND (file_shares.max_views IS NULL OR file_shares.view_count < file_shares.max_views)
              LIMIT 1'
@@ -506,6 +624,7 @@ final class FileShares
         $statement->execute([
             ':token' => $token,
             ':now' => $now,
+            ':delete_now' => $now,
         ]);
         $share = $statement->fetch();
 
@@ -513,67 +632,22 @@ final class FileShares
             throw new RuntimeException('Shared file not found.');
         }
 
-        if ((int) $share['allow_embed'] !== 1) {
-            throw new RuntimeException('Shared file not found.');
+        $root = SpaceService::spaceRootIdForFolder((int) $share['folder_id'], $pdo);
+        if ($root !== null) {
+            $space = SpaceService::findByFolderId($root, $pdo);
+            $policy = SpaceService::policy($pdo);
+            if ($space === null || $space['status'] !== 'active' || !$policy['enabled']) {
+                throw new RuntimeException('Shared file not found.');
+            }
         }
 
-        if (trim((string) $share['password_hash']) !== '') {
+        $creator = $pdo->prepare('SELECT id, role, status FROM users WHERE id = :id');
+        $creator->execute([':id' => $share['share_creator_id']]);
+        $user = $creator->fetch();
+        if (!$user || !self::canManageFile($user, $share, $pdo)) {
             throw new RuntimeException('Shared file not found.');
         }
-
-        if (Settings::shareTermsPolicy($pdo)['enabled']) {
-            throw new RuntimeException('Shared file not found.');
-        }
-
-        if (!in_array($share['creator_role'], ['admin', 'super_admin'], true) && !Settings::shareEmbedsEnabled($pdo)) {
-            throw new RuntimeException('Shared file not found.');
-        }
-
-        if (wb_embed_media_mime_type(strtolower(pathinfo((string) $share['original_name'], PATHINFO_EXTENSION))) === null) {
-            throw new RuntimeException('Shared file not found.');
-        }
-
         return $share;
-    }
-
-    public static function embedPagePayload(string $token): array
-    {
-        $pdo = Database::connection();
-        self::cleanupInactiveShares($pdo);
-        $share = self::resolveEmbeddableShare($token, $pdo);
-        $extension = strtolower(pathinfo((string) $share['original_name'], PATHINFO_EXTENSION));
-        $preview = wb_file_preview_metadata((string) $share['mime_type'], $extension);
-        $urls = self::embedUrls((string) $share['token']);
-
-        AuditLog::record('share.embed.view', 'file_views', [
-            'target_type' => 'file',
-            'target_id' => (int) $share['file_id'],
-            'target_label' => (string) $share['original_name'],
-            'summary' => 'Viewed embedded file ' . $share['original_name'],
-        ], $pdo);
-
-        return [
-            'name' => (string) $share['original_name'],
-            'size_label' => wb_format_bytes((int) $share['size']),
-            'mime_type' => (string) wb_embed_media_mime_type($extension),
-            'extension' => $extension,
-            'stream_url' => $urls['stream'],
-            'preview_mode' => (string) $preview['preview_mode'],
-        ];
-    }
-
-    public static function streamEmbed(string $token): never
-    {
-        $pdo = Database::connection();
-        self::cleanupInactiveShares($pdo);
-        $share = self::resolveEmbeddableShare($token, $pdo);
-        $mimeType = (string) wb_embed_media_mime_type(strtolower(pathinfo((string) $share['original_name'], PATHINFO_EXTENSION)));
-
-        Security::sendMediaFile(
-            self::blobPath((string) $share['disk_name'], (string) $share['disk_extension']),
-            $mimeType,
-            (string) $share['original_name']
-        );
     }
 
     private static function incrementViewCount(array $share, PDO $pdo): array
@@ -582,16 +656,19 @@ final class FileShares
         $maxViews = $share['max_views'] === null ? null : (int) $share['max_views'];
         $now = wb_now();
         $revokedAt = $maxViews !== null && $newViewCount >= $maxViews ? $now : null;
+        $activeFileId = $revokedAt === null ? (int) $share['file_id'] : null;
         $statement = $pdo->prepare(
             'UPDATE file_shares
              SET view_count = :view_count,
                  updated_at = :updated_at,
+                 active_file_id = :active_file_id,
                  revoked_at = :revoked_at
              WHERE id = :id'
         );
         $statement->execute([
             ':view_count' => $newViewCount,
             ':updated_at' => $now,
+            ':active_file_id' => $activeFileId,
             ':revoked_at' => $revokedAt,
             ':id' => $share['id'],
         ]);
@@ -608,7 +685,7 @@ final class FileShares
         $statement = $pdo->prepare(
             'SELECT *
              FROM file_shares
-             WHERE file_id = :file_id AND revoked_at IS NULL
+             WHERE active_file_id = :file_id AND revoked_at IS NULL
              ORDER BY id DESC
              LIMIT 1'
         );
@@ -641,6 +718,7 @@ final class FileShares
             'created_at' => (string) $share['created_at'],
             'updated_at' => (string) $share['updated_at'],
             'expires_at' => $share['expires_at'] === null ? null : (string) $share['expires_at'],
+            'delete_after' => ($share['delete_after'] ?? null) === null ? null : (string) $share['delete_after'],
             'max_views' => $maxViews,
             'view_count' => $viewCount,
             'remaining_views' => $maxViews === null ? null : max(0, $maxViews - $viewCount),
@@ -690,14 +768,15 @@ final class FileShares
         $creatorId = $createdBy === null || trim((string) $createdBy) === '' ? null : (int) $createdBy;
 
         if ($creatorId === null) {
-            return Settings::shareEmbedsEnabled();
+            return false;
         }
 
-        $statement = Database::connection()->prepare('SELECT role FROM users WHERE id = :id LIMIT 1');
-        $statement->execute([':id' => $creatorId]);
-        $role = $statement->fetchColumn();
+        $role = Database::connection()->prepare('SELECT role FROM users WHERE id = :id LIMIT 1');
+        $role->execute([':id' => $creatorId]);
+        $creatorRole = $role->fetchColumn();
 
-        return in_array($role, ['admin', 'super_admin'], true) || Settings::shareEmbedsEnabled();
+        return in_array($creatorRole, ['admin', 'super_admin'], true)
+            || (Settings::shareEmbedsEnabled() && self::userLinksAllowed(['id' => $creatorId]));
     }
 
     private static function embedShareFields(array $share, array $file): array
@@ -731,6 +810,73 @@ final class FileShares
         ];
     }
 
+    public static function embedPagePayload(string $token): array
+    {
+        $pdo = Database::connection();
+        self::cleanupInactiveShares($pdo);
+        $share = self::resolveEmbeddableShare($token, $pdo);
+        $extension = strtolower(pathinfo((string) $share['original_name'], PATHINFO_EXTENSION));
+        $preview = wb_file_preview_metadata((string) $share['mime_type'], $extension);
+        $urls = self::embedUrls((string) $share['token']);
+
+        AuditLog::record('share.embed.view', 'file_views', [
+            'target_type' => 'file',
+            'target_id' => (int) $share['file_id'],
+            'target_label' => (string) $share['original_name'],
+            'summary' => 'Viewed embedded file ' . $share['original_name'],
+        ], $pdo);
+
+        return [
+            'name' => (string) $share['original_name'],
+            'size_label' => wb_format_bytes((int) $share['size']),
+            'mime_type' => (string) wb_embed_media_mime_type($extension),
+            'extension' => $extension,
+            'stream_url' => $urls['stream'],
+            'preview_mode' => (string) $preview['preview_mode'],
+        ];
+    }
+
+    public static function streamEmbed(string $token): never
+    {
+        $pdo = Database::connection();
+        self::cleanupInactiveShares($pdo);
+        $share = self::resolveEmbeddableShare($token, $pdo);
+        $mimeType = (string) wb_embed_media_mime_type(strtolower(pathinfo((string) $share['original_name'], PATHINFO_EXTENSION)));
+
+        Security::sendMediaFile(
+            self::blobPath((string) $share['disk_name'], (string) $share['disk_extension']),
+            $mimeType,
+            (string) $share['original_name']
+        );
+    }
+
+    private static function resolveEmbeddableShare(string $token, PDO $pdo): array
+    {
+        $share = self::resolveActiveShare($token, $pdo);
+
+        if ((int) ($share['allow_embed'] ?? 0) !== 1) {
+            throw new RuntimeException('Shared file not found.');
+        }
+
+        if (trim((string) ($share['password_hash'] ?? '')) !== '') {
+            throw new RuntimeException('Shared file not found.');
+        }
+
+        if (Settings::shareTermsPolicy($pdo)['enabled']) {
+            throw new RuntimeException('Shared file not found.');
+        }
+
+        if (!self::shareCreatorMayEmbed($share['share_creator_id'] ?? null)) {
+            throw new RuntimeException('Shared file not found.');
+        }
+
+        if (wb_embed_media_mime_type(strtolower(pathinfo((string) $share['original_name'], PATHINFO_EXTENSION))) === null) {
+            throw new RuntimeException('Shared file not found.');
+        }
+
+        return $share;
+    }
+
     private static function serializeResolvedShare(array $share): array
     {
         $urls = self::shareUrls((string) $share['token']);
@@ -745,6 +891,7 @@ final class FileShares
             'created_at' => (string) $share['share_created_at'],
             'updated_at' => (string) $share['share_updated_at'],
             'expires_at' => $share['expires_at'] === null ? null : (string) $share['expires_at'],
+            'delete_after' => ($share['delete_after'] ?? null) === null ? null : (string) $share['delete_after'],
             'max_views' => $maxViews,
             'view_count' => $viewCount,
             'remaining_views' => $maxViews === null ? null : max(0, $maxViews - $viewCount),
@@ -756,12 +903,16 @@ final class FileShares
     {
         $extension = strtolower(pathinfo((string) $share['original_name'], PATHINFO_EXTENSION));
         $urls = self::shareStreamUrls((string) $share['token']);
-        $preview = wb_file_preview_metadata((string) $share['mime_type'], $extension);
+        $preview = FileEncryption::preview($share);
+        $directUrl = ($preview['preview_mode'] ?? 'download') === 'download'
+            ? $urls['attachment']
+            : $urls['inline'];
 
         return array_merge([
             'id' => (int) $share['file_id'],
             'type' => 'file',
             'name' => (string) $share['original_name'],
+            'uploader_username' => wb_parse_bool(Database::setting('display_show_uploader', '1')) ? ((string) ($share['uploader_username'] ?? '') ?: 'Unknown') : null,
             'folder_id' => (int) $share['folder_id'],
             'size' => (int) $share['size'],
             'size_label' => wb_format_bytes((int) $share['size']),
@@ -772,6 +923,7 @@ final class FileShares
             'extension' => $extension,
             'preview_url' => $urls['inline'],
             'download_url' => $urls['attachment'],
+            'direct_url' => $directUrl,
         ], $preview);
     }
 
@@ -788,9 +940,12 @@ final class FileShares
 
     private static function shareStreamUrls(string $token): array
     {
+        $inlinePath = '/api/index.php?action=share.stream&grant=' . rawurlencode(self::streamGrant($token, 'inline'));
+        $attachmentPath = '/api/index.php?action=share.stream&grant=' . rawurlencode(self::streamGrant($token, 'attachment'));
+
         return [
-            'inline' => wb_url('/api/index.php?action=share.stream&grant=' . rawurlencode(self::streamGrant($token, 'inline'))),
-            'attachment' => wb_url('/api/index.php?action=share.stream&grant=' . rawurlencode(self::streamGrant($token, 'attachment'))),
+            'inline' => wb_absolute_url($inlinePath) ?? wb_url($inlinePath),
+            'attachment' => wb_absolute_url($attachmentPath) ?? wb_url($attachmentPath),
         ];
     }
 
@@ -852,14 +1007,16 @@ final class FileShares
         ]);
     }
 
-    private static function normalizeOptions(array $options): array
+    public static function normalizeOptions(array $options): array
     {
         $expiresAt = trim((string) ($options['expires_at'] ?? ''));
+        $deleteAfterInput = $options['delete_after'] ?? null;
         $maxViewsInput = $options['max_views'] ?? null;
         $passwordInput = (string) ($options['password'] ?? '');
         $clearPassword = wb_parse_bool($options['clear_password'] ?? false);
         $allowEmbed = wb_parse_bool($options['allow_embed'] ?? false);
         $normalizedExpiresAt = null;
+        $normalizedDeleteAfter = null;
         $normalizedMaxViews = null;
         $updatePassword = trim($passwordInput) !== '';
 
@@ -881,6 +1038,20 @@ final class FileShares
             $normalizedExpiresAt = gmdate('c', $timestamp);
         }
 
+        if ($deleteAfterInput !== null && trim((string) $deleteAfterInput) !== '') {
+            $timestamp = strtotime((string) $deleteAfterInput);
+
+            if ($timestamp === false || $timestamp <= time()) {
+                throw new RuntimeException('Share deletion must be scheduled for the future.');
+            }
+
+            $normalizedDeleteAfter = gmdate('c', $timestamp);
+        }
+
+        if ($normalizedDeleteAfter !== null && $normalizedExpiresAt !== null && $normalizedDeleteAfter <= $normalizedExpiresAt) {
+            throw new RuntimeException('Share deletion must happen after the share expires.');
+        }
+
         if ($maxViewsInput !== null && $maxViewsInput !== '') {
             $maxViews = filter_var($maxViewsInput, FILTER_VALIDATE_INT);
 
@@ -897,6 +1068,7 @@ final class FileShares
 
         return [
             'expires_at' => $normalizedExpiresAt,
+            'delete_after' => $normalizedDeleteAfter,
             'max_views' => $normalizedMaxViews,
             'password_hash' => $updatePassword ? Security::hashPassword($passwordInput) : null,
             'update_password' => $updatePassword,

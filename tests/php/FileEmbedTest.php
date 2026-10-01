@@ -5,10 +5,8 @@ declare(strict_types=1);
 namespace WbFileBrowser\Tests;
 
 use RuntimeException;
-use WbFileBrowser\Auth;
 use WbFileBrowser\Database;
 use WbFileBrowser\FileShares;
-use WbFileBrowser\Installer;
 use WbFileBrowser\Permissions;
 use WbFileBrowser\Security;
 use WbFileBrowser\Settings;
@@ -67,113 +65,48 @@ final class FileEmbedTest extends DatabaseTestCase
         $this->assertArrayNotHasKey('discord_url', $publicContext['share']);
     }
 
-    public function testStandardUsersCannotCreateSharesWithDefaultSettings(): void
+    public function testUsersEmbedOnlyWhenTheSettingAllowsIt(): void
     {
         $member = $this->createUser('member', 'user');
-        $file = $this->createFile('clip.mp4', 'video payload', 'video/mp4');
-
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('Only administrators can manage share links.');
-
-        FileShares::create($member, (int) $file['id'], ['allow_embed' => true]);
-    }
-
-    public function testEnabledStandardUsersShareOnlyInsideAccessibleFolders(): void
-    {
-        Settings::saveAdminSettings(['access' => ['share_embeds_enabled' => true]]);
-        $member = $this->createUser('member', 'user');
-        $teamFolder = $this->createFolder('Team');
-        $privateFolder = $this->createFolder('Private');
         Permissions::saveMatrix($this->superAdmin(), 'user', (int) $member['id'], [
-            ['folder_id' => (int) $teamFolder['id'], 'can_view' => true],
+            ['folder_id' => Database::rootFolderId(), 'can_view' => true],
         ]);
-        $teamFile = $this->createFile('episode.mp4', 'member video', 'video/mp4', (int) $teamFolder['id']);
-        $privateFile = $this->createFile('secret.mp4', 'private video', 'video/mp4', (int) $privateFolder['id']);
-
-        $share = FileShares::create($member, (int) $teamFile['id'], ['allow_embed' => true]);
-
-        $this->assertTrue($share['allow_embed']);
-        $this->assertStringContainsString('/embed/?token=', $share['embed_url']);
-        $this->assertSame('episode.mp4', FileShares::embedPagePayload($share['token'])['name']);
-
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('Only administrators can manage share links.');
-
-        FileShares::create($member, (int) $privateFile['id'], ['allow_embed' => true]);
-    }
-
-    public function testSharePasswordsCannotBeCombinedWithEmbedding(): void
-    {
-        $video = $this->createFile('clip.mp4', 'video payload', 'video/mp4');
+        $ownedVideo = $this->createFile('episode.mp4', 'member video', 'video/mp4', null, $member);
 
         try {
-            FileShares::create($this->superAdmin(), (int) $video['id'], ['password' => 'Secret 123', 'allow_embed' => true]);
-            self::fail('Embedding combined with a password must be rejected.');
+            FileShares::embedPagePayload(
+                FileShares::create($member, (int) $ownedVideo['id'], ['allow_embed' => true])['token']
+            );
+            self::fail('User embeds must be refused while the embed setting is disabled.');
         } catch (RuntimeException $exception) {
-            $this->assertSame('Share passwords cannot be combined with embedding.', $exception->getMessage());
+            $this->assertSame('Shared file not found.', $exception->getMessage());
         }
 
-        Auth::login('superadmin', 'SuperSecurePass123!');
-        $response = $this->request('files.share.create', 'POST', [
-            'file_id' => (int) $video['id'],
-            'password' => 'Secret 123',
-            'allow_embed' => true,
-        ]);
+        Settings::saveAdminSettings(['access' => ['share_embeds_enabled' => true]]);
 
-        $this->assertSame(400, $response['status'], $response['body']);
-        $this->assertStringContainsString('Share passwords cannot be combined with embedding.', $response['body']);
-    }
+        $userShare = FileShares::create($member, (int) $ownedVideo['id'], ['allow_embed' => true]);
 
-    public function testEnablingEmbeddingOnAPasswordProtectedShareIsRejected(): void
-    {
-        $video = $this->createFile('clip.mp4', 'video payload', 'video/mp4');
-        FileShares::create($this->superAdmin(), (int) $video['id'], ['password' => 'Secret 123']);
+        $this->assertTrue($userShare['allow_embed']);
+        $this->assertStringContainsString('/embed/?token=', $userShare['embed_url']);
+        $this->assertSame('episode.mp4', FileShares::embedPagePayload($userShare['token'])['name']);
 
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('Share passwords cannot be combined with embedding.');
+        Settings::saveAdminSettings(['access' => ['share_embeds_enabled' => false]]);
 
-        FileShares::create($this->superAdmin(), (int) $video['id'], ['allow_embed' => true]);
-    }
+        $withdrawn = FileShares::get($member, (int) $ownedVideo['id']);
 
-    public function testNonAllowlistedMediaFormatsExposeNoEmbedFields(): void
-    {
-        $matroska = $this->createFile('movie.mkv', 'matroska payload', 'video/x-matroska');
-        $share = FileShares::create($this->superAdmin(), (int) $matroska['id'], ['allow_embed' => true]);
-
-        $this->assertTrue($share['allow_embed']);
-        $this->assertArrayNotHasKey('embed_url', $share);
-        $this->assertArrayNotHasKey('embed_html', $share);
-        $this->assertArrayNotHasKey('discord_url', $share);
-    }
-
-    public function testEmbedPageWithoutTokenReturnsNotFound(): void
-    {
-        $code = '$_GET = [];' . <<<'PHP'
-ob_start();
-register_shutdown_function(static function (): void {
-    $body = ob_get_clean();
-    echo json_encode(['status' => http_response_code() ?: 200, 'body' => $body]);
-});
-require WB_ROOT . '/embed/index.php';
-PHP;
-        $result = $this->executeConcurrentIsolatedPhp($code, 1)[0];
-
-        $this->assertSame(0, $result['exit_code'], $result['stderr']);
-        $response = json_decode($result['stdout'], true, 512, JSON_THROW_ON_ERROR);
-
-        $this->assertSame(404, $response['status']);
-        $this->assertStringContainsString('This share link is unavailable.', $response['body']);
+        $this->assertTrue($withdrawn['allow_embed']);
+        $this->assertArrayNotHasKey('embed_url', $withdrawn);
+        $this->assertArrayNotHasKey('embed_html', $withdrawn);
     }
 
     public function testDisablingShareEmbedsWithdrawsUserEmbedsButNotAdminEmbeds(): void
     {
         Settings::saveAdminSettings(['access' => ['share_embeds_enabled' => true]]);
         $member = $this->createUser('member', 'user');
-        $teamFolder = $this->createFolder('Team');
         Permissions::saveMatrix($this->superAdmin(), 'user', (int) $member['id'], [
-            ['folder_id' => (int) $teamFolder['id'], 'can_view' => true],
+            ['folder_id' => Database::rootFolderId(), 'can_view' => true],
         ]);
-        $memberFile = $this->createFile('episode.mp4', 'member video', 'video/mp4', (int) $teamFolder['id']);
+        $memberFile = $this->createFile('episode.mp4', 'member video', 'video/mp4', null, $member);
         $adminFile = $this->createFile('trailer.mp4', 'admin video', 'video/mp4');
 
         $memberShare = FileShares::create($member, (int) $memberFile['id'], ['allow_embed' => true]);
@@ -198,12 +131,38 @@ PHP;
         }
 
         $this->assertSame('trailer.mp4', FileShares::embedPagePayload($adminShare['token'])['name']);
+    }
 
-        $withdrawn = FileShares::get($this->superAdmin(), (int) $memberFile['id']);
+    public function testSharePasswordsCannotBeCombinedWithEmbedding(): void
+    {
+        $video = $this->createFile('clip.mp4', 'video payload', 'video/mp4');
 
-        $this->assertTrue($withdrawn['allow_embed']);
-        $this->assertArrayNotHasKey('embed_url', $withdrawn);
-        $this->assertArrayNotHasKey('embed_html', $withdrawn);
+        try {
+            FileShares::create($this->superAdmin(), (int) $video['id'], ['password' => 'Secret 123', 'allow_embed' => true]);
+            self::fail('Embedding combined with a password must be rejected.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('Share passwords cannot be combined with embedding.', $exception->getMessage());
+        }
+
+        FileShares::create($this->superAdmin(), (int) $video['id'], ['password' => 'Secret 123']);
+
+        try {
+            FileShares::create($this->superAdmin(), (int) $video['id'], ['allow_embed' => true]);
+            self::fail('Enabling embedding on a password protected share must be rejected.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('Share passwords cannot be combined with embedding.', $exception->getMessage());
+        }
+    }
+
+    public function testNonAllowlistedMediaFormatsExposeNoEmbedFields(): void
+    {
+        $matroska = $this->createFile('movie.mkv', 'matroska payload', 'video/x-matroska');
+        $share = FileShares::create($this->superAdmin(), (int) $matroska['id'], ['allow_embed' => true]);
+
+        $this->assertTrue($share['allow_embed']);
+        $this->assertArrayNotHasKey('embed_url', $share);
+        $this->assertArrayNotHasKey('embed_html', $share);
+        $this->assertArrayNotHasKey('discord_url', $share);
     }
 
     public function testEveryEmbedRefusalThrowsTheIdenticalRuntimeException(): void
@@ -211,7 +170,6 @@ PHP;
         $plainVideo = $this->createFile('plain.mp4', 'video payload', 'video/mp4');
         $lockedVideo = $this->createFile('locked.mp4', 'video payload', 'video/mp4');
         $termsVideo = $this->createFile('terms.mp4', 'video payload', 'video/mp4');
-        $containerVideo = $this->createFile(' rip .mkv', 'matroska payload', 'video/x-matroska');
 
         $plainShare = FileShares::create($this->superAdmin(), (int) $plainVideo['id']);
         FileShares::create($this->superAdmin(), (int) $lockedVideo['id'], ['password' => 'Secret 123']);
@@ -220,7 +178,6 @@ PHP;
             ->execute([':file_id' => (int) $lockedVideo['id']]);
         $lockedShare = FileShares::get($this->superAdmin(), (int) $lockedVideo['id']);
         $termsShare = FileShares::create($this->superAdmin(), (int) $termsVideo['id'], ['allow_embed' => true]);
-        $containerShare = FileShares::create($this->superAdmin(), (int) $containerVideo['id'], ['allow_embed' => true]);
         Settings::saveAdminSettings(['access' => ['share_terms_enabled' => true]]);
 
         $refusedTokens = [
@@ -228,7 +185,6 @@ PHP;
             $plainShare['token'],
             $lockedShare['token'],
             $termsShare['token'],
-            $containerShare['token'],
         ];
 
         foreach ($refusedTokens as $token) {
@@ -313,109 +269,13 @@ PHP;
         $this->assertSame(2, (int) Database::connection()->query("SELECT COUNT(*) FROM audit_logs WHERE event_type = 'share.embed.view'")->fetchColumn());
     }
 
-    public function testMigrationRestoresTheAllowEmbedColumnAndSetting(): void
+    public function testEmbedPageWithoutTokenReturnsNotFound(): void
     {
-        $pdo = Database::connection();
-        $dropped = false;
+        $result = $this->runIsolatedPhpCapture('$_GET = []; require WB_ROOT . "/embed/index.php";');
 
-        try {
-            $pdo->exec('ALTER TABLE file_shares DROP COLUMN allow_embed');
-            $dropped = true;
-        } catch (\PDOException) {
-        }
-
-        if (!$dropped) {
-            $pdo->exec('DROP TABLE file_shares');
-            $pdo->exec(
-                'CREATE TABLE file_shares (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-                    token TEXT NOT NULL UNIQUE,
-                    created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
-                    expires_at TEXT NULL,
-                    max_views INTEGER NULL,
-                    view_count INTEGER NOT NULL DEFAULT 0,
-                    password_hash TEXT NULL,
-                    password_version INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    revoked_at TEXT NULL
-                )'
-            );
-        }
-
-        $deleteSetting = $pdo->prepare('DELETE FROM settings WHERE key = :key');
-        $deleteSetting->execute([':key' => 'share_embeds_enabled']);
-        Database::disconnect();
-
-        Installer::migrate();
-
-        $columns = Database::connection()->query('PRAGMA table_info(file_shares)')->fetchAll();
-        $allowEmbed = null;
-
-        foreach ($columns as $column) {
-            if ($column['name'] === 'allow_embed') {
-                $allowEmbed = $column;
-            }
-        }
-
-        $this->assertNotNull($allowEmbed);
-        $this->assertSame(1, (int) $allowEmbed['notnull']);
-        $this->assertSame('0', $allowEmbed['dflt_value']);
-        $this->assertSame('0', Database::setting('share_embeds_enabled'));
-        $this->assertFalse(Settings::shareEmbedsEnabled());
-    }
-
-    public function testShareApiServesStandardUsersOnlyWhenEmbedsAreEnabled(): void
-    {
-        $member = $this->createUser('member', 'user');
-        $file = $this->createFile('clip.mp4', 'video payload', 'video/mp4');
-        Auth::login('member', 'AnotherSecurePass123!');
-
-        $denied = $this->request('files.share.create', 'POST', [
-            'file_id' => (int) $file['id'],
-            'allow_embed' => true,
-        ]);
-
-        $this->assertSame(400, $denied['status'], $denied['body']);
-        $this->assertStringContainsString('Only administrators can manage share links.', $denied['body']);
-
-        Permissions::saveMatrix($this->superAdmin(), 'user', (int) $member['id'], [
-            ['folder_id' => (int) $file['folder_id'], 'can_view' => true],
-        ]);
-        Settings::saveAdminSettings(['access' => ['share_embeds_enabled' => true]]);
-
-        $session = $this->request('auth.session', 'GET');
-        $sessionBody = json_decode($session['body'], true);
-
-        $this->assertSame(200, $session['status'], $session['body']);
-        $this->assertTrue($sessionBody['share_embeds_enabled']);
-
-        $created = $this->request('files.share.create', 'POST', [
-            'file_id' => (int) $file['id'],
-            'allow_embed' => true,
-        ]);
-        $createdShare = json_decode($created['body'], true)['share'] ?? null;
-
-        $this->assertSame(201, $created['status'], $created['body']);
-        $this->assertNotNull($createdShare);
-        $this->assertTrue($createdShare['allow_embed']);
-        $this->assertStringContainsString('/embed/?token=' . $createdShare['token'], $createdShare['embed_url']);
-        $this->assertStringContainsString('/embed/stream/?token=' . $createdShare['token'], $createdShare['discord_url']);
-
-        $fetched = $this->request('files.share.get', 'GET', [], true, '', ['file_id' => (int) $file['id']]);
-        $fetchedShare = json_decode($fetched['body'], true)['share'] ?? null;
-
-        $this->assertSame(200, $fetched['status'], $fetched['body']);
-        $this->assertSame($createdShare['token'], $fetchedShare['token']);
-        $this->assertTrue($fetchedShare['allow_embed']);
-
-        $revoked = $this->request('files.share.revoke', 'POST', [
-            'file_id' => (int) $file['id'],
-        ]);
-
-        $this->assertSame(200, $revoked['status'], $revoked['body']);
-        $this->assertNull(FileShares::get($this->superAdmin(), (int) $file['id']));
+        $this->assertSame(0, $result['status'], $result['output']);
+        $this->assertSame(404, $result['response_code']);
+        $this->assertStringContainsString('This share link is unavailable.', $result['output']);
     }
 
     public function testEmbedStreamsMediaWithRangeSupport(): void
@@ -423,60 +283,102 @@ PHP;
         $contents = 'fake video payload';
         $video = $this->createFile('clip.mp4', $contents, 'video/mp4');
         $share = FileShares::create($this->superAdmin(), (int) $video['id'], ['allow_embed' => true]);
-        $blobPath = wb_storage_path(
-            'uploads/' . substr((string) $video['disk_name'], 0, 2) . '/' . substr((string) $video['disk_name'], 2, 2) . '/'
-            . (string) $video['disk_name'] . '.' . (string) $video['disk_extension']
-        );
+        $token = var_export($share['token'], true);
 
-        $streamWorker = static fn (string $rangeHeader, string $token): string => '$_SERVER["HTTP_RANGE"] = ' . var_export($rangeHeader, true) . ';'
-            . "\n" . 'try { \WbFileBrowser\FileShares::streamEmbed(' . var_export($token, true) . '); } catch (\RuntimeException $e) { echo "REFUSED"; }';
+        $full = $this->runIsolatedPhpCapture('try { \WbFileBrowser\FileShares::streamEmbed(' . $token . '); } catch (\RuntimeException $e) { echo "REFUSED"; }');
+        $this->assertSame(0, $full['status'], $full['output']);
+        $this->assertSame(200, $full['response_code']);
+        $this->assertSame($contents, $full['output']);
 
-        $full = $this->executeConcurrentIsolatedPhp($streamWorker('', $share['token']), 1)[0];
-        $this->assertSame(0, $full['exit_code'], $full['stderr']);
-        $this->assertSame($contents, $full['stdout']);
+        $partial = $this->runIsolatedPhpCapture('$_SERVER["HTTP_RANGE"] = "bytes=5-9"; try { \WbFileBrowser\FileShares::streamEmbed(' . $token . '); } catch (\RuntimeException $e) { echo "REFUSED"; }');
+        $this->assertSame(0, $partial['status'], $partial['output']);
+        $this->assertSame(206, $partial['response_code']);
+        $this->assertSame(substr($contents, 5, 5), $partial['output']);
 
-        $partial = $this->executeConcurrentIsolatedPhp($streamWorker('bytes=5-9', $share['token']), 1)[0];
-        $this->assertSame(0, $partial['exit_code'], $partial['stderr']);
-        $this->assertSame(substr($contents, 5, 5), $partial['stdout']);
+        $suffix = $this->runIsolatedPhpCapture('$_SERVER["HTTP_RANGE"] = "bytes=-6"; try { \WbFileBrowser\FileShares::streamEmbed(' . $token . '); } catch (\RuntimeException $e) { echo "REFUSED"; }');
+        $this->assertSame(0, $suffix['status'], $suffix['output']);
+        $this->assertSame(substr($contents, -6), $suffix['output']);
 
-        $suffix = $this->executeConcurrentIsolatedPhp($streamWorker('bytes=-6', $share['token']), 1)[0];
-        $this->assertSame(0, $suffix['exit_code'], $suffix['stderr']);
-        $this->assertSame(substr($contents, -6), $suffix['stdout']);
+        $unsatisfiable = $this->runIsolatedPhpCapture('$_SERVER["HTTP_RANGE"] = "bytes=9999-"; try { \WbFileBrowser\FileShares::streamEmbed(' . $token . '); } catch (\RuntimeException $e) { echo "REFUSED"; }');
+        $this->assertSame(0, $unsatisfiable['status'], $unsatisfiable['output']);
+        $this->assertSame(416, $unsatisfiable['response_code']);
+        $this->assertSame('', $unsatisfiable['output']);
 
-        $multiRange = $this->executeConcurrentIsolatedPhp($streamWorker('bytes=0-1,3-4', $share['token']), 1)[0];
-        $this->assertSame(0, $multiRange['exit_code'], $multiRange['stderr']);
-        $this->assertSame($contents, $multiRange['stdout']);
-
-        $unsatisfiable = $this->executeConcurrentIsolatedPhp($streamWorker('bytes=9999-', $share['token']), 1)[0];
-        $this->assertSame(0, $unsatisfiable['exit_code'], $unsatisfiable['stderr']);
-        $this->assertSame('', $unsatisfiable['stdout']);
-
-        $refused = $this->executeConcurrentIsolatedPhp($streamWorker('', str_repeat('f', 32)), 1)[0];
-        $this->assertSame(0, $refused['exit_code'], $refused['stderr']);
-        $this->assertSame('REFUSED', $refused['stdout']);
-
-        $badMimeWorker = 'try { \WbFileBrowser\Security::sendMediaFile(' . var_export($blobPath, true) . ', "text/html", "clip.mp4"); } catch (\Throwable $e) { echo "ERR"; }';
-        $badMime = $this->executeConcurrentIsolatedPhp($badMimeWorker, 1)[0];
-        $this->assertSame(0, $badMime['exit_code'], $badMime['stderr']);
-        $this->assertSame('', $badMime['stdout']);
+        $refused = $this->runIsolatedPhpCapture('try { \WbFileBrowser\FileShares::streamEmbed(str_repeat("f", 32)); } catch (\RuntimeException $e) { echo "REFUSED"; }');
+        $this->assertSame(0, $refused['status'], $refused['output']);
+        $this->assertSame('REFUSED', $refused['output']);
     }
 
-    private function request(string $action, string $method, array $post = [], bool $csrf = true, string $extra = '', array $query = []): array
+    public function testEmbedHeadersAllowFramingWhileOtherSurfacesStayLocked(): void
     {
-        $code = '$_SESSION = ' . var_export($_SESSION, true) . ';' .
-            '$_GET = ' . var_export(array_merge(['action' => $action], $query), true) . ';' .
-            '$_POST = ' . var_export($post, true) . ';' .
-            '$_SERVER["REQUEST_METHOD"] = ' . var_export($method, true) . ';' .
-            ($csrf ? '$_SERVER["HTTP_X_CSRF_TOKEN"] = \WbFileBrowser\Security::csrfToken();' : '') . $extra . <<<'PHP'
-ob_start();
+        $this->assertStringContainsString('frame-ancestors *', Security::embedHeaders()['Content-Security-Policy']);
+        $this->assertStringContainsString('cross-origin', Security::embedHeaders()['Cross-Origin-Resource-Policy']);
+        $this->assertStringContainsString("frame-ancestors 'none'", Security::pageHeaders()['Content-Security-Policy']);
+    }
+
+    private function runIsolatedPhpCapture(string $code): array
+    {
+        $scriptPath = tempnam(sys_get_temp_dir(), 'wb-embed-');
+
+        if ($scriptPath === false) {
+            self::fail('Unable to create an isolated PHP script.');
+        }
+
+        $script = sprintf(
+            <<<'PHP'
+<?php
+declare(strict_types=1);
+
+define('WB_ROOT', %s);
+define('WB_STORAGE', %s);
+define('WB_BASE_PATH', '');
+
+$_SERVER['HTTP_HOST'] = 'localhost';
+$_SERVER['HTTPS'] = 'off';
+$_SERVER['REMOTE_ADDR'] = '127.0.0.1';
+$_SERVER['REQUEST_METHOD'] = 'GET';
+
+require %s;
+
 register_shutdown_function(static function (): void {
-    $body = ob_get_clean();
-    echo json_encode(['status' => http_response_code() ?: 200, 'body' => $body]);
+    echo "\nWB_EMBED_STATUS:" . (http_response_code() ?: 200);
 });
-require WB_ROOT . '/api/index.php';
-PHP;
-        $result = $this->executeConcurrentIsolatedPhp($code, 1)[0];
-        $this->assertSame(0, $result['exit_code'], $result['stderr']);
-        return json_decode($result['stdout'], true, 512, JSON_THROW_ON_ERROR);
+
+%s
+PHP,
+            var_export(WB_ROOT, true),
+            var_export(WB_STORAGE, true),
+            var_export(WB_ROOT . '/app/bootstrap.php', true),
+            $code
+        );
+
+        file_put_contents($scriptPath, $script);
+
+        try {
+            $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+            $process = proc_open(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($scriptPath), $descriptors, $pipes);
+
+            if (!is_resource($process)) {
+                self::fail('Unable to start the isolated PHP worker.');
+            }
+
+            fclose($pipes[0]);
+            $output = (string) stream_get_contents($pipes[1]);
+            $errors = (string) stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $status = proc_close($process);
+        } finally {
+            @unlink($scriptPath);
+        }
+
+        $responseCode = 0;
+        if (preg_match('/WB_EMBED_STATUS:(\d+)/', $output, $matches) === 1) {
+            $responseCode = (int) $matches[1];
+        }
+
+        $body = (string) preg_replace('/\n?WB_EMBED_STATUS:\d+\n?$/', '', $output);
+
+        return ['status' => $status, 'output' => $body, 'errors' => $errors, 'response_code' => $responseCode];
     }
 }

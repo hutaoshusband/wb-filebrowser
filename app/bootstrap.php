@@ -16,18 +16,24 @@ if (!defined('WB_STORAGE')) {
 
 require_once __DIR__ . '/helpers.php';
 require_once __DIR__ . '/Settings.php';
+require_once __DIR__ . '/FileEncryption.php';
 require_once __DIR__ . '/DatabaseConfig.php';
 require_once __DIR__ . '/DatabasePlatform.php';
 require_once __DIR__ . '/Installer.php';
 require_once __DIR__ . '/Database.php';
+require_once __DIR__ . '/DatabaseBackup.php';
 require_once __DIR__ . '/Security.php';
 require_once __DIR__ . '/BlockedAccessException.php';
 require_once __DIR__ . '/MaintenanceModeException.php';
 require_once __DIR__ . '/MaintenanceMode.php';
 require_once __DIR__ . '/Auth.php';
 require_once __DIR__ . '/Permissions.php';
+require_once __DIR__ . '/SpaceService.php';
+require_once __DIR__ . '/StorageLock.php';
 require_once __DIR__ . '/FileManager.php';
+require_once __DIR__ . '/MediaValidator.php';
 require_once __DIR__ . '/FileShares.php';
+require_once __DIR__ . '/FolderShares.php';
 require_once __DIR__ . '/AuditLog.php';
 require_once __DIR__ . '/IpBanService.php';
 require_once __DIR__ . '/AutomationRunner.php';
@@ -67,8 +73,8 @@ function wb_bootstrap_page(string $surface): array
         'base_path' => WB_BASE_PATH,
         'app_version' => Installer::VERSION,
         'csrf_token' => Security::csrfToken(),
-        'user' => $user,
         'share_embeds_enabled' => $installed ? WbFileBrowser\Settings::shareEmbedsEnabled() : false,
+        'user' => $user,
         'maintenance' => $installed
             ? WbFileBrowser\MaintenanceMode::payload(
                 $user,

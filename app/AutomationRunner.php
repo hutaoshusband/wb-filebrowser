@@ -32,6 +32,14 @@ final class AutomationRunner
                 'label' => 'Refresh folder sizes',
                 'interval_key' => 'automation_folder_size_interval_minutes',
             ],
+            'process_share_deletions' => [
+                'label' => 'Share deletion after expiry',
+                'interval_key' => 'automation_share_deletion_interval_minutes',
+            ],
+            'reconcile_file_blobs' => [
+                'label' => 'Deduplication maintenance',
+                'interval_key' => 'automation_cleanup_interval_minutes',
+            ],
         ];
     }
 
@@ -189,17 +197,6 @@ final class AutomationRunner
             ];
         }
 
-        // Network probes use an operator-configured origin, never a request Host header.
-        if ($fetcher === null) {
-            $origin = trim((string) getenv('WB_PUBLIC_ORIGIN'));
-        }
-        $parts = $origin ? parse_url($origin) : false;
-        if (!is_array($parts) || !in_array($parts['scheme'] ?? '', ['http', 'https'], true)
-            || empty($parts['host']) || isset($parts['user']) || isset($parts['pass'])
-            || isset($parts['query']) || isset($parts['fragment'])
-            || !in_array($parts['path'] ?? '', ['', '/'], true)) {
-            return ['state' => 'error', 'message' => 'Set WB_PUBLIC_ORIGIN to the trusted site origin to enable the storage probe.'];
-        }
         $probeUrl = wb_absolute_url('/storage/' . $probeRelativePath, $origin);
 
         if ($probeUrl === null) {
@@ -289,6 +286,8 @@ final class AutomationRunner
                 'cleanup_abandoned_uploads' => self::cleanupAbandonedUploads($pdo),
                 'storage_usage_alert' => self::checkStorageUsage($pdo),
                 'refresh_folder_sizes' => self::refreshFolderSizes($pdo),
+                'process_share_deletions' => self::processShareDeletions($pdo),
+                'reconcile_file_blobs' => self::reconcileFileBlobs($pdo),
                 default => throw new RuntimeException('Unknown automation job.'),
             };
             $duration = (int) round((microtime(true) - $start) * 1000);
@@ -321,6 +320,53 @@ final class AutomationRunner
         $job = $statement->fetch();
 
         return is_array($job) ? $job : ['job_key' => $jobKey];
+    }
+
+    /**
+     * @return array{state: string, message: string}
+     */
+    private static function processShareDeletions(PDO $pdo): array
+    {
+        $folders = FolderShares::processDueDeletions();
+        $result = FileShares::processDueDeletions($pdo);
+
+        return [
+            'state' => 'success',
+            'message' => ($result['deleted'] ?? 0) === 0 && $folders === 0
+                ? 'No share-scheduled deletions are due.'
+                : sprintf('Deleted %d file(s) and %d folder(s) scheduled by shares.', $result['deleted'], $folders),
+        ];
+    }
+
+    /**
+     * @return array{state: string, message: string}
+     */
+    private static function reconcileFileBlobs(PDO $pdo): array
+    {
+        $result = FileManager::reconcileFileBlobs($pdo);
+
+        if ($result['missing'] > 0) {
+            return [
+                'state' => 'warning',
+                'message' => sprintf(
+                    'Repaired %d refcount(s), removed %d drained blob(s) and %d orphan file(s). %d blob record(s) point at missing files.',
+                    $result['repaired'],
+                    $result['removed_blobs'],
+                    $result['removed_orphans'],
+                    $result['missing']
+                ),
+            ];
+        }
+
+        return [
+            'state' => 'success',
+            'message' => sprintf(
+                'Repaired %d refcount(s), removed %d drained blob(s) and %d orphan file(s).',
+                $result['repaired'],
+                $result['removed_blobs'],
+                $result['removed_orphans']
+            ),
+        ];
     }
 
     /**
@@ -449,7 +495,13 @@ final class AutomationRunner
             }
 
             $token = wb_random_token(16);
-            $upsert = Database::prepareUpsert($pdo, 'settings', ['key', 'value', 'updated_at'], ['value', 'updated_at'], ['key']);
+            $upsert = Database::prepareUpsert(
+                $pdo,
+                'settings',
+                ['key', 'value', 'updated_at'],
+                ['value', 'updated_at'],
+                ['key']
+            );
 
             foreach ([
                 'automation_lock_token' => $token,
@@ -484,7 +536,13 @@ final class AutomationRunner
             return;
         }
 
-        $upsert = Database::prepareUpsert($pdo, 'settings', ['key', 'value', 'updated_at'], ['value', 'updated_at'], ['key']);
+        $upsert = Database::prepareUpsert(
+            $pdo,
+            'settings',
+            ['key', 'value', 'updated_at'],
+            ['value', 'updated_at'],
+            ['key']
+        );
 
         foreach ([
             'automation_lock_token' => '',
@@ -508,12 +566,11 @@ final class AutomationRunner
                 'method' => 'GET',
                 'ignore_errors' => true,
                 'timeout' => 3,
-                'follow_location' => 0,
                 'header' => "Cache-Control: no-cache\r\n",
             ],
         ]);
 
-        @file_get_contents($url, false, $context, 0, 1024);
+        @file_get_contents($url, false, $context);
         $headers = $http_response_header ?? [];
         $statusLine = is_array($headers) ? (string) ($headers[0] ?? '') : '';
         $statusCode = preg_match('/\s(\d{3})\s/', $statusLine, $matches) ? (int) $matches[1] : 0;

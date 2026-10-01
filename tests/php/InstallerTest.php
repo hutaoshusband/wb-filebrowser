@@ -7,6 +7,7 @@ namespace WbFileBrowser\Tests;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use WbFileBrowser\Database;
+use WbFileBrowser\DatabaseConfig;
 use WbFileBrowser\Installer;
 
 final class InstallerTest extends TestCase
@@ -88,7 +89,10 @@ final class InstallerTest extends TestCase
             $this->assertArrayHasKey('label', $check);
             $this->assertArrayHasKey('ok', $check);
             $this->assertArrayHasKey('message', $check);
+            $this->assertArrayHasKey('blocking', $check);
+            $this->assertArrayHasKey('scope', $check);
             $this->assertIsBool($check['ok']);
+            $this->assertIsBool($check['blocking']);
         }
     }
 
@@ -102,6 +106,7 @@ final class InstallerTest extends TestCase
         $this->assertTrue(Installer::isInstalled());
 
         $this->assertFileExists(Installer::databasePath());
+        $this->assertFileExists(DatabaseConfig::path());
         $this->assertFileExists(Installer::lockFilePath());
 
         $db = Database::connection();
@@ -110,6 +115,29 @@ final class InstallerTest extends TestCase
 
         $stmt = $db->query("SELECT username FROM users WHERE id = {$result['super_admin_id']}");
         $this->assertEquals('superadmin', $stmt->fetchColumn());
+    }
+
+    public function testInstallSupportsCustomSqlitePathAndWritesConfig(): void
+    {
+        Installer::ensureRuntimeDirectories();
+
+        $result = Installer::install('superadmin', 'SuperSecurePass123!', [
+            'database' => [
+                'driver' => 'sqlite',
+                'path' => 'storage/custom-data/app.sqlite',
+            ],
+        ]);
+
+        $this->assertGreaterThan(0, $result['super_admin_id']);
+        $this->assertFileExists(WB_STORAGE . DIRECTORY_SEPARATOR . 'custom-data' . DIRECTORY_SEPARATOR . 'app.sqlite');
+
+        $config = DatabaseConfig::read();
+        $this->assertIsArray($config);
+        $this->assertSame('sqlite', $config['driver']);
+        $this->assertSame(
+            WB_STORAGE . DIRECTORY_SEPARATOR . 'custom-data' . DIRECTORY_SEPARATOR . 'app.sqlite',
+            $config['path']
+        );
     }
 
     public function testInstallThrowsIfPasswordTooShort(): void
@@ -148,6 +176,17 @@ final class InstallerTest extends TestCase
         Installer::migrate();
 
         $this->assertEquals(Installer::VERSION, Database::setting('app_version'));
+    }
+
+    public function testLegacyInstallStateIsRecognizedWithoutConfigFile(): void
+    {
+        Installer::ensureRuntimeDirectories();
+
+        touch(Installer::lockFilePath());
+        touch(WB_STORAGE . DIRECTORY_SEPARATOR . 'app.sqlite');
+
+        $this->assertFalse(DatabaseConfig::exists());
+        $this->assertTrue(Installer::isInstalled());
     }
 
     private function resetStorage(): void

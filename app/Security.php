@@ -62,7 +62,14 @@ final class Security
     {
         return self::commonHeaders() + [
             'Cache-Control' => 'no-store, no-cache, must-revalidate, max-age=0',
-            'Content-Security-Policy' => "default-src 'self'; script-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
+            // Cross-origin isolation enables SharedArrayBuffer, which the
+            // multithreaded ffmpeg.wasm fallback needs. Safe here because the
+            // CSP already restricts every subresource to same-origin; adding
+            // these headers to a page that embeds cross-origin resources
+            // would require CORP/CORS on those (review before relaxing CSP).
+            'Cross-Origin-Opener-Policy' => 'same-origin',
+            'Cross-Origin-Embedder-Policy' => 'require-corp',
+            'Content-Security-Policy' => "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; worker-src 'self' blob:",
         ];
     }
 
@@ -73,16 +80,6 @@ final class Security
     {
         return self::commonHeaders() + [
             'Content-Security-Policy' => "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'",
-        ];
-    }
-
-    public static function embedHeaders(): array
-    {
-        return self::commonHeaders() + [
-            'Cache-Control' => 'no-store, no-cache, must-revalidate, max-age=0',
-            'X-Robots-Tag' => 'noindex, nofollow, noarchive',
-            'Content-Security-Policy' => "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors *",
-            'Cross-Origin-Resource-Policy' => 'cross-origin',
         ];
     }
 
@@ -158,43 +155,58 @@ final class Security
     {
         $pdo ??= Database::connection();
         self::pruneRateLimitRows($pdo);
-        $ansiSql = 'INSERT INTO rate_limits (bucket_key, scope, bucket_identifier, hits, window_started_at, updated_at)
-             VALUES (:key, :scope, :identifier, 1, :now, :now)
-             ON CONFLICT(bucket_key) DO UPDATE SET
-                 hits = CASE WHEN rate_limits.window_started_at > :cutoff THEN rate_limits.hits + 1 ELSE 1 END,
-                 window_started_at = CASE WHEN rate_limits.window_started_at > :cutoff THEN rate_limits.window_started_at ELSE excluded.window_started_at END,
-                 updated_at = excluded.updated_at';
-        $mysqlSql = 'INSERT INTO rate_limits (bucket_key, scope, bucket_identifier, hits, window_started_at, updated_at)
-             VALUES (:key, :scope, :identifier, 1, :now, :now)
-             ON DUPLICATE KEY UPDATE
-                 hits = IF(rate_limits.window_started_at > :cutoff, rate_limits.hits + 1, 1),
-                 window_started_at = IF(rate_limits.window_started_at > :cutoff, rate_limits.window_started_at, VALUES(window_started_at)),
-                 updated_at = VALUES(updated_at)';
-        $statement = $pdo->prepare(Database::driver() === 'mysql' ? $mysqlSql : $ansiSql);
-        foreach ($buckets as $bucket) {
-            $statement->execute([
-                ':key' => self::rateLimitBucketKey((string) $bucket['scope'], (string) $bucket['identifier']),
-                ':scope' => $bucket['scope'], ':identifier' => (string) $bucket['identifier'],
-                ':now' => wb_now(), ':cutoff' => gmdate('c', time() - (int) $bucket['window']),
-            ]);
-        }
-    }
+        $now = time();
+        $select = $pdo->prepare(
+            'SELECT hits, window_started_at
+             FROM rate_limits
+             WHERE bucket_key = :bucket_key
+             LIMIT 1'
+        );
+        $insert = $pdo->prepare(
+            'INSERT INTO rate_limits (bucket_key, scope, bucket_identifier, hits, window_started_at, updated_at)
+             VALUES (:bucket_key, :scope, :bucket_identifier, :hits, :window_started_at, :updated_at)'
+        );
+        $update = $pdo->prepare(
+            'UPDATE rate_limits
+             SET hits = :hits, window_started_at = :window_started_at, updated_at = :updated_at
+             WHERE bucket_key = :bucket_key'
+        );
 
-    public static function reserveRateLimit(array $buckets, string $message, ?PDO $pdo = null, ?array $blockedContext = null): void
-    {
-        $pdo ??= Database::connection();
-        $pdo->exec(match (Database::driver()) {
-            'mysql' => 'START TRANSACTION',
-            'sqlite' => 'BEGIN IMMEDIATE',
-            default => 'BEGIN',
-        });
-        try {
-            self::assertRateLimitAvailable($buckets, $message, $pdo, $blockedContext);
-            self::consumeRateLimit($buckets, $pdo);
-            $pdo->exec('COMMIT');
-        } catch (\Throwable $exception) {
-            $pdo->exec('ROLLBACK');
-            throw $exception;
+        foreach ($buckets as $bucket) {
+            $scope = (string) $bucket['scope'];
+            $identifier = (string) $bucket['identifier'];
+            $window = (int) $bucket['window'];
+            $bucketKey = self::rateLimitBucketKey($scope, $identifier);
+            $select->execute([':bucket_key' => $bucketKey]);
+            $row = $select->fetch();
+            $windowStartedAt = wb_now();
+            $hits = 1;
+
+            if (is_array($row)) {
+                $windowStartedAtUnix = strtotime((string) $row['window_started_at']) ?: 0;
+
+                if ($windowStartedAtUnix > 0 && ($now - $windowStartedAtUnix) < $window) {
+                    $windowStartedAt = (string) $row['window_started_at'];
+                    $hits = (int) $row['hits'] + 1;
+                }
+
+                $update->execute([
+                    ':bucket_key' => $bucketKey,
+                    ':hits' => $hits,
+                    ':window_started_at' => $windowStartedAt,
+                    ':updated_at' => wb_now(),
+                ]);
+                continue;
+            }
+
+            $insert->execute([
+                ':bucket_key' => $bucketKey,
+                ':scope' => $scope,
+                ':bucket_identifier' => $identifier,
+                ':hits' => $hits,
+                ':window_started_at' => $windowStartedAt,
+                ':updated_at' => wb_now(),
+            ]);
         }
     }
 
@@ -468,6 +480,16 @@ final class Security
         exit;
     }
 
+    public static function embedHeaders(): array
+    {
+        return array_merge(self::commonHeaders(), [
+            'Cache-Control' => 'no-store, no-cache, must-revalidate, max-age=0',
+            'X-Robots-Tag' => 'noindex, nofollow, noarchive',
+            'Content-Security-Policy' => "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors *",
+            'Cross-Origin-Resource-Policy' => 'cross-origin',
+        ]);
+    }
+
     private static function isEmbedMediaType(string $mimeType): bool
     {
         $embedMediaExtensions = ['mp4', 'm4v', 'webm', 'mov', 'ogv', 'mp3', 'm4a', 'aac', 'ogg', 'oga', 'opus', 'wav', 'flac', 'weba'];
@@ -477,7 +499,7 @@ final class Security
             $allowedMimeTypes[] = (string) wb_embed_media_mime_type($extension);
         }
 
-        return in_array($mimeType, array_unique($allowedMimeTypes), true);
+        return in_array($mimeType, $allowedMimeTypes, true);
     }
 
     private static function sendCommonHeaders(): void
@@ -495,6 +517,10 @@ final class Security
         $headers = [
             'Referrer-Policy' => 'no-referrer',
             'X-Content-Type-Options' => 'nosniff',
+            // Companion to the COOP/COEP isolation headers: under
+            // require-corp, browsers reject subresource responses (API JSON,
+            // streamed files, worker scripts) that declare no CORP.
+            'Cross-Origin-Resource-Policy' => 'same-origin',
             'Permissions-Policy' => 'accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()',
         ];
 

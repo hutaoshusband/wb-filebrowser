@@ -127,7 +127,7 @@ final class MaintenanceMode
             return null;
         }
 
-        if (in_array($action, ['auth.session', 'auth.login', 'auth.logout', 'auth.password'], true)) {
+        if (in_array($action, ['auth.session', 'auth.login', 'auth.logout'], true)) {
             return null;
         }
 

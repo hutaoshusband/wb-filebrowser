@@ -1,9 +1,31 @@
-import { flushPromises, mount } from '@vue/test-utils';
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils';
+enableAutoUnmount(afterEach);
+vi.mock('../../frontend/src/lib/fileEncryption.js', () => ({ ENCRYPTION_FORMAT: 'WBENC001', transformFile: vi.fn() }));
+import { transformFile } from '../../frontend/src/lib/fileEncryption.js';
 vi.mock('../../frontend/src/lib/thumbnails.js', () => ({
   renderPdfThumbnail: vi.fn(async () => 'data:image/png;base64,pdf-thumb'),
 }));
 
+// The compression orchestrator is module-level inside App.vue, so the mock
+// exposes stable shared spies that each test configures.
+vi.mock('../../frontend/src/lib/videoCompressor.js', () => {
+  const mocks = {
+    checkSupport: vi.fn(async () => ({ supported: false })),
+    inspect: vi.fn(async () => null),
+    compress: vi.fn(),
+    cancelActive: vi.fn(),
+    cleanup: vi.fn(async () => {}),
+    dispose: vi.fn(),
+  };
+
+  return {
+    createVideoCompressor: () => mocks,
+    __mocks: mocks,
+  };
+});
+
 import { renderPdfThumbnail } from '../../frontend/src/lib/thumbnails.js';
+import { __mocks as compressorMocks } from '../../frontend/src/lib/videoCompressor.js';
 import App from '../../frontend/src/App.vue';
 
 function adminUser(role = 'admin') {
@@ -34,13 +56,14 @@ function uploadPolicy() {
   };
 }
 
-function sessionPayload(user = adminUser()) {
+function sessionPayload(user = adminUser(), videoCompression = undefined) {
   return {
     user,
     public_access: false,
     root_folder_id: 1,
+    home_folder_id: 1,
+    space: null,
     app_version: '1.0.0-alpha',
-    share_embeds_enabled: false,
     storage: { used_label: '0 B', total_label: '100 GB' },
     diagnostic: { exposed: false, checked_at: '', message: 'Shield healthy.', probe_path: 'probe/file.txt', probe_url: '/storage/probe/file.txt' },
     maintenance: {
@@ -52,7 +75,7 @@ function sessionPayload(user = adminUser()) {
     display: {
       grid_thumbnails_enabled: true,
     },
-    upload_policy: uploadPolicy(),
+    upload_policy: videoCompression === undefined ? uploadPolicy() : { ...uploadPolicy(), video_compression: videoCompression },
     help: { title: 'Help', body: 'Help text' },
   };
 }
@@ -202,7 +225,6 @@ function installFetchStub(overrides = {}) {
           maintenance_message: 'The file browser is temporarily unavailable while maintenance is in progress. Please try again later.',
           share_terms_enabled: false,
           share_terms_message: 'By opening or downloading this shared file, you confirm that you are authorized to access it and will handle it according to the applicable terms and confidentiality requirements.',
-          share_embeds_enabled: false,
         },
         uploads: { max_file_size_mb: 256, allowed_extensions: '', stale_upload_ttl_hours: 24 },
         automation: {
@@ -255,7 +277,6 @@ function installFetchStub(overrides = {}) {
           maintenance_message: 'Updates in progress',
           share_terms_enabled: true,
           share_terms_message: 'Accept the published terms before opening or downloading shared files.',
-          share_embeds_enabled: true,
         },
         uploads: { max_file_size_mb: 64, allowed_extensions: 'png, pdf', stale_upload_ttl_hours: 8 },
         automation: {
@@ -326,7 +347,6 @@ function installFetchStub(overrides = {}) {
           maintenance_message: 'The file browser is temporarily unavailable while maintenance is in progress. Please try again later.',
           share_terms_enabled: false,
           share_terms_message: 'By opening or downloading this shared file, you confirm that you are authorized to access it and will handle it according to the applicable terms and confidentiality requirements.',
-          share_embeds_enabled: false,
         },
         uploads: { max_file_size_mb: 256, allowed_extensions: '', stale_upload_ttl_hours: 24 },
         automation: {
@@ -403,7 +423,7 @@ function installFetchStub(overrides = {}) {
   global.fetch = vi.fn(async (input, init = {}) => {
     const url = new URL(String(input));
     const action = url.searchParams.get('action');
-    calls.push({ action, init });
+    calls.push({ action, init, input: String(input) });
     const handler = handlers[action];
 
     if (!handler) {
@@ -557,11 +577,31 @@ describe('Admin app shell', () => {
     expect(savePermissionBody.entries.some((entry) => entry.can_edit === true || entry.can_create_folders === true)).toBe(true);
   });
 
+  it('saves a personal space limit and clears it to unlimited', async () => {
+    const { wrapper, calls } = await mountAdminApp({ hash: '#/users/2' });
+    const panel = wrapper.findAll('article').find((item) => item.text().includes('Personal space'));
+    await panel.find('input[type="checkbox"]').setValue(true);
+    await panel.find('input[type="number"]').setValue('8192');
+    const save = wrapper.findAll('button').find((button) => button.text() === 'Save account');
+    await save.trigger('click');
+    await flushPromises();
+    let body = JSON.parse(calls.filter((call) => call.action === 'admin.users.update').at(-1).init.body);
+    expect(body.space_enabled).toBe(true);
+    expect(body.space_size_limit_bytes).toBe(8192);
+    const refreshed = wrapper.findAll('article').find((item) => item.text().includes('Personal space'));
+    await refreshed.find('input[type="checkbox"]').setValue(true);
+    await refreshed.find('input[type="number"]').setValue('');
+    await save.trigger('click');
+    await flushPromises();
+    body = JSON.parse(calls.filter((call) => call.action === 'admin.users.update').at(-1).init.body);
+    expect(body.space_size_limit_bytes).toBeNull();
+  });
+
   it('submits grouped settings changes', async () => {
     const { wrapper, calls } = await mountAdminApp({ hash: '#/settings' });
 
     const accessCheckboxes = wrapper.findAll('.settings-pane input[type="checkbox"]');
-    await accessCheckboxes[2].setValue(true);
+    await accessCheckboxes[3].setValue(true);
     await wrapper.find('.settings-pane select').setValue('app_and_share');
     await wrapper.find('.settings-pane textarea').setValue('Updates in progress');
 
@@ -569,7 +609,7 @@ describe('Admin app shell', () => {
     await displayTab.trigger('click');
     await flushPromises();
 
-    const displayCheckbox = wrapper.find('.settings-pane input[type="checkbox"]');
+    const displayCheckbox = wrapper.findAll('.settings-pane input[type="checkbox"]')[1];
     await displayCheckbox.setValue(false);
 
     const uploadsTab = wrapper.findAll('.settings-tabs button').find((button) => button.text() === 'Uploads');
@@ -610,7 +650,7 @@ describe('Admin app shell', () => {
     expect(wrapper.text()).toContain('Shared file terms');
 
     const accessCheckboxes = wrapper.findAll('.settings-pane input[type="checkbox"]');
-    await accessCheckboxes[3].setValue(true);
+    await accessCheckboxes[4].setValue(true);
 
     const accessTextareas = wrapper.findAll('.settings-pane textarea');
     await accessTextareas[1].setValue('Accept the published terms before opening or downloading shared files.');
@@ -622,23 +662,6 @@ describe('Admin app shell', () => {
 
     expect(body.access.share_terms_enabled).toBe(true);
     expect(body.access.share_terms_message).toBe('Accept the published terms before opening or downloading shared files.');
-  });
-
-  it('submits the user share embeds toggle from the access tab', async () => {
-    const { wrapper, calls } = await mountAdminApp({ hash: '#/settings' });
-
-    expect(wrapper.text()).toContain('Allow users to create share links and embed media');
-    expect(wrapper.text()).toContain('Users can share files they can access and embed video and audio. Administrators can always embed.');
-
-    const accessCheckboxes = wrapper.findAll('.settings-pane input[type="checkbox"]');
-    await accessCheckboxes[1].setValue(true);
-
-    await wrapper.find('.primary-button').trigger('click');
-
-    const saveCall = calls.filter((call) => call.action === 'admin.settings.save').at(-1);
-    const body = JSON.parse(saveCall.init.body);
-
-    expect(body.access.share_embeds_enabled).toBe(true);
   });
 
   it('loads audit logs, applies category filters, and paginates', async () => {
@@ -783,6 +806,176 @@ describe('Admin app shell', () => {
     expect(unbanBody.ban_id).toBe(3);
   });
 
+  it('lands space owners in their own space folder', async () => {
+    const member = { id: 17, username: 'alice', role: 'user', status: 'active' };
+    window.history.replaceState(null, '', '/?');
+    let treeListUrl = '';
+    const { calls } = await mountBrowserApp({
+      bootstrapUser: member,
+      handlers: {
+        'auth.session': () => jsonResponse({
+          ...sessionPayload(member),
+          home_folder_id: 42,
+          space: { enabled: true, status: 'active', folder_id: 42, can_share: true, max_grant_level: 'write' },
+        }),
+        'tree.list': (input) => {
+          treeListUrl = String(input);
+          return jsonResponse(browserTreePayload());
+        },
+      },
+    });
+
+    expect(calls.some((call) => call.action === 'tree.list')).toBe(true);
+    expect(new URL(treeListUrl).searchParams.get('folder_id')).toBe('42');
+  });
+
+  it('opens the personal home after login from the public root and from My files', async () => {
+    const member = { id: 17, username: 'alice', role: 'user', status: 'active' };
+    let loggedIn = false;
+    const { wrapper, calls } = await mountBrowserApp({
+      hash: '#/folder/1', bootstrapUser: null,
+      handlers: {
+        'auth.session': () => jsonResponse(loggedIn ? {
+          ...sessionPayload(member), home_folder_id: 42,
+          space: { enabled: true, status: 'active', folder_id: 42, used_bytes: 512, size_limit_bytes: 1024 },
+          navigation_roots: [{ id: 50, name: 'Team documents' }],
+        } : sessionPayload(null)),
+        'auth.login': () => { loggedIn = true; return jsonResponse({ user: member }); },
+      },
+    });
+    await wrapper.find('input[type="text"]').setValue('alice');
+    await wrapper.find('input[type="password"]').setValue('test-password');
+    await wrapper.find('.auth-form').trigger('submit');
+    await flushPromises();
+    expect(new URL(calls.filter((call) => call.action === 'tree.list').at(-1).input).searchParams.get('folder_id')).toBe('42');
+    expect(wrapper.text()).toContain('512 B');
+    const shared = wrapper.findAll('button').find((button) => button.text() === 'Shared: Team documents');
+    await shared.trigger('click');
+    window.dispatchEvent(new Event('hashchange'));
+    await flushPromises();
+    expect(window.location.hash).toBe('#/folder/50');
+    await wrapper.findAll('button').find((button) => button.text() === 'My files').trigger('click');
+    window.dispatchEvent(new Event('hashchange'));
+    await flushPromises();
+    expect(window.location.hash).toBe('#/folder/42');
+    wrapper.unmount();
+  });
+
+  it('clears stale contents and offers recovery after denied navigation', async () => {
+    const { wrapper } = await mountBrowserApp({
+      handlers: {
+        'tree.list': (input) => new URL(input).searchParams.get('folder_id') === '99'
+          ? errorResponse({ message: 'You do not have access to this folder.' })
+          : jsonResponse(browserTreePayload()),
+      },
+    });
+    expect(wrapper.text()).toContain('brochure.pdf');
+    window.location.hash = '#/folder/99';
+    window.dispatchEvent(new Event('hashchange'));
+    await flushPromises();
+    await flushPromises();
+    expect(wrapper.text()).not.toContain('brochure.pdf');
+    expect(wrapper.find('[role="alert"]').text()).toContain('You do not have access');
+    await wrapper.findAll('button').find((button) => button.text() === 'Open my files').trigger('click');
+    await flushPromises();
+    window.dispatchEvent(new Event('hashchange'));
+    await flushPromises();
+    expect(wrapper.text()).toContain('brochure.pdf');
+    wrapper.unmount();
+  });
+
+  it.each(['none', 'disabled', 'unavailable'])('explains a %s personal space', async (status) => {
+    const { wrapper } = await mountBrowserApp({ handlers: {
+      'auth.session': () => jsonResponse({ ...sessionPayload(), space: { status } }),
+    } });
+    expect(wrapper.find('[role="status"]').text()).toMatch(/personal space|Personal spaces/);
+    wrapper.unmount();
+  });
+
+  it('keeps confirmed grants after failed removal and exposes root folder sharing', async () => {
+    const member = { id: 17, username: 'alice', role: 'user', status: 'active' };
+    const { wrapper } = await mountBrowserApp({
+      bootstrapUser: member,
+      handlers: {
+        'auth.session': () => jsonResponse({ ...sessionPayload(member), space: { status: 'active', can_share: true } }),
+        'tree.list': () => {
+          const payload = browserTreePayload();
+          Object.assign(payload.data.folder, { can_manage_sharing: true, can_edit: true, can_delete: false, protected_root: true });
+          return jsonResponse(payload);
+        },
+        'space.permissions.get': () => jsonResponse({ grants: [{ username: 'bob', level: 'view' }], users: [] }),
+        'space.permissions.save': () => errorResponse({ message: 'Unable to save permissions.' }),
+      },
+    });
+    await wrapper.findAll('button').find((button) => button.text() === 'Folder info').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('.space-share-row').text()).toContain('bob');
+    expect(wrapper.findAll('button').some((button) => button.text() === 'Rename')).toBe(false);
+    await wrapper.find('.space-share-row button').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('.space-share-row').text()).toContain('bob');
+    expect(wrapper.text()).toContain('Unable to save permissions.');
+    wrapper.unmount();
+  });
+
+  it('shows the public share panel to space owners for their own files', async () => {
+    const member = { id: 17, username: 'alice', role: 'user', status: 'active' };
+    const { wrapper } = await mountBrowserApp({
+      bootstrapUser: member,
+      handlers: {
+        'auth.session': () => jsonResponse({
+          ...sessionPayload(member),
+          home_folder_id: 1,
+          space: { enabled: true, status: 'active', folder_id: 1, can_share: true, max_grant_level: 'write' },
+        }),
+        'tree.list': () => jsonResponse(browserTreePayload({ can_share: true })),
+      },
+    });
+
+    await wrapper.find('tbody tr').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.find('.share-panel').exists()).toBe(true);
+  });
+
+  it('allows a user without a space to share files and shows creation errors inside the preview', async () => {
+    const member = { id: 17, username: 'alice', role: 'user', status: 'active' };
+    const { wrapper } = await mountBrowserApp({ bootstrapUser: member, handlers: {
+      'auth.session': () => jsonResponse({ ...sessionPayload(member), can_create_link_shares: true, display: { show_uploader: true } }),
+      'tree.list': () => jsonResponse(browserTreePayload({ can_share: true, uploader_username: 'alice' })),
+      'files.share.get': () => jsonResponse({ share: null }),
+      'files.share.create': () => errorResponse({ message: 'Link sharing was disabled by your administrator.' }),
+    } });
+    expect(wrapper.find('tbody tr').text()).toContain('alice');
+    await wrapper.find('tbody tr').trigger('click');
+    await flushPromises();
+    const modal = wrapper.find('.preview-modal');
+    await modal.findAll('button').find((button) => button.text() === 'Share link').trigger('click');
+    await flushPromises();
+    expect(modal.find('[role="alert"]').text()).toBe('Link sharing was disabled by your administrator.');
+  });
+
+  it('submits spaces settings from the dedicated settings tab', async () => {
+    const { wrapper, calls } = await mountAdminApp({ hash: '#/settings' });
+
+    const spacesTab = wrapper.findAll('button').find((button) => button.text() === 'Spaces');
+    await spacesTab.trigger('click');
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Per-user spaces');
+
+    const spaceCheckboxes = wrapper.findAll('.settings-pane input[type="checkbox"]');
+    await spaceCheckboxes[0].setValue(true);
+
+    await wrapper.find('.primary-button').trigger('click');
+
+    const saveCall = calls.filter((call) => call.action === 'admin.settings.save').at(-1);
+    const body = JSON.parse(saveCall.init.body);
+
+    expect(body.spaces.enabled).toBe(true);
+    expect(body.spaces.sharing_allowed).toBe(true);
+  });
+
   it('creates a share link from the file preview in the browser shell', async () => {
     const clipboardWrite = vi.fn().mockResolvedValue();
     Object.defineProperty(window.navigator, 'clipboard', {
@@ -875,15 +1068,11 @@ describe('Admin app shell', () => {
     await flushPromises();
 
     const shareInputs = wrapper.findAll('.share-panel__input');
-    expect(shareInputs).toHaveLength(3);
+    expect(shareInputs).toHaveLength(4);
     await shareInputs[0].setValue('2026-03-10T10:30');
-    await shareInputs[1].setValue('5');
-    await shareInputs[2].setValue('Secret 123');
-
-    const embedToggle = wrapper.find('.share-panel input[type="checkbox"]');
-    expect(embedToggle.exists()).toBe(true);
-    await embedToggle.setValue(true);
-    expect(shareInputs[2].attributes('disabled')).toBeDefined();
+    await shareInputs[1].setValue('2026-03-11T10:30');
+    await shareInputs[2].setValue('5');
+    await shareInputs[3].setValue('Secret 123');
 
     const shareButton = wrapper.findAll('button').find((button) => button.text() === 'Share link');
     await shareButton.trigger('click');
@@ -893,96 +1082,8 @@ describe('Admin app shell', () => {
 
     expect(body.max_views).toBe(5);
     expect(body.expires_at).toContain('2026-03-10T');
-    expect(body.password).toBeNull();
-    expect(body.allow_embed).toBe(true);
-  });
-
-  it('copies embed and Discord code for embeddable video shares', async () => {
-    const clipboardWrite = vi.fn().mockResolvedValue();
-    Object.defineProperty(window.navigator, 'clipboard', {
-      value: { writeText: clipboardWrite },
-      configurable: true,
-    });
-
-    const embedShare = {
-      file_id: 7,
-      token: 'feedfacefeedfacefeedfacefeedface',
-      url: 'http://localhost/share/?token=feedfacefeedfacefeedfacefeedface',
-      download_url: 'http://localhost/api/index.php?action=share.stream&token=feedfacefeedfacefeedfacefeedface&disposition=attachment',
-      created_at: '2026-03-09T00:00:00Z',
-      updated_at: '2026-03-09T00:00:00Z',
-      expires_at: null,
-      max_views: null,
-      view_count: 0,
-      remaining_views: null,
-      revoked_at: null,
-      requires_password: false,
-      allow_embed: true,
-      embed_url: 'http://localhost/embed/?token=feedfacefeedfacefeedfacefeedface',
-      embed_html: '<iframe src="http://localhost/embed/?token=feedfacefeedfacefeedfacefeedface" title="clip.mp4 (1 KB)" width="560" height="315"></iframe>',
-      discord_url: 'http://localhost/embed/stream/?token=feedfacefeedfacefeedfacefeedface',
-    };
-
-    const { wrapper } = await mountBrowserApp({
-      handlers: {
-        'tree.list': () => jsonResponse(browserTreePayload({
-          name: 'clip.mp4',
-          mime_type: 'video/mp4',
-          extension: 'mp4',
-          preview_mode: 'video',
-          preview_url: 'http://localhost/api/index.php?action=files.stream&id=7&disposition=inline',
-        })),
-        'files.share.get': () => jsonResponse({ share: embedShare }),
-      },
-    });
-
-    await wrapper.find('tbody tr').trigger('click');
-    await flushPromises();
-
-    const embedButtons = wrapper.findAll('.share-panel__embed-actions button');
-    expect(embedButtons.map((button) => button.text())).toEqual(['Copy embed code', 'Copy Discord embed code']);
-
-    await embedButtons[0].trigger('click');
-    await flushPromises();
-    expect(clipboardWrite).toHaveBeenCalledWith(embedShare.embed_html);
-    expect(wrapper.text()).toContain('Embed code copied.');
-
-    await embedButtons[1].trigger('click');
-    await flushPromises();
-    expect(clipboardWrite).toHaveBeenCalledWith(embedShare.discord_url);
-    expect(wrapper.text()).toContain('Discord embed code copied.');
-  });
-
-  it('hides embed copy actions for non-media embeddable shares', async () => {
-    const { wrapper } = await mountBrowserApp({
-      handlers: {
-        'files.share.get': () => jsonResponse({
-          share: {
-            file_id: 7,
-            token: 'feedfacefeedfacefeedfacefeedface',
-            url: 'http://localhost/share/?token=feedfacefeedfacefeedfacefeedface',
-            download_url: 'http://localhost/api/index.php?action=share.stream&token=feedfacefeedfacefeedfacefeedface&disposition=attachment',
-            created_at: '2026-03-09T00:00:00Z',
-            updated_at: '2026-03-09T00:00:00Z',
-            expires_at: null,
-            max_views: null,
-            view_count: 0,
-            remaining_views: null,
-            revoked_at: null,
-            requires_password: false,
-            allow_embed: true,
-            embed_url: 'http://localhost/embed/?token=feedfacefeedfacefeedfacefeedface',
-            embed_html: '<iframe src="http://localhost/embed/?token=feedfacefeedfacefeedfacefeedface"></iframe>',
-            discord_url: 'http://localhost/embed/stream/?token=feedfacefeedfacefeedfacefeedface',
-          },
-        }),
-      },
-    });
-
-    await wrapper.find('tbody tr').trigger('click');
-    await flushPromises();
-
-    expect(wrapper.find('.share-panel__embed-actions').exists()).toBe(false);
+    expect(body.delete_after).toContain('2026-03-11T');
+    expect(body.password).toBe('Secret 123');
   });
 
   it('removes an existing share password with an explicit action', async () => {
@@ -1405,33 +1506,427 @@ describe('Admin app shell', () => {
     expect(wrapper.text()).toContain('Uploaded file by admin: brief.txt.');
   });
 });
+describe('Video optimization uploads', () => {
+  function videoCompressionPolicy(overrides = {}) {
+    return {
+      mode: 'required',
+      max_width: 1920,
+      max_height: 1080,
+      max_fps: 60,
+      max_video_bitrate_kbps: 8000,
+      max_audio_bitrate_kbps: 192,
+      min_source_mb: 0,
+      min_savings_pct: 5,
+      ffmpeg_fallback: true,
+      ...overrides,
+    };
+  }
 
+  function uploadHandlers() {
+    return {
+      'upload.init': () => jsonResponse({
+        data: { upload_token: 'upload-token', chunk_size: 2097152 },
+      }),
+      'upload.chunk': () => jsonResponse({}),
+      'upload.complete': () => jsonResponse({}),
+    };
+  }
 
-describe('Required password change', () => {
-  it.each(['app', 'admin'])('requires a password change before loading the %s workspace', async (shell) => {
-    let user = { ...adminUser(shell === 'admin' ? 'admin' : 'user'), force_password_reset: true };
-    const mountShell = shell === 'admin' ? mountAdminApp : mountBrowserApp;
-    const { wrapper, calls } = await mountShell({
-      bootstrapUser: user,
+  async function pickFile(wrapper, file) {
+    const input = wrapper.find('input[type="file"]');
+    Object.defineProperty(input.element, 'files', { value: [file], configurable: true });
+    await input.trigger('change');
+    await flushPromises();
+  }
+
+  function uploadInitBodies(calls) {
+    return calls
+      .filter((call) => call.action === 'upload.init')
+      .map((call) => JSON.parse(call.init.body));
+  }
+
+  it('skips compression entirely when the policy is off', async () => {
+    const { wrapper, calls } = await mountBrowserApp({
       handlers: {
-        'auth.session': () => jsonResponse(sessionPayload(user)),
-        'auth.password': () => {
-          user = { ...user, force_password_reset: false };
-          return jsonResponse({ user, csrf_token: 'new-token' });
-        },
+        'auth.session': () => jsonResponse(sessionPayload(adminUser(), videoCompressionPolicy({ mode: 'off' }))),
+        ...uploadHandlers(),
       },
     });
-    expect(wrapper.find('.auth-card h1').text()).toBe('Change your password');
-    expect(calls.map(call => call.action)).toEqual(['auth.session']);
-    await wrapper.find('input[autocomplete="current-password"]').setValue('TemporaryPassword123!');
-    await wrapper.find('input[autocomplete="new-password"]').setValue('ReplacementPassword123!');
-    await wrapper.find('.auth-form').trigger('submit');
+
+    await pickFile(wrapper, new File(['x'.repeat(64)], 'movie.mov', { type: 'video/quicktime' }));
     await flushPromises();
-    expect(JSON.parse(calls.find(call => call.action === 'auth.password').init.body)).toMatchObject({
-      current_password: 'TemporaryPassword123!', password: 'ReplacementPassword123!',
+
+    expect(compressorMocks.checkSupport).not.toHaveBeenCalled();
+    const [initBody] = uploadInitBodies(calls);
+    expect(initBody.original_name).toBe('movie.mov');
+    expect(initBody.size).toBe(64);
+  });
+
+  it('compresses locally and uploads the optimized file in required mode', async () => {
+    compressorMocks.checkSupport.mockImplementation(async () => ({ supported: true }));
+    compressorMocks.inspect.mockImplementation(async () => ({
+      container: 'matroska',
+      videoCodec: 'avc',
+      width: 1280,
+      height: 720,
+      fps: 30,
+      videoBitrate: 8_000_000,
+      audioCodec: 'aac',
+      audioBitrate: 128_000,
+      decodable: true,
+    }));
+    const compressed = new File(['y'.repeat(16)], 'movie.mp4', { type: 'video/mp4' });
+    compressorMocks.compress.mockImplementation(async () => ({
+      file: compressed,
+      engine: 'mediabunny',
+      opfsToken: null,
+      originalSize: 64,
+      newSize: 16,
+    }));
+
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'auth.session': () => jsonResponse(sessionPayload(adminUser(), videoCompressionPolicy())),
+        ...uploadHandlers(),
+      },
     });
-    expect(wrapper.find('.auth-form').exists()).toBe(false);
-    expect(calls.some(call => call.action === (shell === 'admin' ? 'admin.dashboard' : 'tree.list'))).toBe(true);
-    wrapper.unmount();
+
+    await pickFile(wrapper, new File(['x'.repeat(64)], 'movie.mov', { type: 'video/quicktime' }));
+    await flushPromises();
+
+    const dialog = wrapper.findComponent({ name: 'VideoCompressionDialog' });
+    expect(dialog.exists()).toBe(true);
+    expect(wrapper.text()).toContain('Video optimization required');
+
+    const confirmButton = dialog.findAll('button').find((button) => button.text() === 'Optimize & upload');
+    await confirmButton.trigger('click');
+    await flushPromises();
+    await flushPromises();
+
+    expect(compressorMocks.compress).toHaveBeenCalledTimes(1);
+    const [initBody] = uploadInitBodies(calls);
+    expect(initBody.original_name).toBe('movie.mp4');
+    expect(initBody.size).toBe(16);
+    expect(initBody.mime_type).toBe('video/mp4');
+  });
+
+  it('uploads the original when the user declines in optional mode', async () => {
+    compressorMocks.checkSupport.mockImplementation(async () => ({ supported: true }));
+    compressorMocks.inspect.mockImplementation(async () => ({
+      container: 'matroska',
+      videoCodec: 'avc',
+      width: 1280,
+      height: 720,
+      fps: 30,
+      videoBitrate: 8_000_000,
+    }));
+
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'auth.session': () => jsonResponse(sessionPayload(adminUser(), videoCompressionPolicy({ mode: 'optional' }))),
+        ...uploadHandlers(),
+      },
+    });
+
+    await pickFile(wrapper, new File(['x'.repeat(64)], 'movie.mov', { type: 'video/quicktime' }));
+    await flushPromises();
+
+    const dialog = wrapper.findComponent({ name: 'VideoCompressionDialog' });
+    expect(wrapper.text()).toContain('Make these videos smaller?');
+
+    const declineButton = dialog.findAll('button').find((button) => button.text() === 'Upload originals');
+    await declineButton.trigger('click');
+    await flushPromises();
+    await flushPromises();
+
+    expect(compressorMocks.compress).not.toHaveBeenCalled();
+    const [initBody] = uploadInitBodies(calls);
+    expect(initBody.original_name).toBe('movie.mov');
+    expect(initBody.size).toBe(64);
+  });
+
+  it('cancels the whole upload when required mode is declined', async () => {
+    compressorMocks.checkSupport.mockImplementation(async () => ({ supported: true }));
+    compressorMocks.inspect.mockImplementation(async () => ({ container: 'avi' }));
+
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'auth.session': () => jsonResponse(sessionPayload(adminUser(), videoCompressionPolicy())),
+        ...uploadHandlers(),
+      },
+    });
+
+    await pickFile(wrapper, new File(['x'.repeat(64)], 'movie.mov', { type: 'video/quicktime' }));
+    await flushPromises();
+
+    const dialog = wrapper.findComponent({ name: 'VideoCompressionDialog' });
+    const cancelButton = dialog.findAll('button').find((button) => button.text() === 'Cancel upload');
+    await cancelButton.trigger('click');
+    await flushPromises();
+    await flushPromises();
+
+    expect(compressorMocks.compress).not.toHaveBeenCalled();
+    expect(uploadInitBodies(calls)).toEqual([]);
+  });
+
+  it('blocks required-mode uploads when the browser cannot compress', async () => {
+    compressorMocks.checkSupport.mockImplementation(async () => ({
+      supported: false,
+      fallbackCapable: false,
+      reason: 'This browser cannot encode H.264 video.',
+    }));
+
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'auth.session': () => jsonResponse(sessionPayload(adminUser(), videoCompressionPolicy())),
+        ...uploadHandlers(),
+      },
+    });
+
+    await pickFile(wrapper, new File(['x'.repeat(64)], 'movie.mov', { type: 'video/quicktime' }));
+    await flushPromises();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('requires videos to be optimized');
+    expect(uploadInitBodies(calls)).toEqual([]);
+  });
+
+  it('compresses in required mode through the fallback without a native encoder', async () => {
+    compressorMocks.checkSupport.mockImplementation(async () => ({
+      supported: false,
+      fallbackCapable: true,
+      reason: 'This browser cannot encode H.264 video natively.',
+    }));
+    compressorMocks.inspect.mockImplementation(async () => ({
+      container: 'matroska',
+      videoCodec: 'avc',
+      width: 1280,
+      height: 720,
+      fps: 30,
+      videoBitrate: 8_000_000,
+    }));
+    const compressed = new File(['y'.repeat(12)], 'movie.mp4', { type: 'video/mp4' });
+    compressorMocks.compress.mockImplementation(async () => ({
+      file: compressed,
+      engine: 'ffmpeg-wasm',
+      opfsToken: null,
+      originalSize: 64,
+      newSize: 12,
+    }));
+
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'auth.session': () => jsonResponse(sessionPayload(adminUser(), videoCompressionPolicy())),
+        ...uploadHandlers(),
+      },
+    });
+
+    await pickFile(wrapper, new File(['x'.repeat(64)], 'movie.mov', { type: 'video/quicktime' }));
+    await flushPromises();
+
+    // The dialog appears instead of a hard block.
+    const dialog = wrapper.find('.video-compression-modal');
+    expect(dialog.exists()).toBe(true);
+
+    const confirmButton = dialog.findAll('button').find((button) => button.text() === 'Optimize & upload');
+    await confirmButton.trigger('click');
+    await flushPromises();
+    await flushPromises();
+
+    expect(compressorMocks.compress).toHaveBeenCalledTimes(1);
+    const [initBody] = uploadInitBodies(calls);
+    expect(initBody.original_name).toBe('movie.mp4');
+    expect(initBody.size).toBe(12);
+  });
+
+  it('blocks required mode when the fallback is disabled by policy', async () => {
+    compressorMocks.checkSupport.mockImplementation(async () => ({
+      supported: false,
+      fallbackCapable: true,
+      reason: 'This browser cannot encode H.264 video natively.',
+    }));
+
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'auth.session': () => jsonResponse(sessionPayload(adminUser(), videoCompressionPolicy({ ffmpeg_fallback: false }))),
+        ...uploadHandlers(),
+      },
+    });
+
+    await pickFile(wrapper, new File(['x'.repeat(64)], 'movie.mov', { type: 'video/quicktime' }));
+    await flushPromises();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('requires videos to be optimized');
+    expect(uploadInitBodies(calls)).toEqual([]);
+  });
+
+  it('uploads originals in optional mode when the browser cannot compress', async () => {
+    compressorMocks.checkSupport.mockImplementation(async () => ({ supported: false }));
+
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'auth.session': () => jsonResponse(sessionPayload(adminUser(), videoCompressionPolicy({ mode: 'optional' }))),
+        ...uploadHandlers(),
+      },
+    });
+
+    await pickFile(wrapper, new File(['x'.repeat(64)], 'movie.mov', { type: 'video/quicktime' }));
+    await flushPromises();
+    await flushPromises();
+
+    const [initBody] = uploadInitBodies(calls);
+    expect(initBody.original_name).toBe('movie.mov');
+  });
+
+  it('skips already compliant videos without compressing them', async () => {
+    compressorMocks.checkSupport.mockImplementation(async () => ({ supported: true }));
+    compressorMocks.inspect.mockImplementation(async () => ({
+      container: 'MP4',
+      videoCodec: 'avc',
+      width: 1280,
+      height: 720,
+      fps: 30,
+      videoBitrate: 2_000_000,
+      audioCodec: 'aac',
+      audioBitrate: 128_000,
+      videoTrackCount: 1,
+      audioTrackCount: 1,
+    }));
+
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'auth.session': () => jsonResponse(sessionPayload(adminUser(), videoCompressionPolicy({ mode: 'optional' }))),
+        ...uploadHandlers(),
+      },
+    });
+
+    await pickFile(wrapper, new File(['x'.repeat(64)], 'movie.mp4', { type: 'video/mp4' }));
+    await flushPromises();
+    await flushPromises();
+
+    expect(wrapper.find('.video-compression-modal').exists()).toBe(false);
+    expect(compressorMocks.compress).not.toHaveBeenCalled();
+    const [initBody] = uploadInitBodies(calls);
+    expect(initBody.original_name).toBe('movie.mp4');
+  });
+
+  it('continues an optional-mode batch when one video fails to compress', async () => {
+    compressorMocks.checkSupport.mockImplementation(async () => ({ supported: true }));
+    compressorMocks.inspect.mockImplementation(async () => ({ container: 'matroska', videoCodec: 'avc', width: 1280, height: 720, fps: 30, videoBitrate: 8_000_000 }));
+    const failure = new Error('The compatibility engine is unavailable.');
+    failure.code = 'UNSUPPORTED';
+    compressorMocks.compress.mockImplementation(async () => {
+      throw failure;
+    });
+
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'auth.session': () => jsonResponse(sessionPayload(adminUser(), videoCompressionPolicy({ mode: 'optional' }))),
+        ...uploadHandlers(),
+      },
+    });
+
+    await pickFile(wrapper, new File(['x'.repeat(64)], 'movie.mov', { type: 'video/quicktime' }));
+    await flushPromises();
+
+    const dialog = wrapper.find('.video-compression-modal');
+    const confirmButton = dialog.findAll('button').find((button) => button.text() === 'Compress & upload');
+    await confirmButton.trigger('click');
+    await flushPromises();
+    await flushPromises();
+
+    // The failed video uploads as its original instead of blocking the batch.
+    const [initBody] = uploadInitBodies(calls);
+    expect(initBody.original_name).toBe('movie.mov');
+    expect(initBody.size).toBe(64);
+  });
+
+  it('keeps upload failures visible until dismissed', async () => {
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'upload.init': () => errorResponse({ message: 'The security token is invalid. Refresh the page and try again.' }),
+      },
+    });
+
+    await pickFile(wrapper, new File(['x'.repeat(64)], 'notes.txt', { type: 'text/plain' }));
+    await flushPromises();
+    await flushPromises();
+
+    const banner = wrapper.find('.status-banner--sticky');
+    expect(banner.exists()).toBe(true);
+    expect(banner.text()).toContain('The security token is invalid');
+
+    // The failure is mirrored to the server log for diagnosability.
+    await flushPromises();
+    expect(calls.some((call) => call.action === 'client.log')).toBe(true);
+
+    await banner.find('button').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.find('.status-banner--sticky').exists()).toBe(false);
+    // A new upload attempt clears any stale banner instead of stacking.
+    expect(calls.filter((call) => call.action === 'upload.init').length).toBeGreaterThan(0);
+  });
+
+  it('submits video compression settings from the uploads tab', async () => {
+    const { wrapper, calls } = await mountAdminApp({ hash: '#/settings' });
+
+    const uploadsTab = wrapper.findAll('.settings-tabs button').find((button) => button.text() === 'Uploads');
+    await uploadsTab.trigger('click');
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Video optimization');
+
+    const pane = wrapper.find('.settings-pane');
+    const modeSelect = pane.find('#video-compression-mode');
+    await modeSelect.setValue('required');
+    await modeSelect.trigger('change');
+
+    await wrapper.find('.primary-button').trigger('click');
+
+    const saveCall = calls.filter((call) => call.action === 'admin.settings.save').at(-1);
+    const body = JSON.parse(saveCall.init.body);
+
+    expect(body.video_compression.mode).toBe('required');
+    expect(body.video_compression.max_height).toBe(1080);
+    expect(body.video_compression.max_fps).toBe(60);
+    expect(body.video_compression.max_video_bitrate_kbps).toBe(8000);
+    expect(body.video_compression.min_source_mb).toBe(20);
+  });
+
+  it.each(['optional', 'required'])('encrypts before upload.init in %s mode', async (mode) => {
+    transformFile.mockResolvedValueOnce(new Blob(['encrypted contents']));
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'auth.session': () => jsonResponse({ ...sessionPayload(), upload_policy: { ...uploadPolicy(), encryption_mode: mode } }),
+        ...uploadHandlers(),
+      },
+    });
+    await pickFile(wrapper, new File(['secret'], 'private.txt'));
+    expect(uploadInitBodies(calls)).toEqual([]);
+    const dialog = wrapper.find('.encryption-dialog');
+    await dialog.findAll('input')[0].setValue('a strong test password');
+    await dialog.findAll('input')[1].setValue('a strong test password');
+    await dialog.trigger('submit');
+    await flushPromises();
+    const [body] = uploadInitBodies(calls);
+    expect(body.encryption_format).toBe('WBENC001');
+    expect(body.size).toBe(18);
+    expect(JSON.stringify(calls)).not.toContain('a strong test password');
+  });
+
+  it('cancels required encryption without starting an upload or falling back to plaintext', async () => {
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'auth.session': () => jsonResponse({ ...sessionPayload(), upload_policy: { ...uploadPolicy(), encryption_mode: 'required' } }),
+        ...uploadHandlers(),
+      },
+    });
+    await pickFile(wrapper, new File(['secret'], 'private.txt'));
+    await wrapper.find('.encryption-dialog').findAll('button').find((button) => button.text() === 'Cancel').trigger('click');
+    await flushPromises();
+    expect(uploadInitBodies(calls)).toEqual([]);
+    expect(wrapper.find('.encryption-dialog').exists()).toBe(false);
   });
 });

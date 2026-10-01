@@ -64,4 +64,31 @@ final class PermissionsTest extends DatabaseTestCase
         $this->assertTrue(Permissions::canDeleteFolder((int) $childFolder['id'], $user));
         $this->assertTrue(Permissions::canCreateFoldersIn((int) $childFolder['id'], $user));
     }
+
+    public function testCanManageStructure(): void
+    {
+        $this->assertFalse(Permissions::canManageStructure(null));
+        $this->assertTrue(Permissions::canManageStructure(['role' => 'super_admin']));
+        $this->assertTrue(Permissions::canManageStructure(['role' => 'admin']));
+        $this->assertFalse(Permissions::canManageStructure(['role' => 'user']));
+        $this->assertFalse(Permissions::canManageStructure(['role' => 'guest']));
+        $this->assertFalse(Permissions::canManageStructure(['role' => 'editor']));
+    }
+
+    public function testPublicAccessEnabled(): void
+    {
+        $this->assertFalse(Permissions::publicAccessEnabled());
+
+        \WbFileBrowser\Database::updateSetting('public_access', '1');
+        $this->assertTrue(Permissions::publicAccessEnabled());
+
+        \WbFileBrowser\Database::updateSetting('public_access', '0');
+        $this->assertFalse(Permissions::publicAccessEnabled());
+
+        \WbFileBrowser\Database::updateSetting('public_access', 'true');
+        $this->assertTrue(Permissions::publicAccessEnabled());
+
+        \WbFileBrowser\Database::updateSetting('public_access', 'false');
+        $this->assertFalse(Permissions::publicAccessEnabled());
+    }
 }
