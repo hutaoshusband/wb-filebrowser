@@ -275,6 +275,29 @@ function wb_random_token(int $bytes = 16): string
     return bin2hex(random_bytes($bytes));
 }
 
+function wb_embed_media_mime_type(string $extension): ?string
+{
+    $extension = strtolower(ltrim(trim($extension), '.'));
+    $embedMediaMimeTypes = [
+        'mp4' => 'video/mp4',
+        'm4v' => 'video/mp4',
+        'webm' => 'video/webm',
+        'mov' => 'video/quicktime',
+        'ogv' => 'video/ogg',
+        'mp3' => 'audio/mpeg',
+        'm4a' => 'audio/mp4',
+        'aac' => 'audio/aac',
+        'ogg' => 'audio/ogg',
+        'oga' => 'audio/ogg',
+        'opus' => 'audio/ogg',
+        'wav' => 'audio/wav',
+        'flac' => 'audio/flac',
+        'weba' => 'audio/webm',
+    ];
+
+    return $embedMediaMimeTypes[$extension] ?? null;
+}
+
 function wb_json_html(mixed $value): string
 {
     return (string) json_encode(
@@ -293,6 +316,14 @@ function wb_bootstrap_script_tag(array $bootstrap): string
     return '<script id="wb-bootstrap" type="application/json">' . wb_json_html($bootstrap) . '</script>';
 }
 
+function wb_asset_url(string $path): string
+{
+    $assetPath = dirname(__DIR__) . $path;
+    $version = is_file($assetPath) ? (string) filemtime($assetPath) : '1';
+
+    return wb_url($path . '?v=' . $version);
+}
+
 function wb_page_head(string $title): string
 {
     return implode("\n", [
@@ -300,7 +331,7 @@ function wb_page_head(string $title): string
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
         '<title>' . wb_h($title) . '</title>',
         '<link rel="icon" type="image/svg+xml" href="' . wb_h(wb_url('/media/logo.svg')) . '">',
-        '<link rel="stylesheet" href="' . wb_h(wb_url('/assets/app.css')) . '">',
+        '<link rel="stylesheet" href="' . wb_h(wb_asset_url('/assets/app.css')) . '">',
     ]);
 }
 

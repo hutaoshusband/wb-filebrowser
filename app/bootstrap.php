@@ -16,6 +16,8 @@ if (!defined('WB_STORAGE')) {
 
 require_once __DIR__ . '/helpers.php';
 require_once __DIR__ . '/Settings.php';
+require_once __DIR__ . '/DatabaseConfig.php';
+require_once __DIR__ . '/DatabasePlatform.php';
 require_once __DIR__ . '/Installer.php';
 require_once __DIR__ . '/Database.php';
 require_once __DIR__ . '/Security.php';
@@ -66,6 +68,7 @@ function wb_bootstrap_page(string $surface): array
         'app_version' => Installer::VERSION,
         'csrf_token' => Security::csrfToken(),
         'user' => $user,
+        'share_embeds_enabled' => $installed ? WbFileBrowser\Settings::shareEmbedsEnabled() : false,
         'maintenance' => $installed
             ? WbFileBrowser\MaintenanceMode::payload(
                 $user,

@@ -47,6 +47,7 @@ function createDefaultSettings() {
       maintenance_message: createDefaultMaintenance().message,
       share_terms_enabled: false,
       share_terms_message: 'By opening or downloading this shared file, you confirm that you are authorized to access it and will handle it according to the applicable terms and confidentiality requirements.',
+      share_embeds_enabled: false,
     },
     uploads: {
       max_file_size_mb: 0,
@@ -91,6 +92,7 @@ const session = reactive({
   publicAccess: false,
   rootFolderId: 1,
   appVersion: bootstrap.app_version ?? '1.0.0-alpha',
+  shareEmbedsEnabled: Boolean(bootstrap.share_embeds_enabled),
   storage: { used_label: '0 B', total_label: 'Unknown' },
   diagnostic: { exposed: false, checked_at: '', message: '', probe_path: '', probe_url: '' },
   maintenance: { ...createDefaultMaintenance(), ...(bootstrap.maintenance ?? {}) },
@@ -159,6 +161,7 @@ const shareForm = reactive({
   expiresAtLocal: '',
   maxViews: '',
   password: '',
+  allowEmbed: false,
 });
 
 const authForm = reactive({ username: '', password: '' });
@@ -219,7 +222,7 @@ const currentEntries = computed(() => (searchActive.value ? [...searchState.fold
 const selectedItem = computed(() => currentEntries.value.find((item) => rowKey(item) === selectedKey.value) ?? null);
 const canUploadHere = computed(() => shell === 'app' && session.user !== null && folderState.can_upload);
 const canCreateFoldersHere = computed(() => shell === 'app' && folderState.can_create_folders);
-const canManageShares = computed(() => shell === 'app' && isAdmin.value);
+const canManageShares = computed(() => shell === 'app' && (isAdmin.value || session.shareEmbedsEnabled));
 const canEditDescription = computed(() => Boolean(infoItem.value?.can_edit));
 const breadcrumbItems = computed(() => searchActive.value
   ? [{ id: session.rootFolderId, name: 'Home' }, { id: -1, name: 'Search results' }]
@@ -378,6 +381,7 @@ async function refreshSession() {
   session.publicAccess = Boolean(payload.public_access);
   session.rootFolderId = payload.root_folder_id ?? 1;
   session.appVersion = payload.app_version ?? session.appVersion;
+  session.shareEmbedsEnabled = Boolean(payload.share_embeds_enabled);
   session.storage = payload.storage ?? session.storage;
   session.diagnostic = payload.diagnostic ?? session.diagnostic;
   session.display = { ...createDefaultDisplaySettings(), ...(payload.display ?? session.display) };
@@ -1288,6 +1292,7 @@ function resetShareState() {
   shareForm.expiresAtLocal = '';
   shareForm.maxViews = '';
   shareForm.password = '';
+  shareForm.allowEmbed = false;
 }
 
 function toLocalDateTimeInput(value) {
@@ -1318,18 +1323,25 @@ function applyShareForm(item, link = null) {
   shareForm.expiresAtLocal = toLocalDateTimeInput(link?.expires_at ?? '');
   shareForm.maxViews = link?.max_views ? String(link.max_views) : '';
   shareForm.password = '';
+  shareForm.allowEmbed = Boolean(link?.allow_embed);
 }
 
 function shareOptionsFor(item) {
   if (!item || item.type !== 'file') {
-    return { expires_at: null, max_views: null };
+    return { expires_at: null, max_views: null, allow_embed: false };
   }
 
+  const link = shareState.fileId === item.id ? shareState.link : null;
   const source = shareForm.fileId === item.id
     ? shareForm
-    : { expiresAtLocal: '', maxViews: '', password: '' };
+    : {
+        expiresAtLocal: toLocalDateTimeInput(link?.expires_at ?? ''),
+        maxViews: link?.max_views ? String(link.max_views) : '',
+        password: '',
+        allowEmbed: Boolean(link?.allow_embed),
+      };
   const maxViews = Number(source.maxViews);
-  const password = typeof source.password === 'string' && source.password.trim() !== ''
+  const password = !source.allowEmbed && typeof source.password === 'string' && source.password.trim() !== ''
     ? source.password
     : null;
 
@@ -1337,6 +1349,7 @@ function shareOptionsFor(item) {
     expires_at: fromLocalDateTimeInput(source.expiresAtLocal),
     max_views: Number.isInteger(maxViews) && maxViews > 0 ? maxViews : null,
     password,
+    allow_embed: Boolean(source.allowEmbed),
   };
 }
 
@@ -1365,14 +1378,46 @@ async function loadShareState(item = shareContextItem.value) {
   }
 }
 
-async function writeShareLink(url) {
+async function copyText(text, promptLabel) {
   if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(url);
+    await navigator.clipboard.writeText(text);
     return true;
   }
 
-  window.prompt('Copy this share link', url);
+  window.prompt(promptLabel, text);
   return false;
+}
+
+async function copyEmbedCode(item = shareContextItem.value) {
+  const link = item && shareState.fileId === item.id ? shareState.link : null;
+
+  if (!item || item.type !== 'file' || !link?.embed_html) {
+    showMessage('Enable embedding for this file first.');
+    return;
+  }
+
+  try {
+    const copied = await copyText(link.embed_html, 'Copy this embed code');
+    showMessage(copied ? 'Embed code copied.' : 'Embed code ready.');
+  } catch (error) {
+    window.prompt('Copy this embed code', link.embed_html);
+  }
+}
+
+async function copyDiscordEmbed(item = shareContextItem.value) {
+  const link = item && shareState.fileId === item.id ? shareState.link : null;
+
+  if (!item || item.type !== 'file' || !link?.discord_url) {
+    showMessage('Enable embedding for this file first.');
+    return;
+  }
+
+  try {
+    const copied = await copyText(link.discord_url, 'Copy this Discord embed code');
+    showMessage(copied ? 'Discord embed code copied.' : 'Discord embed code ready.');
+  } catch (error) {
+    window.prompt('Copy this Discord embed code', link.discord_url);
+  }
 }
 
 async function createShareLink(item = shareContextItem.value, { open = false } = {}) {
@@ -1397,7 +1442,7 @@ async function createShareLink(item = shareContextItem.value, { open = false } =
 
     let copied = false;
     try {
-      copied = await writeShareLink(payload.share.url);
+      copied = await copyText(payload.share.url, 'Copy this share link');
     } catch (error) {
       window.prompt('Copy this share link', payload.share.url);
     }
@@ -2894,6 +2939,12 @@ onBeforeUnmount(() => {
                 <span class="checkbox-control__label">Allow published folders to be browsed without login</span>
               </label>
               <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
+                <input v-model="adminState.settings.access.share_embeds_enabled" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                <span class="checkbox-control__label">Allow users to create share links and embed media</span>
+              </label>
+              <p class="panel-meta">Users can share files they can access and embed video and audio. Administrators can always embed.</p>
+              <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
                 <input v-model="adminState.settings.access.maintenance_enabled" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
                 <span class="checkbox-control__indicator" aria-hidden="true"></span>
                 <span class="checkbox-control__label">Enable maintenance mode for non-admin users</span>
@@ -3420,7 +3471,13 @@ onBeforeUnmount(() => {
                   type="password"
                   autocomplete="new-password"
                   placeholder="Leave blank to keep the current password"
+                  :disabled="shareForm.allowEmbed"
                 >
+              </label>
+              <label class="checkbox-control checkbox-control--row">
+                <input v-model="shareForm.allowEmbed" class="checkbox-control__input" type="checkbox">
+                <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                <span class="checkbox-control__label">Allow embedding (websites & Discord)</span>
               </label>
               <small class="panel-meta">
                 <template v-if="shareState.fileId === previewItem.id && shareState.link">
@@ -3434,6 +3491,13 @@ onBeforeUnmount(() => {
               >
                 Remove password
               </button>
+              <div
+                v-if="shareState.fileId === previewItem.id && shareState.link?.allow_embed && shareState.link?.embed_html && ['video', 'audio'].includes(previewMode(previewItem))"
+                class="share-panel__embed-actions"
+              >
+                <button type="button" @click="copyEmbedCode(previewItem)">Copy embed code</button>
+                <button type="button" @click="copyDiscordEmbed(previewItem)">Copy Discord embed code</button>
+              </div>
             </div>
           </aside>
         </div>
@@ -3504,7 +3568,13 @@ onBeforeUnmount(() => {
             type="password"
             autocomplete="new-password"
             placeholder="Leave blank to keep the current password"
+            :disabled="shareForm.allowEmbed"
           >
+        </label>
+        <label class="checkbox-control checkbox-control--row">
+          <input v-model="shareForm.allowEmbed" class="checkbox-control__input" type="checkbox">
+          <span class="checkbox-control__indicator" aria-hidden="true"></span>
+          <span class="checkbox-control__label">Allow embedding (websites & Discord)</span>
         </label>
         <small class="panel-meta">
           <template v-if="shareState.fileId === infoItem.id && shareState.link">
@@ -3518,6 +3588,13 @@ onBeforeUnmount(() => {
         >
           Remove password
         </button>
+        <div
+          v-if="shareState.fileId === infoItem.id && shareState.link?.allow_embed && shareState.link?.embed_html && ['video', 'audio'].includes(previewMode(infoItem))"
+          class="share-panel__embed-actions"
+        >
+          <button type="button" @click="copyEmbedCode(infoItem)">Copy embed code</button>
+          <button type="button" @click="copyDiscordEmbed(infoItem)">Copy Discord embed code</button>
+        </div>
       </div>
       <div v-if="shell === 'app' && canShowItemActions(infoItem)" class="drawer-actions">
         <button v-if="canManageShares && infoItem.type === 'file'" type="button" @click="createShareLink(infoItem)">Share link</button>

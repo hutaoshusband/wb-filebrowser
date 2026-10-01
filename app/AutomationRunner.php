@@ -38,13 +38,12 @@ final class AutomationRunner
     public static function seedJobs(?PDO $pdo = null): void
     {
         $pdo ??= Database::connection();
-        $statement = $pdo->prepare(
-            'INSERT INTO automation_jobs (
-                job_key, label, status, last_result, last_message, last_run_at, next_run_at, last_duration_ms, created_at, updated_at
-             ) VALUES (
-                :job_key, :label, :status, :last_result, :last_message, :last_run_at, :next_run_at, :last_duration_ms, :created_at, :updated_at
-             )
-             ON CONFLICT(job_key) DO UPDATE SET label = excluded.label, updated_at = excluded.updated_at'
+        $statement = Database::prepareUpsert(
+            $pdo,
+            'automation_jobs',
+            ['job_key', 'label', 'status', 'last_result', 'last_message', 'last_run_at', 'next_run_at', 'last_duration_ms', 'created_at', 'updated_at'],
+            ['label', 'updated_at'],
+            ['job_key']
         );
 
         foreach (self::definitions() as $jobKey => $definition) {
@@ -438,7 +437,7 @@ final class AutomationRunner
         $pdo->beginTransaction();
 
         try {
-            $statement = $pdo->prepare('SELECT value FROM settings WHERE key = :key LIMIT 1');
+            $statement = $pdo->prepare('SELECT value FROM settings WHERE ' . DatabasePlatform::quoteIdentifier(Database::driver(), 'key') . ' = :key LIMIT 1');
             $statement->execute([':key' => 'automation_lock_until']);
             $lockUntil = (string) ($statement->fetchColumn() ?: '');
             $lockTimestamp = strtotime($lockUntil);
@@ -450,11 +449,7 @@ final class AutomationRunner
             }
 
             $token = wb_random_token(16);
-            $upsert = $pdo->prepare(
-                'INSERT INTO settings (key, value, updated_at)
-                 VALUES (:key, :value, :updated_at)
-                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
-            );
+            $upsert = Database::prepareUpsert($pdo, 'settings', ['key', 'value', 'updated_at'], ['value', 'updated_at'], ['key']);
 
             foreach ([
                 'automation_lock_token' => $token,
@@ -481,7 +476,7 @@ final class AutomationRunner
 
     private static function releaseLock(PDO $pdo, string $token): void
     {
-        $statement = $pdo->prepare('SELECT value FROM settings WHERE key = :key LIMIT 1');
+        $statement = $pdo->prepare('SELECT value FROM settings WHERE ' . DatabasePlatform::quoteIdentifier(Database::driver(), 'key') . ' = :key LIMIT 1');
         $statement->execute([':key' => 'automation_lock_token']);
         $currentToken = (string) ($statement->fetchColumn() ?: '');
 
@@ -489,11 +484,7 @@ final class AutomationRunner
             return;
         }
 
-        $upsert = $pdo->prepare(
-            'INSERT INTO settings (key, value, updated_at)
-             VALUES (:key, :value, :updated_at)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
-        );
+        $upsert = Database::prepareUpsert($pdo, 'settings', ['key', 'value', 'updated_at'], ['value', 'updated_at'], ['key']);
 
         foreach ([
             'automation_lock_token' => '',

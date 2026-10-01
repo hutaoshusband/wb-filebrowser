@@ -40,6 +40,7 @@ function sessionPayload(user = adminUser()) {
     public_access: false,
     root_folder_id: 1,
     app_version: '1.0.0-alpha',
+    share_embeds_enabled: false,
     storage: { used_label: '0 B', total_label: '100 GB' },
     diagnostic: { exposed: false, checked_at: '', message: 'Shield healthy.', probe_path: 'probe/file.txt', probe_url: '/storage/probe/file.txt' },
     maintenance: {
@@ -201,6 +202,7 @@ function installFetchStub(overrides = {}) {
           maintenance_message: 'The file browser is temporarily unavailable while maintenance is in progress. Please try again later.',
           share_terms_enabled: false,
           share_terms_message: 'By opening or downloading this shared file, you confirm that you are authorized to access it and will handle it according to the applicable terms and confidentiality requirements.',
+          share_embeds_enabled: false,
         },
         uploads: { max_file_size_mb: 256, allowed_extensions: '', stale_upload_ttl_hours: 24 },
         automation: {
@@ -253,6 +255,7 @@ function installFetchStub(overrides = {}) {
           maintenance_message: 'Updates in progress',
           share_terms_enabled: true,
           share_terms_message: 'Accept the published terms before opening or downloading shared files.',
+          share_embeds_enabled: true,
         },
         uploads: { max_file_size_mb: 64, allowed_extensions: 'png, pdf', stale_upload_ttl_hours: 8 },
         automation: {
@@ -323,6 +326,7 @@ function installFetchStub(overrides = {}) {
           maintenance_message: 'The file browser is temporarily unavailable while maintenance is in progress. Please try again later.',
           share_terms_enabled: false,
           share_terms_message: 'By opening or downloading this shared file, you confirm that you are authorized to access it and will handle it according to the applicable terms and confidentiality requirements.',
+          share_embeds_enabled: false,
         },
         uploads: { max_file_size_mb: 256, allowed_extensions: '', stale_upload_ttl_hours: 24 },
         automation: {
@@ -557,7 +561,7 @@ describe('Admin app shell', () => {
     const { wrapper, calls } = await mountAdminApp({ hash: '#/settings' });
 
     const accessCheckboxes = wrapper.findAll('.settings-pane input[type="checkbox"]');
-    await accessCheckboxes[1].setValue(true);
+    await accessCheckboxes[2].setValue(true);
     await wrapper.find('.settings-pane select').setValue('app_and_share');
     await wrapper.find('.settings-pane textarea').setValue('Updates in progress');
 
@@ -606,7 +610,7 @@ describe('Admin app shell', () => {
     expect(wrapper.text()).toContain('Shared file terms');
 
     const accessCheckboxes = wrapper.findAll('.settings-pane input[type="checkbox"]');
-    await accessCheckboxes[2].setValue(true);
+    await accessCheckboxes[3].setValue(true);
 
     const accessTextareas = wrapper.findAll('.settings-pane textarea');
     await accessTextareas[1].setValue('Accept the published terms before opening or downloading shared files.');
@@ -618,6 +622,23 @@ describe('Admin app shell', () => {
 
     expect(body.access.share_terms_enabled).toBe(true);
     expect(body.access.share_terms_message).toBe('Accept the published terms before opening or downloading shared files.');
+  });
+
+  it('submits the user share embeds toggle from the access tab', async () => {
+    const { wrapper, calls } = await mountAdminApp({ hash: '#/settings' });
+
+    expect(wrapper.text()).toContain('Allow users to create share links and embed media');
+    expect(wrapper.text()).toContain('Users can share files they can access and embed video and audio. Administrators can always embed.');
+
+    const accessCheckboxes = wrapper.findAll('.settings-pane input[type="checkbox"]');
+    await accessCheckboxes[1].setValue(true);
+
+    await wrapper.find('.primary-button').trigger('click');
+
+    const saveCall = calls.filter((call) => call.action === 'admin.settings.save').at(-1);
+    const body = JSON.parse(saveCall.init.body);
+
+    expect(body.access.share_embeds_enabled).toBe(true);
   });
 
   it('loads audit logs, applies category filters, and paginates', async () => {
@@ -859,6 +880,11 @@ describe('Admin app shell', () => {
     await shareInputs[1].setValue('5');
     await shareInputs[2].setValue('Secret 123');
 
+    const embedToggle = wrapper.find('.share-panel input[type="checkbox"]');
+    expect(embedToggle.exists()).toBe(true);
+    await embedToggle.setValue(true);
+    expect(shareInputs[2].attributes('disabled')).toBeDefined();
+
     const shareButton = wrapper.findAll('button').find((button) => button.text() === 'Share link');
     await shareButton.trigger('click');
 
@@ -867,7 +893,96 @@ describe('Admin app shell', () => {
 
     expect(body.max_views).toBe(5);
     expect(body.expires_at).toContain('2026-03-10T');
-    expect(body.password).toBe('Secret 123');
+    expect(body.password).toBeNull();
+    expect(body.allow_embed).toBe(true);
+  });
+
+  it('copies embed and Discord code for embeddable video shares', async () => {
+    const clipboardWrite = vi.fn().mockResolvedValue();
+    Object.defineProperty(window.navigator, 'clipboard', {
+      value: { writeText: clipboardWrite },
+      configurable: true,
+    });
+
+    const embedShare = {
+      file_id: 7,
+      token: 'feedfacefeedfacefeedfacefeedface',
+      url: 'http://localhost/share/?token=feedfacefeedfacefeedfacefeedface',
+      download_url: 'http://localhost/api/index.php?action=share.stream&token=feedfacefeedfacefeedfacefeedface&disposition=attachment',
+      created_at: '2026-03-09T00:00:00Z',
+      updated_at: '2026-03-09T00:00:00Z',
+      expires_at: null,
+      max_views: null,
+      view_count: 0,
+      remaining_views: null,
+      revoked_at: null,
+      requires_password: false,
+      allow_embed: true,
+      embed_url: 'http://localhost/embed/?token=feedfacefeedfacefeedfacefeedface',
+      embed_html: '<iframe src="http://localhost/embed/?token=feedfacefeedfacefeedfacefeedface" title="clip.mp4 (1 KB)" width="560" height="315"></iframe>',
+      discord_url: 'http://localhost/embed/stream/?token=feedfacefeedfacefeedfacefeedface',
+    };
+
+    const { wrapper } = await mountBrowserApp({
+      handlers: {
+        'tree.list': () => jsonResponse(browserTreePayload({
+          name: 'clip.mp4',
+          mime_type: 'video/mp4',
+          extension: 'mp4',
+          preview_mode: 'video',
+          preview_url: 'http://localhost/api/index.php?action=files.stream&id=7&disposition=inline',
+        })),
+        'files.share.get': () => jsonResponse({ share: embedShare }),
+      },
+    });
+
+    await wrapper.find('tbody tr').trigger('click');
+    await flushPromises();
+
+    const embedButtons = wrapper.findAll('.share-panel__embed-actions button');
+    expect(embedButtons.map((button) => button.text())).toEqual(['Copy embed code', 'Copy Discord embed code']);
+
+    await embedButtons[0].trigger('click');
+    await flushPromises();
+    expect(clipboardWrite).toHaveBeenCalledWith(embedShare.embed_html);
+    expect(wrapper.text()).toContain('Embed code copied.');
+
+    await embedButtons[1].trigger('click');
+    await flushPromises();
+    expect(clipboardWrite).toHaveBeenCalledWith(embedShare.discord_url);
+    expect(wrapper.text()).toContain('Discord embed code copied.');
+  });
+
+  it('hides embed copy actions for non-media embeddable shares', async () => {
+    const { wrapper } = await mountBrowserApp({
+      handlers: {
+        'files.share.get': () => jsonResponse({
+          share: {
+            file_id: 7,
+            token: 'feedfacefeedfacefeedfacefeedface',
+            url: 'http://localhost/share/?token=feedfacefeedfacefeedfacefeedface',
+            download_url: 'http://localhost/api/index.php?action=share.stream&token=feedfacefeedfacefeedfacefeedface&disposition=attachment',
+            created_at: '2026-03-09T00:00:00Z',
+            updated_at: '2026-03-09T00:00:00Z',
+            expires_at: null,
+            max_views: null,
+            view_count: 0,
+            remaining_views: null,
+            revoked_at: null,
+            requires_password: false,
+            allow_embed: true,
+            embed_url: 'http://localhost/embed/?token=feedfacefeedfacefeedfacefeedface',
+            embed_html: '<iframe src="http://localhost/embed/?token=feedfacefeedfacefeedfacefeedface"></iframe>',
+            discord_url: 'http://localhost/embed/stream/?token=feedfacefeedfacefeedfacefeedface',
+          },
+        }),
+      },
+    });
+
+    await wrapper.find('tbody tr').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.find('.share-panel__embed-actions').exists()).toBe(false);
   });
 
   it('removes an existing share password with an explicit action', async () => {

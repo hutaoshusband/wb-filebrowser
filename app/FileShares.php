@@ -47,12 +47,18 @@ final class FileShares
 
         if ($existing !== null) {
             [$passwordHash, $passwordVersion, $passwordAuditEvent] = self::updatedPasswordState($existing, $options);
+
+            if ($options['allow_embed'] && $passwordHash !== null && trim($passwordHash) !== '') {
+                throw new RuntimeException('Share passwords cannot be combined with embedding.');
+            }
+
             $update = $pdo->prepare(
                 'UPDATE file_shares
                  SET expires_at = :expires_at,
                      max_views = :max_views,
                      password_hash = :password_hash,
                      password_version = :password_version,
+                     allow_embed = :allow_embed,
                      updated_at = :updated_at
                  WHERE id = :id'
             );
@@ -61,6 +67,7 @@ final class FileShares
                 ':max_views' => $options['max_views'],
                 ':password_hash' => $passwordHash,
                 ':password_version' => $passwordVersion,
+                ':allow_embed' => $options['allow_embed'] ? 1 : 0,
                 ':updated_at' => $now,
                 ':id' => $existing['id'],
             ]);
@@ -104,6 +111,7 @@ final class FileShares
                 view_count,
                 password_hash,
                 password_version,
+                allow_embed,
                 created_at,
                 updated_at,
                 revoked_at
@@ -116,6 +124,7 @@ final class FileShares
                 0,
                 :password_hash,
                 :password_version,
+                :allow_embed,
                 :created_at,
                 :updated_at,
                 NULL
@@ -131,6 +140,7 @@ final class FileShares
                 ':max_views' => $options['max_views'],
                 ':password_hash' => $passwordHash,
                 ':password_version' => $passwordVersion,
+                ':allow_embed' => $options['allow_embed'] ? 1 : 0,
                 ':created_at' => $now,
                 ':updated_at' => $now,
             ]);
@@ -383,11 +393,14 @@ final class FileShares
 
     private static function assertCanManageShares(array $user, array $file, PDO $pdo): void
     {
-        if (!Permissions::canManageStructure($user)) {
+        $canViewFolder = Permissions::canViewFolderContents((int) $file['folder_id'], $user, $pdo);
+
+        if (!Permissions::canManageStructure($user)
+            && !(Settings::shareEmbedsEnabled($pdo) && $canViewFolder)) {
             throw new RuntimeException('Only administrators can manage share links.');
         }
 
-        if (!Permissions::canViewFolderContents((int) $file['folder_id'], $user, $pdo)) {
+        if (!$canViewFolder) {
             throw new RuntimeException('You do not have access to this file.');
         }
     }
@@ -454,6 +467,115 @@ final class FileShares
         return $share;
     }
 
+    private static function resolveEmbeddableShare(string $token, PDO $pdo): array
+    {
+        self::assertToken($token);
+        $now = wb_now();
+        $statement = $pdo->prepare(
+            'SELECT
+                file_shares.id,
+                file_shares.file_id,
+                file_shares.token,
+                file_shares.expires_at,
+                file_shares.max_views,
+                file_shares.view_count,
+                file_shares.password_hash,
+                file_shares.password_version,
+                file_shares.allow_embed,
+                file_shares.revoked_at,
+                file_shares.created_at AS share_created_at,
+                file_shares.updated_at AS share_updated_at,
+                share_creators.role AS creator_role,
+                files.folder_id,
+                files.original_name,
+                files.disk_name,
+                files.disk_extension,
+                files.mime_type,
+                files.size,
+                files.checksum,
+                files.updated_at
+             FROM file_shares
+             INNER JOIN files ON files.id = file_shares.file_id
+             LEFT JOIN users AS share_creators ON share_creators.id = file_shares.created_by
+             WHERE file_shares.token = :token
+               AND file_shares.revoked_at IS NULL
+               AND (file_shares.expires_at IS NULL OR file_shares.expires_at > :now)
+               AND (file_shares.max_views IS NULL OR file_shares.view_count < file_shares.max_views)
+             LIMIT 1'
+        );
+        $statement->execute([
+            ':token' => $token,
+            ':now' => $now,
+        ]);
+        $share = $statement->fetch();
+
+        if (!is_array($share)) {
+            throw new RuntimeException('Shared file not found.');
+        }
+
+        if ((int) $share['allow_embed'] !== 1) {
+            throw new RuntimeException('Shared file not found.');
+        }
+
+        if (trim((string) $share['password_hash']) !== '') {
+            throw new RuntimeException('Shared file not found.');
+        }
+
+        if (Settings::shareTermsPolicy($pdo)['enabled']) {
+            throw new RuntimeException('Shared file not found.');
+        }
+
+        if (!in_array($share['creator_role'], ['admin', 'super_admin'], true) && !Settings::shareEmbedsEnabled($pdo)) {
+            throw new RuntimeException('Shared file not found.');
+        }
+
+        if (wb_embed_media_mime_type(strtolower(pathinfo((string) $share['original_name'], PATHINFO_EXTENSION))) === null) {
+            throw new RuntimeException('Shared file not found.');
+        }
+
+        return $share;
+    }
+
+    public static function embedPagePayload(string $token): array
+    {
+        $pdo = Database::connection();
+        self::cleanupInactiveShares($pdo);
+        $share = self::resolveEmbeddableShare($token, $pdo);
+        $extension = strtolower(pathinfo((string) $share['original_name'], PATHINFO_EXTENSION));
+        $preview = wb_file_preview_metadata((string) $share['mime_type'], $extension);
+        $urls = self::embedUrls((string) $share['token']);
+
+        AuditLog::record('share.embed.view', 'file_views', [
+            'target_type' => 'file',
+            'target_id' => (int) $share['file_id'],
+            'target_label' => (string) $share['original_name'],
+            'summary' => 'Viewed embedded file ' . $share['original_name'],
+        ], $pdo);
+
+        return [
+            'name' => (string) $share['original_name'],
+            'size_label' => wb_format_bytes((int) $share['size']),
+            'mime_type' => (string) wb_embed_media_mime_type($extension),
+            'extension' => $extension,
+            'stream_url' => $urls['stream'],
+            'preview_mode' => (string) $preview['preview_mode'],
+        ];
+    }
+
+    public static function streamEmbed(string $token): never
+    {
+        $pdo = Database::connection();
+        self::cleanupInactiveShares($pdo);
+        $share = self::resolveEmbeddableShare($token, $pdo);
+        $mimeType = (string) wb_embed_media_mime_type(strtolower(pathinfo((string) $share['original_name'], PATHINFO_EXTENSION)));
+
+        Security::sendMediaFile(
+            self::blobPath((string) $share['disk_name'], (string) $share['disk_extension']),
+            $mimeType,
+            (string) $share['original_name']
+        );
+    }
+
     private static function incrementViewCount(array $share, PDO $pdo): array
     {
         $newViewCount = (int) $share['view_count'] + 1;
@@ -511,7 +633,7 @@ final class FileShares
         $viewCount = (int) ($share['view_count'] ?? 0);
         $maxViews = $share['max_views'] === null ? null : (int) $share['max_views'];
 
-        return [
+        $serialized = [
             'file_id' => (int) $file['id'],
             'token' => (string) $share['token'],
             'url' => $urls['view'],
@@ -524,6 +646,88 @@ final class FileShares
             'remaining_views' => $maxViews === null ? null : max(0, $maxViews - $viewCount),
             'revoked_at' => $share['revoked_at'] === null ? null : (string) $share['revoked_at'],
             'requires_password' => ((string) ($share['password_hash'] ?? '')) !== '',
+            'allow_embed' => (int) ($share['allow_embed'] ?? 0) === 1,
+        ];
+
+        if (self::shareIsEmbedEligible($share, $file)) {
+            $serialized += self::embedShareFields($share, $file);
+        }
+
+        return $serialized;
+    }
+
+    private static function shareIsEmbedEligible(array $share, array $file): bool
+    {
+        if ((int) ($share['allow_embed'] ?? 0) !== 1) {
+            return false;
+        }
+
+        if (trim((string) ($share['password_hash'] ?? '')) !== '') {
+            return false;
+        }
+
+        if (Settings::shareTermsPolicy()['enabled']) {
+            return false;
+        }
+
+        if (!self::shareCreatorMayEmbed($share['created_by'] ?? null)) {
+            return false;
+        }
+
+        $extension = strtolower(pathinfo((string) $file['original_name'], PATHINFO_EXTENSION));
+
+        if (wb_embed_media_mime_type($extension) === null) {
+            return false;
+        }
+
+        $preview = wb_file_preview_metadata((string) $file['mime_type'], $extension);
+
+        return in_array($preview['preview_mode'], ['video', 'audio'], true);
+    }
+
+    private static function shareCreatorMayEmbed(mixed $createdBy): bool
+    {
+        $creatorId = $createdBy === null || trim((string) $createdBy) === '' ? null : (int) $createdBy;
+
+        if ($creatorId === null) {
+            return Settings::shareEmbedsEnabled();
+        }
+
+        $statement = Database::connection()->prepare('SELECT role FROM users WHERE id = :id LIMIT 1');
+        $statement->execute([':id' => $creatorId]);
+        $role = $statement->fetchColumn();
+
+        return in_array($role, ['admin', 'super_admin'], true) || Settings::shareEmbedsEnabled();
+    }
+
+    private static function embedShareFields(array $share, array $file): array
+    {
+        $urls = self::embedUrls((string) $share['token']);
+        $extension = strtolower(pathinfo((string) $file['original_name'], PATHINFO_EXTENSION));
+        $preview = wb_file_preview_metadata((string) $file['mime_type'], $extension);
+        $title = wb_h((string) $file['original_name'] . ' (' . wb_format_bytes((int) $file['size']) . ')');
+
+        if ($preview['preview_mode'] === 'audio') {
+            $embedHtml = '<iframe src="' . $urls['page'] . '" title="' . $title . '" width="100%" height="200" style="width:100%;height:200px;border:0" allow="autoplay" referrerpolicy="strict-origin-when-cross-origin" loading="lazy"></iframe>';
+        } else {
+            $embedHtml = '<iframe src="' . $urls['page'] . '" title="' . $title . '" width="560" height="315" style="width:100%;aspect-ratio:16/9;height:auto;border:0" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen referrerpolicy="strict-origin-when-cross-origin" loading="lazy"></iframe>';
+        }
+
+        return [
+            'embed_url' => $urls['page'],
+            'embed_html' => $embedHtml,
+            'discord_url' => $urls['stream'],
+        ];
+    }
+
+    private static function embedUrls(string $token): array
+    {
+        $pagePath = '/embed/?token=' . $token;
+        $streamPath = '/embed/stream/?token=' . $token;
+
+        return [
+            'page' => wb_absolute_url($pagePath) ?? wb_url($pagePath),
+            'stream' => wb_absolute_url($streamPath) ?? wb_url($streamPath),
         ];
     }
 
@@ -654,12 +858,17 @@ final class FileShares
         $maxViewsInput = $options['max_views'] ?? null;
         $passwordInput = (string) ($options['password'] ?? '');
         $clearPassword = wb_parse_bool($options['clear_password'] ?? false);
+        $allowEmbed = wb_parse_bool($options['allow_embed'] ?? false);
         $normalizedExpiresAt = null;
         $normalizedMaxViews = null;
         $updatePassword = trim($passwordInput) !== '';
 
         if ($updatePassword && $clearPassword) {
             throw new RuntimeException('Choose either a new share password or remove the current one.');
+        }
+
+        if ($updatePassword && $allowEmbed) {
+            throw new RuntimeException('Share passwords cannot be combined with embedding.');
         }
 
         if ($expiresAt !== '') {
@@ -692,6 +901,7 @@ final class FileShares
             'password_hash' => $updatePassword ? Security::hashPassword($passwordInput) : null,
             'update_password' => $updatePassword,
             'clear_password' => $clearPassword,
+            'allow_embed' => $allowEmbed,
         ];
     }
 

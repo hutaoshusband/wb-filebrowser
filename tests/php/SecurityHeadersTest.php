@@ -27,6 +27,25 @@ final class SecurityHeadersTest extends TestCase
         $this->assertStringContainsString("default-src 'none'", $headers['Content-Security-Policy']);
     }
 
+    public function testEmbedHeadersAllowFramingAndCrossOriginMedia(): void
+    {
+        $headers = Security::embedHeaders();
+
+        $this->assertArrayHasKey('Content-Security-Policy', $headers);
+        $this->assertStringContainsString('frame-ancestors *', $headers['Content-Security-Policy']);
+        $this->assertStringNotContainsString("frame-ancestors 'none'", $headers['Content-Security-Policy']);
+        $this->assertSame('cross-origin', $headers['Cross-Origin-Resource-Policy']);
+        $this->assertSame('noindex, nofollow, noarchive', $headers['X-Robots-Tag']);
+        $this->assertSame('no-store, no-cache, must-revalidate, max-age=0', $headers['Cache-Control']);
+        $this->assertSame('nosniff', $headers['X-Content-Type-Options']);
+    }
+
+    public function testPageAndApiHeadersStillForbidFraming(): void
+    {
+        $this->assertStringContainsString("frame-ancestors 'none'", Security::pageHeaders()['Content-Security-Policy']);
+        $this->assertStringContainsString("frame-ancestors 'none'", Security::apiHeaders()['Content-Security-Policy']);
+    }
+
     public function testBootstrapScriptTagEscapesExecutableMarkupAndPageHeadIncludesFavicon(): void
     {
         $tag = wb_bootstrap_script_tag([

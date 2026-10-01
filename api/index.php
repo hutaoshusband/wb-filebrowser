@@ -111,6 +111,7 @@ try {
                 'scope' => Permissions::scope($user),
                 'root_folder_id' => Database::rootFolderId(),
                 'app_version' => Database::setting('app_version', Installer::VERSION),
+                'share_embeds_enabled' => Settings::shareEmbedsEnabled(),
                 'storage' => FileManager::storageStats(),
                 'diagnostic' => Settings::diagnosticState(),
                 'maintenance' => MaintenanceMode::payload($user, $surface),
@@ -297,7 +298,7 @@ try {
             ]);
 
         case 'files.share.get':
-            $user = Auth::requireAdmin();
+            $user = Auth::requireUser();
             wb_json_response([
                 'ok' => true,
                 'share' => FileShares::get($user, (int) ($_GET['file_id'] ?? 0)),
@@ -305,7 +306,7 @@ try {
 
         case 'files.share.create':
             $requireCsrf();
-            $user = Auth::requireAdmin();
+            $user = Auth::requireUser();
             wb_json_response([
                 'ok' => true,
                 'share' => FileShares::create($user, (int) ($requestData['file_id'] ?? 0), [
@@ -313,12 +314,13 @@ try {
                     'max_views' => $requestData['max_views'] ?? null,
                     'password' => $requestData['password'] ?? null,
                     'clear_password' => $requestData['clear_password'] ?? false,
+                    'allow_embed' => wb_parse_bool($requestData['allow_embed'] ?? false),
                 ]),
             ], 201);
 
         case 'files.share.revoke':
             $requireCsrf();
-            $user = Auth::requireAdmin();
+            $user = Auth::requireUser();
             FileShares::revoke($user, (int) ($requestData['file_id'] ?? 0));
             wb_json_response(['ok' => true]);
 

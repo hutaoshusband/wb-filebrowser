@@ -14,13 +14,9 @@ final class Settings
     {
         $pdo ??= Database::connection();
         $settings = array_merge(self::defaultMap(), $overrides);
-        $existing = $pdo->query('SELECT key FROM settings')->fetchAll(PDO::FETCH_COLUMN) ?: [];
+        $existing = $pdo->query('SELECT ' . DatabasePlatform::quoteIdentifier(Database::driver(), 'key') . ' FROM settings')->fetchAll(PDO::FETCH_COLUMN) ?: [];
         $existingMap = array_flip(array_map('strval', $existing));
-        $statement = $pdo->prepare(
-            'INSERT INTO settings (key, value, updated_at)
-             VALUES (:key, :value, :updated_at)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
-        );
+        $statement = Database::prepareUpsert($pdo, 'settings', ['key', 'value', 'updated_at'], ['value', 'updated_at'], ['key']);
 
         foreach ($settings as $key => $value) {
             if (!$overrideExisting && isset($existingMap[$key])) {
@@ -49,6 +45,7 @@ final class Settings
             'maintenance_message' => $normalized['access']['maintenance_message'],
             'share_terms_enabled' => $normalized['access']['share_terms_enabled'] ? '1' : '0',
             'share_terms_message' => $normalized['access']['share_terms_message'],
+            'share_embeds_enabled' => $normalized['access']['share_embeds_enabled'] ? '1' : '0',
             'uploads_max_file_size_mb' => (string) $normalized['uploads']['max_file_size_mb'],
             'uploads_allowed_extensions' => self::implodeExtensions($normalized['uploads']['allowed_extensions']),
             'uploads_stale_upload_ttl_hours' => (string) $normalized['uploads']['stale_upload_ttl_hours'],
@@ -97,6 +94,7 @@ final class Settings
                     false,
                     self::defaultShareTermsMessage()
                 ),
+                'share_embeds_enabled' => wb_parse_bool(Database::setting('share_embeds_enabled', '0')),
             ],
             'uploads' => [
                 'max_file_size_mb' => self::parseUploadLimitMb(Database::setting('uploads_max_file_size_mb', '0')),
@@ -169,16 +167,19 @@ final class Settings
         ];
     }
 
+    public static function shareEmbedsEnabled(?PDO $pdo = null): bool
+    {
+        $pdo ??= Database::connection();
+
+        return wb_parse_bool(Database::setting('share_embeds_enabled', '0'));
+    }
+
     public static function saveAdminSettings(array $payload, ?PDO $pdo = null): array
     {
         $pdo ??= Database::connection();
         $normalized = self::normalizePayload($payload, self::grouped($pdo));
         $currentShareTerms = self::shareTermsPolicy($pdo);
-        $statement = $pdo->prepare(
-            'INSERT INTO settings (key, value, updated_at)
-             VALUES (:key, :value, :updated_at)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
-        );
+        $statement = Database::prepareUpsert($pdo, 'settings', ['key', 'value', 'updated_at'], ['value', 'updated_at'], ['key']);
         $shareTermsVersion = $currentShareTerms['version'];
 
         if (
@@ -195,6 +196,7 @@ final class Settings
             'maintenance_message' => $normalized['access']['maintenance_message'],
             'share_terms_enabled' => $normalized['access']['share_terms_enabled'] ? '1' : '0',
             'share_terms_message' => $normalized['access']['share_terms_message'],
+            'share_embeds_enabled' => $normalized['access']['share_embeds_enabled'] ? '1' : '0',
             'share_terms_version' => (string) $shareTermsVersion,
             'uploads_max_file_size_mb' => (string) $normalized['uploads']['max_file_size_mb'],
             'uploads_allowed_extensions' => self::implodeExtensions($normalized['uploads']['allowed_extensions']),
@@ -303,7 +305,7 @@ final class Settings
         $accessInput = self::normalizeGroupInput(
             $payload,
             'access',
-            ['public_access', 'maintenance_enabled', 'maintenance_scope', 'maintenance_message', 'share_terms_enabled', 'share_terms_message'],
+            ['public_access', 'maintenance_enabled', 'maintenance_scope', 'maintenance_message', 'share_terms_enabled', 'share_terms_message', 'share_embeds_enabled'],
             $base['access']
         );
         $uploadInput = self::normalizeGroupInput(
@@ -363,6 +365,7 @@ final class Settings
                     false,
                     self::defaultShareTermsMessage()
                 ),
+                'share_embeds_enabled' => wb_parse_bool($accessInput['share_embeds_enabled'] ?? $base['access']['share_embeds_enabled']),
             ],
             'uploads' => [
                 'max_file_size_mb' => self::parseUploadLimitMb(
@@ -437,6 +440,7 @@ final class Settings
                 'maintenance_message' => MaintenanceMode::defaultMessage(),
                 'share_terms_enabled' => false,
                 'share_terms_message' => self::defaultShareTermsMessage(),
+                'share_embeds_enabled' => false,
             ],
             'uploads' => [
                 'max_file_size_mb' => 0,
@@ -481,6 +485,7 @@ final class Settings
             'share_terms_enabled' => '0',
             'share_terms_message' => self::defaultShareTermsMessage(),
             'share_terms_version' => '1',
+            'share_embeds_enabled' => '0',
             'diagnostic_exposed' => '0',
             'diagnostic_checked_at' => '',
             'diagnostic_message' => 'Storage shield checks will start after setup.',

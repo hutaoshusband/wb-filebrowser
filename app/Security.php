@@ -76,6 +76,16 @@ final class Security
         ];
     }
 
+    public static function embedHeaders(): array
+    {
+        return self::commonHeaders() + [
+            'Cache-Control' => 'no-store, no-cache, must-revalidate, max-age=0',
+            'X-Robots-Tag' => 'noindex, nofollow, noarchive',
+            'Content-Security-Policy' => "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors *",
+            'Cross-Origin-Resource-Policy' => 'cross-origin',
+        ];
+    }
+
     public static function csrfToken(): string
     {
         self::startSession();
@@ -148,14 +158,19 @@ final class Security
     {
         $pdo ??= Database::connection();
         self::pruneRateLimitRows($pdo);
-        $statement = $pdo->prepare(
-            'INSERT INTO rate_limits (bucket_key, scope, bucket_identifier, hits, window_started_at, updated_at)
+        $ansiSql = 'INSERT INTO rate_limits (bucket_key, scope, bucket_identifier, hits, window_started_at, updated_at)
              VALUES (:key, :scope, :identifier, 1, :now, :now)
              ON CONFLICT(bucket_key) DO UPDATE SET
                  hits = CASE WHEN rate_limits.window_started_at > :cutoff THEN rate_limits.hits + 1 ELSE 1 END,
                  window_started_at = CASE WHEN rate_limits.window_started_at > :cutoff THEN rate_limits.window_started_at ELSE excluded.window_started_at END,
-                 updated_at = excluded.updated_at'
-        );
+                 updated_at = excluded.updated_at';
+        $mysqlSql = 'INSERT INTO rate_limits (bucket_key, scope, bucket_identifier, hits, window_started_at, updated_at)
+             VALUES (:key, :scope, :identifier, 1, :now, :now)
+             ON DUPLICATE KEY UPDATE
+                 hits = IF(rate_limits.window_started_at > :cutoff, rate_limits.hits + 1, 1),
+                 window_started_at = IF(rate_limits.window_started_at > :cutoff, rate_limits.window_started_at, VALUES(window_started_at)),
+                 updated_at = VALUES(updated_at)';
+        $statement = $pdo->prepare(Database::driver() === 'mysql' ? $mysqlSql : $ansiSql);
         foreach ($buckets as $bucket) {
             $statement->execute([
                 ':key' => self::rateLimitBucketKey((string) $bucket['scope'], (string) $bucket['identifier']),
@@ -168,7 +183,11 @@ final class Security
     public static function reserveRateLimit(array $buckets, string $message, ?PDO $pdo = null, ?array $blockedContext = null): void
     {
         $pdo ??= Database::connection();
-        $pdo->exec('BEGIN IMMEDIATE');
+        $pdo->exec(match (Database::driver()) {
+            'mysql' => 'START TRANSACTION',
+            'sqlite' => 'BEGIN IMMEDIATE',
+            default => 'BEGIN',
+        });
         try {
             self::assertRateLimitAvailable($buckets, $message, $pdo, $blockedContext);
             self::consumeRateLimit($buckets, $pdo);
@@ -348,6 +367,117 @@ final class Security
 
         fclose($handle);
         exit;
+    }
+
+    public static function sendMediaFile(string $path, string $mimeType, string $downloadName): never
+    {
+        if (!is_file($path) || !self::isEmbedMediaType($mimeType)) {
+            http_response_code(404);
+            header('Cache-Control: no-store');
+            exit;
+        }
+
+        $size = filesize($path) ?: 0;
+        $downloadName = str_replace(["\r", "\n"], '', $downloadName);
+        $rangeHeader = trim((string) ($_SERVER['HTTP_RANGE'] ?? ''));
+        $start = 0;
+        $end = $size > 0 ? $size - 1 : 0;
+        $status = 200;
+
+        if ($rangeHeader !== '' && !str_contains($rangeHeader, ',') && preg_match('/bytes=(\d*)-(\d*)/', $rangeHeader, $matches)) {
+            $requestedStart = $matches[1] === '' ? null : (int) $matches[1];
+            $requestedEnd = $matches[2] === '' ? null : (int) $matches[2];
+
+            if ($requestedStart === null && $requestedEnd !== null) {
+                $requestedStart = max(0, $size - $requestedEnd);
+                $requestedEnd = $size - 1;
+            }
+
+            if ($requestedStart !== null && $requestedStart > max(0, $size - 1)) {
+                self::sendCommonHeaders();
+                http_response_code(416);
+                header('Content-Range: bytes */' . $size);
+                header('Cache-Control: no-store');
+                exit;
+            }
+
+            if ($requestedStart !== null) {
+                $start = max(0, $requestedStart);
+            }
+
+            if ($requestedEnd !== null) {
+                $end = min($requestedEnd, max(0, $size - 1));
+            }
+
+            $end = max($start, $end);
+            $status = 206;
+        }
+
+        $length = $size === 0 ? 0 : ($end - $start) + 1;
+
+        self::sendCommonHeaders();
+        http_response_code($status);
+        header('Content-Type: ' . $mimeType);
+        header('Content-Disposition: inline; filename="' . rawurlencode($downloadName) . '"; filename*=UTF-8\'\'' . rawurlencode($downloadName));
+        header('Accept-Ranges: bytes');
+        header('Cache-Control: public, max-age=3600');
+        header('Content-Length: ' . $length);
+        header('Cross-Origin-Resource-Policy: cross-origin');
+        header('X-Robots-Tag: noindex, nofollow');
+        header("Content-Security-Policy: default-src 'none'; sandbox");
+
+        if ($status === 206) {
+            header(sprintf('Content-Range: bytes %d-%d/%d', $start, $end, $size));
+        }
+
+        $handle = fopen($path, 'rb');
+
+        if ($handle === false) {
+            http_response_code(500);
+            exit;
+        }
+
+        if ($start > 0) {
+            fseek($handle, $start);
+        }
+
+        session_write_close();
+
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
+
+        set_time_limit(0);
+        @ini_set('zlib.output_compression', '0');
+
+        $remaining = $length;
+
+        while ($remaining > 0 && !feof($handle)) {
+            $chunk = fread($handle, min(8192, $remaining));
+
+            if ($chunk === false) {
+                break;
+            }
+
+            echo $chunk;
+            flush();
+            $remaining -= strlen($chunk);
+        }
+
+        fclose($handle);
+        exit;
+    }
+
+    private static function isEmbedMediaType(string $mimeType): bool
+    {
+        $embedMediaExtensions = ['mp4', 'm4v', 'webm', 'mov', 'ogv', 'mp3', 'm4a', 'aac', 'ogg', 'oga', 'opus', 'wav', 'flac', 'weba'];
+        $allowedMimeTypes = [];
+
+        foreach ($embedMediaExtensions as $extension) {
+            $allowedMimeTypes[] = (string) wb_embed_media_mime_type($extension);
+        }
+
+        return in_array($mimeType, array_unique($allowedMimeTypes), true);
     }
 
     private static function sendCommonHeaders(): void

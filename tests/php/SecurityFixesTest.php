@@ -168,7 +168,7 @@ PHP, 4);
             Installer::install('secondadmin', 'SuperSecurePass123!');
             self::fail('A second administrator must not be created.');
         } catch (RuntimeException $e) {
-            $this->assertStringContainsString('already exists', $e->getMessage());
+            $this->assertStringContainsString('already contains wb-filebrowser tables', $e->getMessage());
         }
         $this->assertSame(1, (int) $pdo->query('SELECT COUNT(*) FROM users')->fetchColumn());
     }

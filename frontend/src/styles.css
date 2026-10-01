@@ -227,10 +227,16 @@ button{cursor:pointer}
 .share-panel__input::-webkit-calendar-picker-indicator{opacity:.86;filter:invert(86%) sepia(13%) saturate(257%) hue-rotate(179deg) brightness(108%) contrast(96%);cursor:pointer}
 .share-panel__input::-webkit-date-and-time-value,.share-panel__input::-webkit-datetime-edit,.share-panel__input::-webkit-datetime-edit-fields-wrapper,.share-panel__input::-webkit-datetime-edit-text,.share-panel__input::-webkit-datetime-edit-month-field,.share-panel__input::-webkit-datetime-edit-day-field,.share-panel__input::-webkit-datetime-edit-year-field,.share-panel__input::-webkit-datetime-edit-hour-field,.share-panel__input::-webkit-datetime-edit-minute-field{color:var(--text)}
 .share-panel__input[type="number"]::-webkit-outer-spin-button,.share-panel__input[type="number"]::-webkit-inner-spin-button{opacity:1}
+.share-panel__embed-actions{display:grid;gap:8px;margin-top:6px}
 
 .share-shell{margin:0;min-height:100vh;background:radial-gradient(circle at top,#16263f 0,#08111d 45%,#050a14 100%);color:var(--text)}
 .share-layout{min-height:100vh;display:grid;place-items:center;padding:28px}
 .share-card{width:min(1240px,100%);padding:28px;border-radius:var(--radius);background:linear-gradient(180deg,rgba(17,27,46,.95),rgba(10,17,28,.96));border:1px solid rgba(255,255,255,.06);box-shadow:var(--shadow);display:grid;gap:24px}
+.embed-shell .share-card,.embed-card{width:min(560px,100%)}
+.embed-card .share-view{grid-template-columns:1fr}
+.embed-card .share-view__frame{min-height:220px;max-height:none}
+.embed-card .preview-frame video{object-fit:contain}
+.embed-card .preview-frame audio{min-height:120px}
 .share-card h1,.share-card p{margin:0}
 .share-card h1{overflow-wrap:anywhere}
 .share-header{display:flex;justify-content:space-between;gap:18px;align-items:flex-start}
