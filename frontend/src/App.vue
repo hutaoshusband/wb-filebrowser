@@ -129,6 +129,7 @@ const session = reactive({
   homeFolderId: 1,
   navigationRoots: [],
   canCreateLinkShares: false,
+  canCreateWriteLinks: false,
   shareEmbedsEnabled: Boolean(bootstrap.share_embeds_enabled),
   space: null,
   appVersion: bootstrap.app_version ?? '1.0.0-alpha',
@@ -214,6 +215,7 @@ const spaceShareState = reactive({
 });
 const shareForm = reactive({
   fileId: 0,
+  accessLevel: 'view',
   expiresAtLocal: '',
   deleteAfterLocal: '',
   maxViews: '',
@@ -345,7 +347,7 @@ const canCreateFoldersHere = computed(() => shell === 'app' && folderState.can_c
 const canManageShares = computed(() => shell === 'app' && (isAdmin.value || session.canCreateLinkShares));
 const canEmbedShares = computed(() => isAdmin.value || session.shareEmbedsEnabled);
 const canShareItem = (item) => {
-  if (!item || item.type !== 'file') {
+  if (!item || !['file', 'folder'].includes(item.type)) {
     return false;
   }
 
@@ -389,7 +391,7 @@ const shareContextItem = computed(() => {
   if (!canManageShares.value) {
     return null;
   }
-  if (infoItem.value?.type === 'file') {
+  if (infoItem.value) {
     return canShareItem(infoItem.value) ? infoItem.value : null;
   }
 
@@ -531,6 +533,7 @@ async function refreshSession() {
   session.homeFolderId = payload.home_folder_id ?? payload.root_folder_id ?? 1;
   session.space = payload.space ?? null;
   session.canCreateLinkShares = payload.can_create_link_shares ?? Boolean(session.space?.can_share);
+  session.canCreateWriteLinks = payload.can_create_write_links ?? false;
   session.shareEmbedsEnabled = Boolean(payload.share_embeds_enabled);
   session.navigationRoots = payload.navigation_roots ?? [];
   session.appVersion = payload.app_version ?? session.appVersion;
@@ -1916,6 +1919,7 @@ function resetShareState() {
   shareState.loading = false;
   shareState.link = null;
   shareForm.fileId = 0;
+  shareForm.accessLevel = 'view';
   shareForm.expiresAtLocal = '';
   shareForm.deleteAfterLocal = '';
   shareForm.maxViews = '';
@@ -1948,6 +1952,7 @@ function fromLocalDateTimeInput(value) {
 
 function applyShareForm(item, link = null) {
   shareForm.fileId = item?.id ?? 0;
+  shareForm.accessLevel = item?.type === 'folder' ? (link?.access_level ?? 'view') : 'view';
   shareForm.expiresAtLocal = toLocalDateTimeInput(link?.expires_at ?? '');
   shareForm.deleteAfterLocal = toLocalDateTimeInput(link?.delete_after ?? '');
   shareForm.maxViews = link?.max_views ? String(link.max_views) : '';
@@ -1956,14 +1961,15 @@ function applyShareForm(item, link = null) {
 }
 
 function shareOptionsFor(item) {
-  if (!item || item.type !== 'file') {
-    return { expires_at: null, delete_after: null, max_views: null, allow_embed: false };
+  if (!item || !['file', 'folder'].includes(item.type)) {
+    return { expires_at: null, delete_after: null, max_views: null };
   }
 
   const link = shareState.fileId === item.id ? shareState.link : null;
   const source = shareForm.fileId === item.id
     ? shareForm
     : {
+        accessLevel: item.type === 'folder' ? (link?.access_level ?? 'view') : 'view',
         expiresAtLocal: toLocalDateTimeInput(link?.expires_at ?? ''),
         deleteAfterLocal: toLocalDateTimeInput(link?.delete_after ?? ''),
         maxViews: link?.max_views ? String(link.max_views) : '',
@@ -1971,16 +1977,18 @@ function shareOptionsFor(item) {
         allowEmbed: Boolean(link?.allow_embed),
       };
   const maxViews = Number(source.maxViews);
-  const password = !source.allowEmbed && typeof source.password === 'string' && source.password.trim() !== ''
+  const allowEmbed = item.type === 'file' && Boolean(source.allowEmbed);
+  const password = !allowEmbed && typeof source.password === 'string' && source.password.trim() !== ''
     ? source.password
     : null;
 
   return {
+    ...(item.type === 'folder' ? { access_level: source.accessLevel ?? 'view' } : {}),
     expires_at: fromLocalDateTimeInput(source.expiresAtLocal),
     delete_after: fromLocalDateTimeInput(source.deleteAfterLocal),
     max_views: Number.isInteger(maxViews) && maxViews > 0 ? maxViews : null,
     password,
-    allow_embed: Boolean(source.allowEmbed),
+    allow_embed: allowEmbed,
   };
 }
 
@@ -2078,8 +2086,8 @@ async function loadShareState(item = shareContextItem.value) {
   shareState.fileId = item.id;
   shareState.error = '';
   try {
-    const payload = await api('files.share.get', {
-      params: { file_id: item.id },
+    const payload = await api(`${item.type === 'folder' ? 'folders' : 'files'}.share.get`, {
+      params: { [item.type === 'folder' ? 'folder_id' : 'file_id']: item.id },
     });
 
     if (shareState.fileId === item.id) {
@@ -2141,18 +2149,18 @@ async function copyDiscordEmbed(item = shareContextItem.value) {
 
 async function createShareLink(item = shareContextItem.value, { open = false } = {}) {
   closeContextMenu();
-  if (!item || item.type !== 'file') {
-    showMessage('Choose a file first.');
+  if (!canShareItem(item)) {
+    showMessage('Choose a file or folder first.');
     return;
   }
 
   shareState.fileId = item.id;
   shareState.error = '';
   try {
-    const payload = await api('files.share.create', {
+    const payload = await api(`${item.type === 'folder' ? 'folders' : 'files'}.share.create`, {
       method: 'POST',
       body: {
-        file_id: item.id,
+        [item.type === 'folder' ? 'folder_id' : 'file_id']: item.id,
         ...shareOptionsFor(item),
       },
     });
@@ -2180,8 +2188,8 @@ async function createShareLink(item = shareContextItem.value, { open = false } =
 
 async function openShareLink(item = shareContextItem.value) {
   closeContextMenu();
-  if (!item || item.type !== 'file') {
-    showMessage('Choose a file first.');
+  if (!canShareItem(item)) {
+    showMessage('Choose a file or folder first.');
     return;
   }
 
@@ -2191,10 +2199,10 @@ async function openShareLink(item = shareContextItem.value) {
   shareState.fileId = item.id;
   shareState.error = '';
   try {
-    const payload = await api('files.share.create', {
+    const payload = await api(`${item.type === 'folder' ? 'folders' : 'files'}.share.create`, {
       method: 'POST',
       body: {
-        file_id: item.id,
+        [item.type === 'folder' ? 'folder_id' : 'file_id']: item.id,
         ...shareOptionsFor(item),
       },
     });
@@ -2212,8 +2220,8 @@ async function openShareLink(item = shareContextItem.value) {
 
 async function removeSharePassword(item = shareContextItem.value) {
   closeContextMenu();
-  if (!item || item.type !== 'file') {
-    showMessage('Choose a file first.');
+  if (!canShareItem(item)) {
+    showMessage('Choose a file or folder first.');
     return;
   }
 
@@ -2229,10 +2237,10 @@ async function removeSharePassword(item = shareContextItem.value) {
   shareState.fileId = item.id;
   shareState.error = '';
   try {
-    const payload = await api('files.share.create', {
+    const payload = await api(`${item.type === 'folder' ? 'folders' : 'files'}.share.create`, {
       method: 'POST',
       body: {
-        file_id: item.id,
+        [item.type === 'folder' ? 'folder_id' : 'file_id']: item.id,
         ...shareOptionsFor(item),
         password: null,
         clear_password: true,
@@ -2250,13 +2258,13 @@ async function removeSharePassword(item = shareContextItem.value) {
 
 async function revokeShareLink(item = shareContextItem.value) {
   closeContextMenu();
-  if (!item || item.type !== 'file') {
-    showMessage('Choose a file first.');
+  if (!canShareItem(item)) {
+    showMessage('Choose a file or folder first.');
     return;
   }
 
   if (shareState.fileId !== item.id || !shareState.link) {
-    showMessage('This file does not have an active share link.');
+    showMessage('This item does not have an active share link.');
     return;
   }
 
@@ -2265,9 +2273,9 @@ async function revokeShareLink(item = shareContextItem.value) {
   }
 
   try {
-    await api('files.share.revoke', {
+    await api(`${item.type === 'folder' ? 'folders' : 'files'}.share.revoke`, {
       method: 'POST',
-      body: { file_id: item.id },
+      body: { [item.type === 'folder' ? 'folder_id' : 'file_id']: item.id },
     });
     shareState.fileId = item.id;
     shareState.loading = false;
@@ -4722,7 +4730,7 @@ onBeforeUnmount(() => {
               </div>
               <small class="panel-meta">
                 <template v-if="shareState.fileId === previewItem.id && shareState.link">
-                  Views: {{ shareState.link.view_count }}<span v-if="shareState.link.remaining_views !== null"> · Remaining: {{ shareState.link.remaining_views }}</span><span v-if="shareState.link.delete_after"> · File deleted after: {{ formatBackupDate(shareState.link.delete_after) }}</span>
+                  Views: {{ shareState.link.view_count }}<span v-if="shareState.link.remaining_views !== null"> · Remaining: {{ shareState.link.remaining_views }}</span><span v-if="shareState.link.delete_after"> · Deleted after: {{ formatBackupDate(shareState.link.delete_after) }}</span>
                 </template>
               </small>
               <button
@@ -4761,7 +4769,7 @@ onBeforeUnmount(() => {
         <button class="header-button" type="button" @click="infoItem = null">Close</button>
       </header>
       <p v-if="shareState.fileId === infoItem.id && shareState.error" role="alert">{{ shareState.error }}</p>
-      <p v-if="infoItem.type === 'file' && session.user && !canShareItem(infoItem)">Public file links are not permitted for this file or your account.</p>
+      <p v-if="session.user && !canShareItem(infoItem)">Public links are not permitted for this item or your account.</p>
       <dl>
         <div><dt>Name</dt><dd>{{ infoItem.name }}</dd></div>
         <div><dt>Type</dt><dd>{{ infoItem.type }}</dd></div>
@@ -4820,9 +4828,17 @@ onBeforeUnmount(() => {
       </div>
       <div v-if="canShareItem(infoItem)" class="share-panel">
         <strong>Public share</strong>
+        <label v-if="infoItem.type === 'folder'">
+          <span>Link permissions</span>
+          <select v-model="shareForm.accessLevel">
+            <option value="view">View only</option>
+            <option v-if="isAdmin || session.canCreateWriteLinks" value="write">View + write</option>
+          </select>
+          <small>Applies to all files and subfolders. Write access allows uploads, renaming, deletion, and new folders.</small>
+        </label>
         <p v-if="shareState.loading && shareState.fileId === infoItem.id">Checking share link...</p>
         <p v-else-if="shareState.fileId === infoItem.id && shareState.link" class="share-panel__url"><a :href="shareState.link.url" target="_blank" rel="noopener noreferrer">{{ shareState.link.url }}</a></p>
-        <p v-else>No public share link is active for this file yet.</p>
+        <p v-else>No public share link is active yet.</p>
         <p class="share-panel__hint">
           {{ shareState.fileId === infoItem.id && shareState.link?.requires_password ? 'Password protected' : 'No password required' }}
         </p>
@@ -4834,7 +4850,7 @@ onBeforeUnmount(() => {
           <span>Deletion after</span>
           <input v-model="shareForm.deleteAfterLocal" class="share-panel__input" type="datetime-local">
         </label>
-        <small class="share-panel__hint">Deletion after removes the file from the server once this moment passes. Leave blank to keep it.</small>
+        <small class="share-panel__hint">Deletion after removes this item and, for folders, all its contents. Leave blank to keep it.</small>
         <label>
           <span>Max page opens</span>
           <input v-model="shareForm.maxViews" class="share-panel__input" type="number" min="1" step="1" placeholder="Unlimited">
@@ -4851,7 +4867,7 @@ onBeforeUnmount(() => {
         </label>
         <small class="panel-meta">
           <template v-if="shareState.fileId === infoItem.id && shareState.link">
-            Views: {{ shareState.link.view_count }}<span v-if="shareState.link.remaining_views !== null"> · Remaining: {{ shareState.link.remaining_views }}</span><span v-if="shareState.link.delete_after"> · File deleted after: {{ formatBackupDate(shareState.link.delete_after) }}</span>
+            Views: {{ shareState.link.view_count }}<span v-if="shareState.link.remaining_views !== null"> · Remaining: {{ shareState.link.remaining_views }}</span><span v-if="shareState.link.delete_after"> · Deleted after: {{ formatBackupDate(shareState.link.delete_after) }}</span>
           </template>
         </small>
         <button
@@ -4862,7 +4878,7 @@ onBeforeUnmount(() => {
           Remove password
         </button>
       </div>
-      <div v-if="shell === 'app' && canShowItemActions(infoItem)" class="drawer-actions">
+      <div v-if="shell === 'app' && (canShowItemActions(infoItem) || canShareItem(infoItem))" class="drawer-actions">
         <button v-if="canShareItem(infoItem) && !infoItem.locked" type="button" @click="createShareLink(infoItem)">Share link</button>
         <button v-if="canShareItem(infoItem)" type="button" @click="openShareLink(infoItem)">Open share</button>
         <button v-if="canShareItem(infoItem) && !infoItem.locked && shareState.fileId === infoItem.id && shareState.link" type="button" @click="revokeShareLink(infoItem)">Disable share</button>

@@ -938,6 +938,56 @@ describe('Admin app shell', () => {
     expect(wrapper.find('.share-panel').exists()).toBe(true);
   });
 
+  it('creates a public folder link with the chosen access level from the folder info drawer', async () => {
+    const clipboardWrite = vi.fn().mockResolvedValue();
+    Object.defineProperty(window.navigator, 'clipboard', {
+      value: { writeText: clipboardWrite },
+      configurable: true,
+    });
+
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'tree.list': () => jsonResponse(browserTreePayload()),
+        'folders.share.get': () => jsonResponse({ share: null }),
+        'folders.share.create': () => jsonResponse({
+          share: {
+            folder_id: 1,
+            token: 'cafebabecafebabecafebabecafebabe',
+            url: 'http://localhost/share/folder.php?token=cafebabecafebabecafebabecafebabe',
+            access_level: 'write',
+            expires_at: null,
+            delete_after: null,
+            max_views: null,
+            view_count: 0,
+            remaining_views: null,
+            requires_password: false,
+          },
+        }),
+      },
+    });
+
+    await wrapper.findAll('button').find((button) => button.text() === 'Folder info').trigger('click');
+    await flushPromises();
+
+    const folderPanel = wrapper.findAll('.share-panel').find((panel) => panel.text().includes('Public share'));
+    expect(folderPanel).toBeTruthy();
+    expect(folderPanel.text()).toContain('Link permissions');
+    expect(calls.some((call) => call.action === 'folders.share.get'
+      && new URL(call.input).searchParams.get('folder_id') === '1')).toBe(true);
+
+    await folderPanel.find('select').setValue('write');
+    await wrapper.findAll('button').find((button) => button.text() === 'Share link').trigger('click');
+    await flushPromises();
+
+    const createCall = calls.find((call) => call.action === 'folders.share.create');
+    expect(createCall).toBeTruthy();
+    const body = JSON.parse(createCall.init.body);
+    expect(body.folder_id).toBe(1);
+    expect(body.access_level).toBe('write');
+    expect(folderPanel.text()).toContain('http://localhost/share/folder.php?token=cafebabecafebabecafebabecafebabe');
+    wrapper.unmount();
+  });
+
   it('allows a user without a space to share files and shows creation errors inside the preview', async () => {
     const member = { id: 17, username: 'alice', role: 'user', status: 'active' };
     const { wrapper } = await mountBrowserApp({ bootstrapUser: member, handlers: {
