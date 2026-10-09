@@ -120,6 +120,7 @@ function cloneSettings(settings) {
 const bootstrap = window.WB_BOOTSTRAP ?? {};
 const shell = bootstrap.surface ?? document.body.dataset.shell ?? 'app';
 const basePath = bootstrap.base_path ?? '';
+const folderShareToken = bootstrap.folder_share_token ?? '';
 
 const session = reactive({
   csrfToken: bootstrap.csrf_token ?? '',
@@ -342,7 +343,7 @@ const searchConfig = computed(() => getSearchConfig(shell, route.section, { user
 const searchActive = computed(() => shell !== 'admin' && searchQuery.value.trim() !== '');
 const currentEntries = computed(() => (searchActive.value ? [...searchState.folders, ...searchState.files] : [...folderState.folders, ...folderState.files]));
 const selectedItem = computed(() => currentEntries.value.find((item) => rowKey(item) === selectedKey.value) ?? null);
-const canUploadHere = computed(() => shell === 'app' && session.user !== null && folderState.can_upload);
+const canUploadHere = computed(() => shell === 'app' && (session.user !== null || folderShareToken) && folderState.can_upload);
 const canCreateFoldersHere = computed(() => shell === 'app' && folderState.can_create_folders);
 const canManageShares = computed(() => shell === 'app' && (isAdmin.value || session.canCreateLinkShares));
 const canEmbedShares = computed(() => isAdmin.value || session.shareEmbedsEnabled);
@@ -431,7 +432,8 @@ function cancelVideoCompression() {
 }
 
 function apiUrl(action, params = {}) {
-  const url = new URL(`${window.location.origin}${basePath}/api/index.php`);
+  const url = new URL(`${window.location.origin}${basePath}${folderShareToken ? '/share/folder-api.php' : '/api/index.php'}`);
+  if (folderShareToken) url.searchParams.set('token', folderShareToken);
   url.searchParams.set('action', action);
   Object.entries(params).forEach(([key, value]) => {
     if (value !== undefined && value !== null && value !== '') {
@@ -3294,7 +3296,7 @@ onBeforeUnmount(() => {
         </template>
         <button class="sidebar-link" type="button" :disabled="shell === 'admin' || !canCreateFoldersHere" @click="createFolder">New folder</button>
         <button class="sidebar-link" type="button" :disabled="shell === 'admin' || !canUploadHere" @click="triggerUpload">New file</button>
-        <button class="sidebar-link" type="button" @click="openSettings">Settings</button>
+        <button class="sidebar-link" type="button" :disabled="Boolean(folderShareToken)" @click="openSettings">Settings</button>
         <button class="sidebar-link" type="button" :disabled="!session.user" @click="logout">Logout</button>
       </nav>
 

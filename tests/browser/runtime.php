@@ -31,7 +31,7 @@ if (str_starts_with($path, '/assets/')) {
     readfile($asset);
     exit;
 }
-$routes = ['/' => '/index.php', '/api/index.php' => '/api/index.php', '/admin/' => '/admin/index.php', '/share/' => '/share/index.php'];
+$routes = ['/' => '/index.php', '/api/index.php' => '/api/index.php', '/admin/' => '/admin/index.php', '/share/' => '/share/index.php', '/share/folder.php' => '/share/folder.php', '/share/folder-api.php' => '/share/folder-api.php'];
 if (!isset($routes[$path])) {
     http_response_code(404);
     exit;

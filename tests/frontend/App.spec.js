@@ -453,7 +453,7 @@ async function mountAdminApp({ hash = '#/dashboard', handlers = {}, bootstrapUse
   return { wrapper, ...fetchState };
 }
 
-async function mountBrowserApp({ hash = '', handlers = {}, bootstrapUser = adminUser() } = {}) {
+async function mountBrowserApp({ hash = '', handlers = {}, bootstrapUser = adminUser(), shareToken = '' } = {}) {
   window.location.hash = hash;
   document.body.dataset.shell = 'app';
   window.WB_BOOTSTRAP = {
@@ -462,6 +462,7 @@ async function mountBrowserApp({ hash = '', handlers = {}, bootstrapUser = admin
     csrf_token: 'csrf-token',
     user: bootstrapUser,
     app_version: '1.0.0-alpha',
+    ...(shareToken ? { folder_share_token: shareToken } : {}),
   };
   const fetchState = installFetchStub({
     'tree.list': () => jsonResponse(browserTreePayload()),
@@ -985,6 +986,51 @@ describe('Admin app shell', () => {
     expect(body.folder_id).toBe(1);
     expect(body.access_level).toBe('write');
     expect(folderPanel.text()).toContain('http://localhost/share/folder.php?token=cafebabecafebabecafebabecafebabe');
+    wrapper.unmount();
+  });
+
+  it('scopes the shared-folder guest view to the token endpoint instead of the main API', async () => {
+    const { wrapper, calls } = await mountBrowserApp({
+      shareToken: 'cafebabecafebabecafebabecafebabe',
+      bootstrapUser: null,
+      handlers: {
+        'auth.session': () => jsonResponse({
+          ok: true,
+          csrf_token: 'csrf-token',
+          user: null,
+          public_access: true,
+          root_folder_id: 42,
+          home_folder_id: 42,
+          navigation_roots: [],
+          space: null,
+          can_create_link_shares: false,
+          can_create_write_links: false,
+          app_version: '1.0.0-alpha',
+        }),
+        'tree.list': () => jsonResponse({
+          data: {
+            folder: { id: 42, type: 'folder', name: 'gift', parent_id: null, updated_relative: 'just now', size_label: '-', description: '' },
+            breadcrumbs: [{ id: 42, name: 'gift' }],
+            folders: [],
+            files: [browserFile({ id: 9, folder_id: 42, name: 'present.pdf' })],
+            can_upload: false,
+            can_create_folders: false,
+            can_edit: false,
+            can_delete: false,
+          },
+        }),
+      },
+    });
+
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) {
+      const url = new URL(call.input);
+      expect(url.pathname).toBe('/share/folder-api.php');
+      expect(url.searchParams.get('token')).toBe('cafebabecafebabecafebabecafebabe');
+    }
+    expect(wrapper.text()).toContain('present.pdf');
+    const settings = wrapper.findAll('button').find((button) => button.text() === 'Settings');
+    expect(settings.attributes('disabled')).toBeDefined();
     wrapper.unmount();
   });
 
