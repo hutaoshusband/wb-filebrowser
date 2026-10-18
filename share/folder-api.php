@@ -64,7 +64,7 @@ try {
             wb_json_response(['ok' => true, 'folder' => $folder]);
         case 'client.log': wb_json_response(['ok' => true]);
         case 'upload.init':
-            $buckets = [['scope' => 'folder-share-upload', 'identifier' => Security::clientIp(), 'limit' => 60, 'window' => 600]];
+            $buckets = FileManager::folderShareUploadRateLimitBuckets(Security::clientIp());
             Security::assertRateLimitAvailable($buckets, FileManager::MSG_RATE_LIMIT_UPLOAD);
             Security::consumeRateLimit($buckets);
             $result = FileManager::uploadInit($actor, $folderId, (string) ($data['original_name'] ?? ''), (int) ($data['size'] ?? 0), (string) ($data['mime_type'] ?? 'application/octet-stream'), (int) ($data['total_chunks'] ?? 1), is_array($data['relative_path_segments'] ?? null) ? $data['relative_path_segments'] : [], (string) ($data['encryption_format'] ?? ''));

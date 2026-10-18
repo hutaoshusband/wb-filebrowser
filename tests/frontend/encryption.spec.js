@@ -34,6 +34,29 @@ describe('local encryption UI', () => {
     expect(wrapper.text()).toContain('do not match');
   });
 
+  it('lists every file in a batch behind a single password form', async () => {
+    const wrapper = mount(EncryptionDialog, {
+      props: { files: [{ name: 'a.txt' }, { name: 'b.txt' }, { name: 'c.txt' }] },
+    });
+    expect(wrapper.text()).toContain('Encrypt 3 files before uploading?');
+    expect(wrapper.text()).toContain('a.txt');
+    expect(wrapper.text()).toContain('b.txt');
+    expect(wrapper.text()).toContain('c.txt');
+    expect(wrapper.text()).toContain('One password is used for every file in this batch.');
+    expect(wrapper.findAll('input')).toHaveLength(2);
+    await wrapper.findAll('input')[0].setValue('long test password');
+    await wrapper.findAll('input')[1].setValue('long test password');
+    await wrapper.find('form').trigger('submit');
+    expect(wrapper.emitted('answer')[0][0]).toEqual({ choice: 'encrypt', password: 'long test password' });
+  });
+
+  it('keeps the single-file layout when only a name is given', async () => {
+    const wrapper = mount(EncryptionDialog, { props: { name: 'solo.txt' } });
+    expect(wrapper.text()).toContain('Encrypt before uploading?');
+    expect(wrapper.text()).toContain('solo.txt');
+    expect(wrapper.find('.encryption-dialog__files').exists()).toBe(false);
+  });
+
   it('offers no plaintext download on authentication failure and permits retry without refetching', async () => {
     const createUrl = vi.fn(() => 'blob:verified');
     vi.stubGlobal('URL', { createObjectURL: createUrl, revokeObjectURL: vi.fn() });

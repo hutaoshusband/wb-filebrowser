@@ -2026,3 +2026,120 @@ describe('Video optimization uploads', () => {
     expect(wrapper.find('.encryption-dialog').exists()).toBe(false);
   });
 });
+
+describe('Batch upload resilience', () => {
+  function uploadHandlers() {
+    return {
+      'upload.init': () => jsonResponse({
+        data: { upload_token: 'upload-token', chunk_size: 2097152 },
+      }),
+      'upload.chunk': () => jsonResponse({}),
+      'upload.complete': () => jsonResponse({}),
+    };
+  }
+
+  async function pickFiles(wrapper, files) {
+    const input = wrapper.find('input[type="file"]');
+    Object.defineProperty(input.element, 'files', { value: files, configurable: true });
+    await input.trigger('change');
+    await flushPromises();
+  }
+
+  function uploadInitBodies(calls) {
+    return calls
+      .filter((call) => call.action === 'upload.init')
+      .map((call) => JSON.parse(call.init.body));
+  }
+
+  it('asks once for the whole batch and encrypts every file with that password', async () => {
+    transformFile.mockResolvedValue(new Blob(['encrypted contents']));
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'auth.session': () => jsonResponse({ ...sessionPayload(), upload_policy: { ...uploadPolicy(), encryption_mode: 'optional' } }),
+        ...uploadHandlers(),
+      },
+    });
+
+    await pickFiles(wrapper, [
+      new File(['one'], 'first.txt'),
+      new File(['two'], 'second.txt'),
+      new File(['three'], 'third.txt'),
+    ]);
+
+    // One dialog lists the whole batch instead of one prompt per file.
+    const dialogs = wrapper.findAll('.encryption-dialog');
+    expect(dialogs).toHaveLength(1);
+    expect(dialogs[0].text()).toContain('Encrypt 3 files before uploading?');
+    expect(dialogs[0].text()).toContain('first.txt');
+    expect(dialogs[0].text()).toContain('second.txt');
+    expect(dialogs[0].text()).toContain('third.txt');
+
+    await dialogs[0].findAll('input')[0].setValue('a strong test password');
+    await dialogs[0].findAll('input')[1].setValue('a strong test password');
+    await dialogs[0].trigger('submit');
+    await flushPromises();
+    await flushPromises();
+    await flushPromises();
+
+    // No second prompt: all three files upload after the single answer.
+    expect(wrapper.find('.encryption-dialog').exists()).toBe(false);
+    expect(transformFile).toHaveBeenCalledTimes(3);
+    const bodies = uploadInitBodies(calls);
+    expect(bodies).toHaveLength(3);
+    expect(bodies.every((body) => body.encryption_format === 'WBENC001')).toBe(true);
+    expect(wrapper.text()).toContain('Uploaded 3 files by admin.');
+    expect(JSON.stringify(calls)).not.toContain('a strong test password');
+  });
+
+  it('continues past a failed file and reports which files failed', async () => {
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        ...uploadHandlers(),
+        'upload.init': (input, init) => {
+          const body = JSON.parse(init.body);
+          if (body.original_name === 'broken.txt') {
+            return errorResponse({ message: 'Simulated chunk failure.' });
+          }
+          return jsonResponse({ data: { upload_token: `token-${body.original_name}`, chunk_size: 2097152 } });
+        },
+      },
+    });
+
+    await pickFiles(wrapper, [
+      new File(['one'], 'first.txt'),
+      new File(['broken'], 'broken.txt'),
+      new File(['three'], 'third.txt'),
+    ]);
+    await flushPromises();
+    await flushPromises();
+
+    // Every file was attempted despite the middle failure.
+    expect(uploadInitBodies(calls).map((body) => body.original_name)).toEqual(['first.txt', 'broken.txt', 'third.txt']);
+    expect(calls.filter((call) => call.action === 'upload.complete')).toHaveLength(2);
+
+    const banner = wrapper.find('.status-banner--sticky');
+    expect(banner.exists()).toBe(true);
+    expect(banner.text()).toContain('Uploaded 2 of 3 files');
+    expect(banner.text()).toContain('broken.txt');
+    expect(banner.text()).toContain('Simulated chunk failure.');
+  });
+
+  it('cancels the whole batch from the single encryption prompt', async () => {
+    const { wrapper, calls } = await mountBrowserApp({
+      handlers: {
+        'auth.session': () => jsonResponse({ ...sessionPayload(), upload_policy: { ...uploadPolicy(), encryption_mode: 'required' } }),
+        ...uploadHandlers(),
+      },
+    });
+
+    await pickFiles(wrapper, [new File(['one'], 'first.txt'), new File(['two'], 'second.txt')]);
+    expect(wrapper.find('.encryption-dialog').exists()).toBe(true);
+    await wrapper.find('.encryption-dialog').findAll('button').find((button) => button.text() === 'Cancel').trigger('click');
+    await flushPromises();
+    await flushPromises();
+
+    expect(uploadInitBodies(calls)).toEqual([]);
+    expect(transformFile).not.toHaveBeenCalled();
+    expect(wrapper.text()).toContain('Upload canceled.');
+  });
+});

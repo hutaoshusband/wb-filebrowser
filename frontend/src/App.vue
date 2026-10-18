@@ -264,27 +264,30 @@ function answerEncryption(result) {
   settleEncryption = null;
 }
 
-async function encryptUpload(file) {
+// One prompt per batch: the dialog lists every file and the chosen password is
+// reused for each of them, instead of interrupting the queue file by file.
+function askBatchEncryption(files) {
   const mode = session.uploadPolicy.encryption_mode ?? 'off';
-  if (mode === 'off') return { file, format: '' };
-  const result = await new Promise((resolve) => {
+  return new Promise((resolve) => {
     settleEncryption = resolve;
-    encryptionDialog.value = { name: file.name, required: mode === 'required' };
+    encryptionDialog.value = {
+      name: files.length === 1 ? files[0].name : '',
+      files: files.map((file) => ({ name: file.name })),
+      required: mode === 'required',
+    };
   });
-  if (result.choice === 'cancel') throw new DOMException('Upload canceled.', 'AbortError');
-  if (result.choice === 'plain' && mode !== 'required') return { file, format: '' };
+}
+
+async function encryptFileWithPassword(file, password) {
   encryptionController = new AbortController();
   encryptionProgress.value = 0;
   try {
-    const pending = transformFile(file, result.password, {
+    const encrypted = await transformFile(file, password, {
       signal: encryptionController.signal,
       onProgress: (value) => { encryptionProgress.value = Math.round(value * 100); },
     });
-    result.password = '';
-    const encrypted = await pending;
-    return { file: new File([encrypted], file.name, { type: 'application/x-wb-encrypted' }), format: ENCRYPTION_FORMAT };
+    return new File([encrypted], file.name, { type: 'application/x-wb-encrypted' });
   } finally {
-    result.password = '';
     encryptionProgress.value = null;
     encryptionController = null;
   }
@@ -1650,102 +1653,160 @@ async function uploadQueuedItems(items, emptyDirectories = []) {
     }
   }
 
+  // Claimed before the encryption prompt so a second drop while the dialog is
+  // open is rejected by the in-progress guard above instead of orphaning a batch.
   uploadQueue.value = createUploadQueueState(uploadItems);
   startCompressionHeartbeat();
+
+  const encryptionMode = session.uploadPolicy.encryption_mode ?? 'off';
+  let encryptBatch = false;
+  let encryptionPassword = '';
+
+  if (encryptionMode !== 'off' && uploadItems.length > 0) {
+    const decision = await askBatchEncryption(uploadItems.map((item) => item.file));
+
+    if (decision.choice === 'cancel') {
+      uploadQueue.value = null;
+      stopCompressionHeartbeat();
+      flushOpfsCleanup();
+      showMessage('Upload canceled.');
+      return;
+    }
+
+    if (decision.choice === 'encrypt') {
+      encryptBatch = true;
+      encryptionPassword = decision.password;
+    }
+
+    decision.password = '';
+  }
+
   let completedFiles = 0;
   let completedBytes = 0;
+  const failedUploads = [];
+  let canceled = false;
 
   try {
     await ensureDroppedDirectories(emptyDirectories, destinationFolderId);
 
     for (const item of uploadItems) {
       const { relativePath, relativePathSegments } = item;
-      const { file, format } = await encryptUpload(item.file);
-      const uploadError = validateUploadCandidate(file, session.uploadPolicy);
-      if (uploadError) throw new Error(uploadError);
-      uploadQueue.value.totalBytes += file.size - item.file.size;
-      const totalChunks = Math.max(1, Math.ceil(file.size / DEFAULT_CHUNK_SIZE));
-      uploadQueue.value = {
-        ...uploadQueue.value,
-        completedFiles,
-        uploadedBytes: completedBytes,
-        currentFileName: file.name,
-        currentFilePath: relativePath,
-        currentFileBytesSent: 0,
-        currentFileBytesTotal: file.size,
-        currentFileChunksSent: 0,
-        currentFileChunksTotal: totalChunks,
-      };
-
-      const initPayload = await api('upload.init', {
-        method: 'POST',
-        body: {
-          folder_id: destinationFolderId,
-          original_name: file.name,
-          size: file.size,
-          mime_type: file.type || 'application/octet-stream',
-          total_chunks: totalChunks,
-          relative_path_segments: relativePathSegments,
-          encryption_format: format,
-        },
-      });
-      const token = initPayload.data.upload_token;
-      const chunkSize = initPayload.data.chunk_size || DEFAULT_CHUNK_SIZE;
+      let file = item.file;
+      let format = '';
 
       try {
-        for (let index = 0; index < totalChunks; index += 1) {
-          const formData = new FormData();
-          formData.append('upload_token', token);
-          formData.append('chunk_index', String(index));
-          formData.append('chunk', file.slice(index * chunkSize, (index + 1) * chunkSize), `${file.name}.part`);
-          await api('upload.chunk', { method: 'POST', formData });
-          const currentFileBytesSent = Math.min(file.size, (index + 1) * chunkSize);
-          uploadQueue.value = {
-            ...uploadQueue.value,
-            uploadedBytes: completedBytes + currentFileBytesSent,
-            currentFileBytesSent,
-            currentFileChunksSent: index + 1,
-          };
+        if (encryptBatch) {
+          file = await encryptFileWithPassword(item.file, encryptionPassword);
+          format = ENCRYPTION_FORMAT;
         }
 
-        await api('upload.complete', { method: 'POST', body: { upload_token: token } });
-      } catch (error) {
+        const uploadError = validateUploadCandidate(file, session.uploadPolicy);
+        if (uploadError) throw new Error(uploadError);
+        uploadQueue.value.totalBytes += file.size - item.file.size;
+        const totalChunks = Math.max(1, Math.ceil(file.size / DEFAULT_CHUNK_SIZE));
+        uploadQueue.value = {
+          ...uploadQueue.value,
+          completedFiles,
+          uploadedBytes: completedBytes,
+          currentFileName: file.name,
+          currentFilePath: relativePath,
+          currentFileBytesSent: 0,
+          currentFileBytesTotal: file.size,
+          currentFileChunksSent: 0,
+          currentFileChunksTotal: totalChunks,
+        };
+
+        const initPayload = await api('upload.init', {
+          method: 'POST',
+          body: {
+            folder_id: destinationFolderId,
+            original_name: file.name,
+            size: file.size,
+            mime_type: file.type || 'application/octet-stream',
+            total_chunks: totalChunks,
+            relative_path_segments: relativePathSegments,
+            encryption_format: format,
+          },
+        });
+        const token = initPayload.data.upload_token;
+        const chunkSize = initPayload.data.chunk_size || DEFAULT_CHUNK_SIZE;
+
         try {
-          await api('upload.cancel', { method: 'POST', body: { upload_token: token } });
-        } catch (cancelError) {
-          // Best-effort cleanup for incomplete uploads.
-          console.error('Failed to cancel upload:', cancelError);
+          for (let index = 0; index < totalChunks; index += 1) {
+            const formData = new FormData();
+            formData.append('upload_token', token);
+            formData.append('chunk_index', String(index));
+            formData.append('chunk', file.slice(index * chunkSize, (index + 1) * chunkSize), `${file.name}.part`);
+            await api('upload.chunk', { method: 'POST', formData });
+            const currentFileBytesSent = Math.min(file.size, (index + 1) * chunkSize);
+            uploadQueue.value = {
+              ...uploadQueue.value,
+              uploadedBytes: completedBytes + currentFileBytesSent,
+              currentFileBytesSent,
+              currentFileChunksSent: index + 1,
+            };
+          }
+
+          await api('upload.complete', { method: 'POST', body: { upload_token: token } });
+        } catch (error) {
+          try {
+            await api('upload.cancel', { method: 'POST', body: { upload_token: token } });
+          } catch (cancelError) {
+            // Best-effort cleanup for incomplete uploads.
+            console.error('Failed to cancel upload:', cancelError);
+          }
+
+          throw error;
         }
 
-        throw error;
-      }
+        completedFiles += 1;
+        completedBytes += file.size;
+        uploadQueue.value = {
+          ...uploadQueue.value,
+          completedFiles,
+          uploadedBytes: completedBytes,
+          currentFileBytesSent: file.size,
+          currentFileChunksSent: totalChunks,
+        };
+      } catch (error) {
+        // A canceled encryption aborts the rest of the batch; any other
+        // per-file failure is recorded and the queue continues so one bad
+        // file no longer forces the whole drop to be repeated.
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          canceled = true;
+          break;
+        }
 
-      completedFiles += 1;
-      completedBytes += file.size;
-      uploadQueue.value = {
-        ...uploadQueue.value,
-        completedFiles,
-        uploadedBytes: completedBytes,
-        currentFileBytesSent: file.size,
-        currentFileChunksSent: totalChunks,
-      };
+        failedUploads.push({ path: relativePath, message: error instanceof Error ? error.message : 'Upload failed.' });
+      }
     }
 
     await refreshSession();
     await loadFolder(route.folderId);
-    showMessage(
-      uploadedFileCount === 0
-        ? (emptyDirectories.length === 1
-          ? `Created folder by ${uploadedBy}: ${emptyDirectories[0].relativePath}.`
-          : `Created ${emptyDirectories.length} folders by ${uploadedBy}.`)
-        : (uploadedFileCount === 1
-          ? `Uploaded file by ${uploadedBy}: ${uploadedFileName}.`
-          : `Uploaded ${uploadedFileCount} files by ${uploadedBy}.`),
-    );
+
+    if (canceled) {
+      showMessage(completedFiles > 0
+        ? `Upload canceled: ${completedFiles} of ${uploadItems.length} files uploaded.`
+        : 'Upload canceled.');
+    } else if (failedUploads.length === 0) {
+      showMessage(
+        uploadedFileCount === 0
+          ? (emptyDirectories.length === 1
+            ? `Created folder by ${uploadedBy}: ${emptyDirectories[0].relativePath}.`
+            : `Created ${emptyDirectories.length} folders by ${uploadedBy}.`)
+          : (uploadedFileCount === 1
+            ? `Uploaded file by ${uploadedBy}: ${uploadedFileName}.`
+            : `Uploaded ${uploadedFileCount} files by ${uploadedBy}.`),
+      );
+    } else {
+      const shown = failedUploads.slice(0, 5).map((entry) => `${entry.path}: ${entry.message}`).join('; ');
+      const more = failedUploads.length > 5 ? `; and ${failedUploads.length - 5} more` : '';
+      showStickyMessage(`Uploaded ${completedFiles} of ${uploadItems.length} files. Failed: ${shown}${more}`);
+    }
   } catch (error) {
-    const failedPath = uploadQueue.value?.currentFilePath || uploadedFileName;
-    showStickyMessage(`${failedPath}: ${error instanceof Error ? error.message : 'Upload failed.'}`);
+    showStickyMessage(error instanceof Error ? error.message : 'Upload failed.');
   } finally {
+    encryptionPassword = '';
     uploadQueue.value = null;
     stopCompressionHeartbeat();
     flushOpfsCleanup();

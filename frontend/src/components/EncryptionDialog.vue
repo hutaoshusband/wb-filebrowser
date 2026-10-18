@@ -1,7 +1,21 @@
 <script setup>
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 
-const props = defineProps({ required: Boolean, decrypt: Boolean, name: String, downloadUrl: String });
+const props = defineProps({ required: Boolean, decrypt: Boolean, name: String, downloadUrl: String, files: Array });
+
+// Batch uploads pass the whole file list so one password choice covers every
+// file; single-file callers keep passing `name` only.
+const fileEntries = computed(() => {
+  if (Array.isArray(props.files) && props.files.length > 0) return props.files;
+  if (props.name) return [{ name: props.name }];
+  return [];
+});
+const isBatch = computed(() => fileEntries.value.length > 1);
+const title = computed(() => {
+  if (props.decrypt) return 'Decrypt file locally';
+  if (isBatch.value) return `Encrypt ${fileEntries.value.length} files before uploading?`;
+  return 'Encrypt before uploading?';
+});
 const emit = defineEmits(['answer']);
 const password = ref('');
 const confirmation = ref('');
@@ -30,10 +44,14 @@ function answer(choice) {
   <div class="modal-scrim" @click.self="answer('cancel')">
     <form class="help-modal encryption-dialog" role="dialog" aria-modal="true" aria-labelledby="encryption-title" @submit.prevent="answer('encrypt')" @keydown.esc.prevent.stop="answer('cancel')">
       <p class="panel-kicker">{{ decrypt ? 'Local decryption' : 'Local encryption' }}</p>
-      <h2 id="encryption-title">{{ decrypt ? 'Decrypt file locally' : 'Encrypt before uploading?' }}</h2>
-      <p class="encryption-dialog__name">{{ name }}</p>
+      <h2 id="encryption-title">{{ title }}</h2>
+      <ul v-if="isBatch" class="encryption-dialog__files">
+        <li v-for="entry in fileEntries" :key="entry.name">{{ entry.name }}</li>
+      </ul>
+      <p v-else-if="fileEntries.length === 1" class="encryption-dialog__name">{{ fileEntries[0].name }}</p>
       <p>{{ decrypt ? 'The password and the complete file are verified on your computer before a download is offered.' : 'AES-256 encryption runs on your computer. The server receives only encrypted contents. Keep your password: it cannot be recovered.' }}</p>
       <p v-if="!decrypt">File names and sizes remain visible. {{ required ? 'Encryption is required by the administrator.' : 'You can also upload without encryption.' }}</p>
+      <p v-if="!decrypt && isBatch" class="panel-meta">One password is used for every file in this batch.</p>
       <label class="encryption-dialog__field">Password<input v-model="password" type="password" autocomplete="off" autofocus :minlength="decrypt ? undefined : 12" maxlength="1024" required></label>
       <label v-if="!decrypt" class="encryption-dialog__field">Confirm password<input v-model="confirmation" type="password" autocomplete="off" maxlength="1024" required></label>
       <p v-if="error" class="encryption-dialog__error" role="alert">{{ error }}</p>
@@ -50,6 +68,7 @@ function answer(choice) {
 <style scoped>
 .encryption-dialog { width: min(540px, 100%); display: grid; gap: 14px; }
 .encryption-dialog__name { margin: 0; padding: 8px 12px; border: 1px solid var(--c-line); border-radius: var(--r-sm); background: var(--c-surface-2); font-weight: 600; color: var(--c-title); overflow-wrap: anywhere; }
+.encryption-dialog__files { margin: 0; padding: 8px 12px 8px 28px; border: 1px solid var(--c-line); border-radius: var(--r-sm); background: var(--c-surface-2); max-height: 160px; overflow-y: auto; font-size: .9rem; display: grid; gap: 4px; overflow-wrap: anywhere; }
 .encryption-dialog__field { display: grid; gap: 8px; font-size: .95rem; font-weight: 600; margin: 4px 0; }
 .encryption-dialog__error { color: var(--c-danger); }
 .encryption-dialog__actions { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }

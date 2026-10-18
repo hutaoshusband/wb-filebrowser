@@ -13,6 +13,50 @@ final class FileManager
 {
     public const CHUNK_SIZE = 2097152;
     public const MSG_RATE_LIMIT_UPLOAD = 'Too many upload attempts. Please wait a few minutes and try again.';
+    // Bulk drops (50+ files) issue one upload.init per file within seconds, so the
+    // abuse buckets must sit far above legitimate batches.
+    public const UPLOAD_INIT_USER_LIMIT = 500;
+    public const UPLOAD_INIT_USER_WINDOW = 600;
+    public const UPLOAD_INIT_IP_LIMIT = 1000;
+    public const UPLOAD_INIT_IP_WINDOW = 600;
+    public const UPLOAD_INIT_SHARE_LIMIT = 500;
+    public const UPLOAD_INIT_SHARE_WINDOW = 600;
+
+    /**
+     * @return array<int, array{scope: string, identifier: string, limit: int, window: int}>
+     */
+    public static function uploadInitRateLimitBuckets(string|int $userId, string $ip): array
+    {
+        return [
+            [
+                'scope' => 'upload-init-user',
+                'identifier' => (string) $userId,
+                'limit' => self::UPLOAD_INIT_USER_LIMIT,
+                'window' => self::UPLOAD_INIT_USER_WINDOW,
+            ],
+            [
+                'scope' => 'upload-init-ip',
+                'identifier' => $ip,
+                'limit' => self::UPLOAD_INIT_IP_LIMIT,
+                'window' => self::UPLOAD_INIT_IP_WINDOW,
+            ],
+        ];
+    }
+
+    /**
+     * @return array<int, array{scope: string, identifier: string, limit: int, window: int}>
+     */
+    public static function folderShareUploadRateLimitBuckets(string $ip): array
+    {
+        return [
+            [
+                'scope' => 'folder-share-upload',
+                'identifier' => $ip,
+                'limit' => self::UPLOAD_INIT_SHARE_LIMIT,
+                'window' => self::UPLOAD_INIT_SHARE_WINDOW,
+            ],
+        ];
+    }
 
     public static function listFolder(?array $user, int $folderId, string $sort = 'name', string $direction = 'asc'): array
     {

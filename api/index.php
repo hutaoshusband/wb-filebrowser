@@ -355,20 +355,7 @@ try {
         case 'upload.init':
             $requireCsrf();
             $user = Auth::requireUser();
-            $uploadRateLimitBuckets = [
-                [
-                    'scope' => 'upload-init-user',
-                    'identifier' => (string) $user['id'],
-                    'limit' => 20,
-                    'window' => 10 * 60,
-                ],
-                [
-                    'scope' => 'upload-init-ip',
-                    'identifier' => Security::clientIp(),
-                    'limit' => 60,
-                    'window' => 10 * 60,
-                ],
-            ];
+            $uploadRateLimitBuckets = FileManager::uploadInitRateLimitBuckets((string) $user['id'], Security::clientIp());
             Security::assertRateLimitAvailable($uploadRateLimitBuckets, FileManager::MSG_RATE_LIMIT_UPLOAD);
             Security::consumeRateLimit($uploadRateLimitBuckets);
             wb_json_response([
