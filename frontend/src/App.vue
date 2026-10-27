@@ -17,6 +17,7 @@ import VideoCompressionDialog from './components/VideoCompressionDialog.vue';
 import EncryptionDialog from './components/EncryptionDialog.vue';
 import LocalDecryption from './components/LocalDecryption.vue';
 import { ENCRYPTION_FORMAT, transformFile } from './lib/fileEncryption.js';
+import { uploadChunks } from './lib/uploadChunks.js';
 
 const ADMIN_SECTIONS = ['dashboard', 'users', 'permissions', 'settings', 'audit', 'security'];
 const SETTING_TABS = ['access', 'display', 'uploads', 'automation', 'spaces'];
@@ -140,6 +141,7 @@ const session = reactive({
   display: { ...createDefaultDisplaySettings(), ...(bootstrap.display ?? {}) },
   help: { title: 'Help', body: 'Use the admin panel to publish folders and review the storage shield diagnostic.' },
   uploadPolicy: createDefaultUploadPolicy(),
+  uploadChunkSize: DEFAULT_CHUNK_SIZE,
 });
 
 const route = reactive({
@@ -548,6 +550,7 @@ async function refreshSession() {
   applyMaintenanceState(payload.maintenance);
   session.help = payload.help ?? session.help;
   session.uploadPolicy = payload.upload_policy ?? session.uploadPolicy;
+  session.uploadChunkSize = payload.upload_chunk_size ?? DEFAULT_CHUNK_SIZE;
   session.csrfToken = payload.csrf_token ?? session.csrfToken;
 }
 
@@ -1703,7 +1706,8 @@ async function uploadQueuedItems(items, emptyDirectories = []) {
         const uploadError = validateUploadCandidate(file, session.uploadPolicy);
         if (uploadError) throw new Error(uploadError);
         uploadQueue.value.totalBytes += file.size - item.file.size;
-        const totalChunks = Math.max(1, Math.ceil(file.size / DEFAULT_CHUNK_SIZE));
+        const chunkSize = session.uploadChunkSize;
+        const totalChunks = Math.max(1, Math.ceil(file.size / chunkSize));
         uploadQueue.value = {
           ...uploadQueue.value,
           completedFiles,
@@ -1724,28 +1728,34 @@ async function uploadQueuedItems(items, emptyDirectories = []) {
             size: file.size,
             mime_type: file.type || 'application/octet-stream',
             total_chunks: totalChunks,
+            chunk_size: chunkSize,
             relative_path_segments: relativePathSegments,
             encryption_format: format,
           },
         });
         const token = initPayload.data.upload_token;
-        const chunkSize = initPayload.data.chunk_size || DEFAULT_CHUNK_SIZE;
 
         try {
-          for (let index = 0; index < totalChunks; index += 1) {
-            const formData = new FormData();
-            formData.append('upload_token', token);
-            formData.append('chunk_index', String(index));
-            formData.append('chunk', file.slice(index * chunkSize, (index + 1) * chunkSize), `${file.name}.part`);
-            await api('upload.chunk', { method: 'POST', formData });
-            const currentFileBytesSent = Math.min(file.size, (index + 1) * chunkSize);
-            uploadQueue.value = {
-              ...uploadQueue.value,
-              uploadedBytes: completedBytes + currentFileBytesSent,
-              currentFileBytesSent,
-              currentFileChunksSent: index + 1,
-            };
-          }
+          await uploadChunks({
+            file,
+            chunkSize,
+            sendChunk: async (index, chunk) => {
+              const formData = new FormData();
+              formData.append('upload_token', token);
+              formData.append('chunk_index', String(index));
+              formData.append('chunk', chunk, `${file.name}.part`);
+              await api('upload.chunk', { method: 'POST', formData });
+            },
+            onProgress: (progress, count) => {
+              const currentFileBytesSent = Math.round(file.size * progress);
+              uploadQueue.value = {
+                ...uploadQueue.value,
+                uploadedBytes: completedBytes + currentFileBytesSent,
+                currentFileBytesSent,
+                currentFileChunksSent: count,
+              };
+            },
+          });
 
           await api('upload.complete', { method: 'POST', body: { upload_token: token } });
         } catch (error) {

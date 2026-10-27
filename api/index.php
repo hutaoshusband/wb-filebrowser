@@ -137,6 +137,7 @@ try {
                 'maintenance' => MaintenanceMode::payload($user, $surface),
                 'display' => Settings::grouped()['display'],
                 'upload_policy' => Settings::uploadPolicy(),
+                'upload_chunk_size' => FileManager::recommendedChunkSize(),
                 'help' => [
                     'title' => 'Help',
                     'body' => 'Keep the storage directory inaccessible from the web server. Uploads are checked against the active upload policy before chunks are accepted.',
@@ -358,6 +359,7 @@ try {
             $uploadRateLimitBuckets = FileManager::uploadInitRateLimitBuckets((string) $user['id'], Security::clientIp());
             Security::assertRateLimitAvailable($uploadRateLimitBuckets, FileManager::MSG_RATE_LIMIT_UPLOAD);
             Security::consumeRateLimit($uploadRateLimitBuckets);
+            session_write_close();
             wb_json_response([
                 'ok' => true,
                 'data' => FileManager::uploadInit(
@@ -370,13 +372,15 @@ try {
                     is_array($requestData['relative_path_segments'] ?? null)
                         ? array_values($requestData['relative_path_segments'])
                         : [],
-                    (string) ($requestData['encryption_format'] ?? '')
+                    (string) ($requestData['encryption_format'] ?? ''),
+                    isset($requestData['chunk_size']) ? (int) $requestData['chunk_size'] : null
                 ),
             ], 201);
 
         case 'upload.chunk':
             Security::assertCsrfToken(is_string($csrfToken) ? $csrfToken : null);
             $user = Auth::requireUser();
+            session_write_close();
             wb_json_response([
                 'ok' => true,
                 'data' => FileManager::uploadChunk(
@@ -390,6 +394,7 @@ try {
         case 'upload.complete':
             $requireCsrf();
             $user = Auth::requireUser();
+            session_write_close();
             wb_json_response([
                 'ok' => true,
                 'file' => FileManager::uploadComplete($user, (string) ($requestData['upload_token'] ?? '')),
@@ -398,6 +403,7 @@ try {
         case 'upload.cancel':
             $requireCsrf();
             $user = Auth::requireUser();
+            session_write_close();
             FileManager::uploadCancel($user, (string) ($requestData['upload_token'] ?? ''));
             wb_json_response(['ok' => true]);
 

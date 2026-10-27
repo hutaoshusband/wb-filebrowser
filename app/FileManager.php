@@ -12,6 +12,7 @@ use RuntimeException;
 final class FileManager
 {
     public const CHUNK_SIZE = 2097152;
+    private const MAX_CHUNK_SIZE = 8388608;
     public const MSG_RATE_LIMIT_UPLOAD = 'Too many upload attempts. Please wait a few minutes and try again.';
     // Bulk drops (50+ files) issue one upload.init per file within seconds, so the
     // abuse buckets must sit far above legitimate batches.
@@ -21,6 +22,51 @@ final class FileManager
     public const UPLOAD_INIT_IP_WINDOW = 600;
     public const UPLOAD_INIT_SHARE_LIMIT = 500;
     public const UPLOAD_INIT_SHARE_WINDOW = 600;
+
+    public static function recommendedChunkSize(): int
+    {
+        $uploadLimit = self::iniByteLimit((string) ini_get('upload_max_filesize'));
+        $postLimit = self::iniByteLimit((string) ini_get('post_max_size'));
+        $limit = min($uploadLimit, $postLimit > 0 ? max(0, $postLimit - 262144) : PHP_INT_MAX);
+
+        foreach ([8388608, 4194304, 2097152, 1048576] as $chunkSize) {
+            if ($limit >= $chunkSize) {
+                return $chunkSize;
+            }
+        }
+
+        return 1048576;
+    }
+
+    private static function iniByteLimit(string $value): int
+    {
+        $value = trim($value);
+        if ($value === '' || $value === '0' || $value === '-1') {
+            return PHP_INT_MAX;
+        }
+        if (!preg_match('/^(\d+(?:\.\d+)?)\s*([KMG]?)B?$/i', $value, $matches)) {
+            return PHP_INT_MAX;
+        }
+        $shift = match (strtoupper($matches[2])) {
+            'G' => 30,
+            'M' => 20,
+            'K' => 10,
+            default => 0,
+        };
+        return (int) min(PHP_INT_MAX, (float) $matches[1] * (2 ** $shift));
+    }
+
+    private static function isSupportedChunkSize(int $size): bool
+    {
+        return $size >= 1048576 && $size <= self::MAX_CHUNK_SIZE && ($size & ($size - 1)) === 0;
+    }
+
+    private static function assertSupportedChunkSize(int $size): void
+    {
+        if (!self::isSupportedChunkSize($size)) {
+            throw new InvalidArgumentException('Upload chunk size is invalid.');
+        }
+    }
 
     /**
      * @return array<int, array{scope: string, identifier: string, limit: int, window: int}>
@@ -841,7 +887,8 @@ final class FileManager
         string $mimeType,
         int $totalChunks,
         array $relativePathSegments = [],
-        string $encryptionFormat = ''
+        string $encryptionFormat = '',
+        ?int $chunkSize = null
     ): array
     {
         $storageLock = new StorageLock();
@@ -861,7 +908,9 @@ final class FileManager
             throw new InvalidArgumentException('Upload must contain at least one chunk.');
         }
 
-        self::assertDeclaredChunkCountMatchesSize($size, $totalChunks);
+        $chunkSize ??= self::CHUNK_SIZE;
+        self::assertSupportedChunkSize($chunkSize);
+        self::assertDeclaredChunkCountMatchesSize($size, $totalChunks, $chunkSize);
         self::assertWithinStorageQuota($user, $size);
         SpaceService::assertWithinSpaceQuota($folderId, $size);
         if ($encryptionFormat === '') {
@@ -890,13 +939,14 @@ final class FileManager
             'size' => $size,
             'encryption_format' => $encryptionFormat,
             'total_chunks' => $totalChunks,
+            'chunk_size' => $chunkSize,
             'created_at' => wb_now(),
         ];
         file_put_contents($directory . DIRECTORY_SEPARATOR . 'meta.json', json_encode($metadata, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
         return [
             'upload_token' => $token,
-            'chunk_size' => self::CHUNK_SIZE,
+            'chunk_size' => $chunkSize,
         ];
     }
 
@@ -995,14 +1045,23 @@ final class FileManager
                     }
 
                     while (!feof($input)) {
-                        $buffer = fread($input, 8192);
+                        $buffer = fread($input, 1048576);
 
-                        if ($buffer === false) {
+                        if ($buffer === false || ($buffer === '' && !feof($input))) {
                             fclose($input);
                             throw new RuntimeException('Unable to read upload chunk.');
                         }
 
-                        fwrite($output, $buffer);
+                        $length = strlen($buffer);
+                        $written = 0;
+                        while ($written < $length) {
+                            $count = fwrite($output, substr($buffer, $written));
+                            if ($count === false || $count === 0) {
+                                fclose($input);
+                                throw new RuntimeException('Unable to write the final file.');
+                            }
+                            $written += $count;
+                        }
                         hash_update($hash, $buffer);
                     }
 
@@ -2007,28 +2066,31 @@ final class FileManager
         $size = (int) ($payload['size'] ?? -1);
         $totalChunks = (int) ($payload['total_chunks'] ?? 0);
 
-        if ($size < 0 || $totalChunks < 1 || $totalChunks !== self::expectedChunkCount($size)) {
+        $chunkSize = (int) ($payload['chunk_size'] ?? self::CHUNK_SIZE);
+
+        if ($size < 0 || $totalChunks < 1 || !self::isSupportedChunkSize($chunkSize) || $totalChunks !== self::expectedChunkCount($size, $chunkSize)) {
             throw new RuntimeException('Upload metadata is invalid.');
         }
 
         $payload['size'] = $size;
         $payload['total_chunks'] = $totalChunks;
+        $payload['chunk_size'] = $chunkSize;
 
         return $payload;
     }
 
-    private static function assertDeclaredChunkCountMatchesSize(int $size, int $totalChunks): void
+    private static function assertDeclaredChunkCountMatchesSize(int $size, int $totalChunks, int $chunkSize): void
     {
-        if ($totalChunks !== self::expectedChunkCount($size)) {
+        if ($totalChunks !== self::expectedChunkCount($size, $chunkSize)) {
             throw new InvalidArgumentException('Declared chunk count does not match file size.');
         }
     }
 
-    private static function expectedChunkCount(int $size): int
+    private static function expectedChunkCount(int $size, int $chunkSize): int
     {
         $normalizedSize = max(0, $size);
 
-        return max(1, intdiv($normalizedSize + self::CHUNK_SIZE - 1, self::CHUNK_SIZE));
+        return max(1, intdiv($normalizedSize + $chunkSize - 1, $chunkSize));
     }
 
     private static function assertChunkFileSize(string $path, array $metadata, int $index): void
@@ -2039,17 +2101,17 @@ final class FileManager
             throw new RuntimeException('Upload chunk is unreadable.');
         }
 
-        if ((int) $size !== self::expectedChunkSize((int) $metadata['size'], $index)) {
+        if ((int) $size !== self::expectedChunkSize((int) $metadata['size'], $index, (int) $metadata['chunk_size'])) {
             throw new RuntimeException('Upload chunk size is invalid.');
         }
     }
 
-    private static function expectedChunkSize(int $size, int $index): int
+    private static function expectedChunkSize(int $size, int $index, int $chunkSize): int
     {
-        $start = $index * self::CHUNK_SIZE;
+        $start = $index * $chunkSize;
         $remaining = max(0, $size - $start);
 
-        return min(self::CHUNK_SIZE, $remaining);
+        return min($chunkSize, $remaining);
     }
 
     private static function childFolderByName(int $parentId, string $name, PDO $pdo): ?array

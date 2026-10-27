@@ -98,6 +98,61 @@ final class UploadHardeningTest extends DatabaseTestCase
         self::assertDirectoryDoesNotExist($this->chunkDirectory((string) $upload['upload_token']));
     }
 
+    public function testUploadCompleteAcceptsFourMegabyteChunks(): void
+    {
+        $chunkSize = 4 * 1024 * 1024;
+        $size = $chunkSize + 7;
+        $upload = FileManager::uploadInit($this->superAdmin(), Database::rootFolderId(), 'large-chunks.bin', $size, 'application/octet-stream', 2, [], '', $chunkSize);
+        $token = (string) $upload['upload_token'];
+
+        self::assertSame($chunkSize, (int) $upload['chunk_size']);
+        $metadata = json_decode((string) file_get_contents($this->chunkDirectory($token) . '/meta.json'), true);
+        self::assertSame($chunkSize, $metadata['chunk_size']);
+
+        $this->writeChunk($token, 0, str_repeat('A', $chunkSize));
+        $this->writeChunk($token, 1, '1234567');
+        $file = FileManager::uploadComplete($this->superAdmin(), $token);
+
+        self::assertSame($size, (int) $file['size']);
+        self::assertSame('large-chunks.bin', $file['name']);
+        self::assertDirectoryDoesNotExist($this->chunkDirectory($token));
+    }
+
+    public function testLegacyMetadataWithoutChunkSizeStillCompletes(): void
+    {
+        $token = $this->createChunkWorkspace($this->superAdmin(), 'legacy-chunk.bin', 5, 1, [0 => '12345']);
+        $file = FileManager::uploadComplete($this->superAdmin(), $token);
+
+        self::assertSame('legacy-chunk.bin', $file['name']);
+        self::assertSame(5, (int) $file['size']);
+    }
+
+    public function testUploadInitRejectsChunkCountForSelectedFourMegabyteSize(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        FileManager::uploadInit($this->superAdmin(), Database::rootFolderId(), 'wrong-count.bin', 4 * 1024 * 1024 + 1, 'application/octet-stream', 1, [], '', 4 * 1024 * 1024);
+    }
+
+    public function testUploadInitRejectsUnsupportedChunkSize(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        FileManager::uploadInit($this->superAdmin(), Database::rootFolderId(), 'unsupported-size.bin', 5, 'application/octet-stream', 1, [], '', 12345);
+    }
+
+    public function testUploadCompleteRejectsTamperedSessionChunkSize(): void
+    {
+        $upload = FileManager::uploadInit($this->superAdmin(), Database::rootFolderId(), 'tampered-size.bin', 5, 'application/octet-stream', 1, [], '', 4 * 1024 * 1024);
+        $token = (string) $upload['upload_token'];
+        $path = $this->chunkDirectory($token) . '/meta.json';
+        $metadata = json_decode((string) file_get_contents($path), true);
+        $metadata['chunk_size'] = 12345;
+        file_put_contents($path, json_encode($metadata));
+        $this->writeChunk($token, 0, '12345');
+
+        $this->expectException(RuntimeException::class);
+        FileManager::uploadComplete($this->superAdmin(), $token);
+    }
+
     public function testUploadCompleteRejectsTamperedMetadataWithInconsistentChunkCounts(): void
     {
         $token = $this->createChunkWorkspace(

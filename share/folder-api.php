@@ -28,6 +28,7 @@ try {
                 'app_version' => \WbFileBrowser\Installer::VERSION,
                 'display' => \WbFileBrowser\Settings::grouped()['display'],
                 'upload_policy' => \WbFileBrowser\Settings::uploadPolicy(),
+                'upload_chunk_size' => FileManager::recommendedChunkSize(),
                 'help' => ['title' => 'Shared folder', 'body' => 'Browse this folder and its subfolders. Unavailable actions are disabled by the link permissions.'],
             ]);
         case 'tree.list':
@@ -41,6 +42,10 @@ try {
     }
     if (wb_request_method() !== 'POST') throw new RuntimeException('Use POST for changes.');
     Security::assertCsrfToken($_SERVER['HTTP_X_CSRF_TOKEN'] ?? $data['csrf_token'] ?? null);
+    if (in_array($action, ['upload.init', 'upload.chunk', 'upload.complete', 'upload.cancel'], true)) {
+        session_write_close();
+        unset($lock);
+    }
     $folderId = (int) ($data['folder_id'] ?? $actor['folder_share_root']);
     $id = (int) ($data['file_id'] ?? $data['folder_id'] ?? 0);
     $name = (string) ($data['name'] ?? '');
@@ -67,7 +72,7 @@ try {
             $buckets = FileManager::folderShareUploadRateLimitBuckets(Security::clientIp());
             Security::assertRateLimitAvailable($buckets, FileManager::MSG_RATE_LIMIT_UPLOAD);
             Security::consumeRateLimit($buckets);
-            $result = FileManager::uploadInit($actor, $folderId, (string) ($data['original_name'] ?? ''), (int) ($data['size'] ?? 0), (string) ($data['mime_type'] ?? 'application/octet-stream'), (int) ($data['total_chunks'] ?? 1), is_array($data['relative_path_segments'] ?? null) ? $data['relative_path_segments'] : [], (string) ($data['encryption_format'] ?? ''));
+            $result = FileManager::uploadInit($actor, $folderId, (string) ($data['original_name'] ?? ''), (int) ($data['size'] ?? 0), (string) ($data['mime_type'] ?? 'application/octet-stream'), (int) ($data['total_chunks'] ?? 1), is_array($data['relative_path_segments'] ?? null) ? $data['relative_path_segments'] : [], (string) ($data['encryption_format'] ?? ''), isset($data['chunk_size']) ? (int) $data['chunk_size'] : null);
             break;
         case 'upload.chunk': $result = FileManager::uploadChunk($actor, (string) ($_POST['upload_token'] ?? ''), (int) ($_POST['chunk_index'] ?? 0), $_FILES['chunk'] ?? []); break;
         case 'upload.complete': wb_json_response(['ok' => true, 'file' => FileManager::uploadComplete($actor, (string) ($data['upload_token'] ?? ''))], 201);

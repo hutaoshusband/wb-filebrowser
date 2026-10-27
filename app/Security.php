@@ -317,7 +317,7 @@ final class Security
         $end = $size > 0 ? $size - 1 : 0;
         $status = 200;
 
-        if ($rangeHeader !== '' && preg_match('/bytes=(\d*)-(\d*)/', $rangeHeader, $matches)) {
+        if ($rangeHeader !== '' && preg_match('/^bytes=(\d*)-(\d*)$/D', trim((string) $rangeHeader), $matches) && ($matches[1] !== '' || $matches[2] !== '')) {
             $requestedStart = $matches[1] === '' ? null : (int) $matches[1];
             $requestedEnd = $matches[2] === '' ? null : (int) $matches[2];
 
@@ -326,18 +326,26 @@ final class Security
                 $requestedEnd = $size - 1;
             }
 
+            if ($size === 0 || ($requestedStart !== null && $requestedStart >= $size) || ($requestedEnd !== null && ($requestedEnd < 0 || ($requestedStart !== null && $requestedEnd < $requestedStart)))) {
+                self::sendCommonHeaders();
+                http_response_code(416);
+                header('Content-Range: bytes */' . $size);
+                header('Accept-Ranges: bytes');
+                exit;
+            }
+
             if ($requestedStart !== null) {
-                $start = max(0, min($requestedStart, max(0, $size - 1)));
+                $start = $requestedStart;
             }
 
             if ($requestedEnd !== null) {
-                $end = max($start, min($requestedEnd, max(0, $size - 1)));
+                $end = min($requestedEnd, $size - 1);
             }
 
             $status = 206;
         }
 
-        $length = ($end - $start) + 1;
+        $length = $size === 0 ? 0 : ($end - $start) + 1;
 
         self::sendCommonHeaders();
         http_response_code($status);
@@ -363,12 +371,25 @@ final class Security
             fseek($handle, $start);
         }
 
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            session_write_close();
+        }
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
+        set_time_limit(0);
+        @ini_set('zlib.output_compression', '0');
+        if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'HEAD') {
+            fclose($handle);
+            exit;
+        }
+
         $remaining = $length;
 
         while ($remaining > 0 && !feof($handle)) {
-            $chunk = fread($handle, min(8192, $remaining));
+            $chunk = fread($handle, min(262144, $remaining));
 
-            if ($chunk === false) {
+            if ($chunk === false || $chunk === '') {
                 break;
             }
 
@@ -453,7 +474,9 @@ final class Security
             fseek($handle, $start);
         }
 
-        session_write_close();
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            session_write_close();
+        }
 
         while (ob_get_level() > 0) {
             ob_end_clean();
@@ -462,12 +485,17 @@ final class Security
         set_time_limit(0);
         @ini_set('zlib.output_compression', '0');
 
+        if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'HEAD') {
+            fclose($handle);
+            exit;
+        }
+
         $remaining = $length;
 
         while ($remaining > 0 && !feof($handle)) {
-            $chunk = fread($handle, min(8192, $remaining));
+            $chunk = fread($handle, min(262144, $remaining));
 
-            if ($chunk === false) {
+            if ($chunk === false || $chunk === '') {
                 break;
             }
 
