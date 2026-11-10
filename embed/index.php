@@ -102,9 +102,7 @@ $downloadUrl = $payload['download_url'] ?? '';
                             <div class="media-player media-player--audio">
                                 <div class="media-player__stage">
                                     <div class="media-player__audio-art">
-                                        <div class="media-player__art">
-                                            <span class="media-player__eq" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></span>
-                                        </div>
+                                        <canvas class="media-player__wave" data-mp="wave" role="img" aria-label="Live audio visualization"></canvas>
                                         <strong><?= wb_h($payload['name']) ?></strong>
                                     </div>
                                     <audio id="share-media" src="<?= wb_h($payload['stream_url']) ?>" preload="metadata"></audio>
@@ -257,5 +255,6 @@ $downloadUrl = $payload['download_url'] ?? '';
         syncTimeline();
     })();
     </script>
+    <script type="module" src="<?= wb_h(wb_asset_url('/media/audio-player.js')) ?>"></script>
 </body>
 </html>

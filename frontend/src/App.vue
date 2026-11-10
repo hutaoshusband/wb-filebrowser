@@ -1,6 +1,7 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { describePermissionPrincipal, filterPermissionRows, filterUsers, getSearchConfig, jobTone } from './lib/admin.js';
+import { attachAudioVisualizer } from '../../media/audioVisualizer.js';
 import { collectDroppedItems } from './lib/folderDrop.js';
 import { renderPdfThumbnail } from './lib/thumbnails.js';
 import { validateUploadCandidate } from './lib/uploadPolicy.js';
@@ -248,6 +249,9 @@ const mediaState = reactive({
   muted: false,
   ready: false,
 });
+const waveformCanvasRef = ref(null);
+let audioVisualizer = null;
+let waveformLoadToken = 0;
 const infoItem = ref(null);
 const helpOpen = ref(false);
 const contextMenu = ref(null);
@@ -1113,13 +1117,40 @@ function mediaProgressPercent() {
   return Math.min(100, (mediaState.currentTime / mediaState.duration) * 100);
 }
 
+function teardownWaveform() {
+  waveformLoadToken += 1;
+  audioVisualizer?.dispose();
+  audioVisualizer = null;
+}
+
+async function setupAudioVisualizer() {
+  const token = waveformLoadToken;
+  await nextTick();
+  if (token !== waveformLoadToken || !mediaRef.value || !waveformCanvasRef.value) return;
+  audioVisualizer = attachAudioVisualizer(mediaRef.value, waveformCanvasRef.value);
+}
+
 function togglePlay() {
   const media = mediaRef.value;
   if (!media) {
     return;
   }
   if (media.paused) {
-    media.play();
+    // Build/resume the live graph inside the click gesture so Safari/iOS
+    // permit the AudioContext; failures leave native playback untouched.
+    if (previewMode(previewItem.value) === 'audio') {
+      try {
+        audioVisualizer?.prepare();
+      } catch {
+        // Ignore graph failures; playback still works natively.
+      }
+    }
+    try {
+      const played = media.play();
+      if (played?.catch) played.catch(() => {});
+    } catch {
+      // Ignore play() rejections; the element reports state via events.
+    }
   } else {
     media.pause();
   }
@@ -1179,6 +1210,13 @@ function onMediaLoadedMetadata() {
 
 function onMediaPlay() {
   mediaState.playing = true;
+  if (previewMode(previewItem.value) === 'audio') {
+    try {
+      audioVisualizer?.prepare();
+    } catch {
+      // Ignore graph failures; playback still works natively.
+    }
+  }
 }
 
 function onMediaPause() {
@@ -3265,6 +3303,14 @@ watch(() => adminState.auditCategory, async () => {
   }
 });
 
+watch(() => previewItem.value?.preview_url ?? null, () => {
+  teardownWaveform();
+  const item = previewItem.value;
+  if (item && previewMode(item) === 'audio') {
+    void setupAudioVisualizer();
+  }
+});
+
 onMounted(async () => {
   window.addEventListener('hashchange', syncRouteFromHash);
   window.addEventListener('click', handleGlobalClick);
@@ -3292,6 +3338,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  teardownWaveform();
   answerEncryption({ choice: 'cancel', password: '' });
   encryptionController?.abort();
   window.removeEventListener('hashchange', syncRouteFromHash);
@@ -4685,9 +4732,7 @@ onBeforeUnmount(() => {
             <div v-else-if="previewMode(previewItem) === 'audio'" class="media-player media-player--audio" :class="{ 'is-playing': mediaState.playing, 'is-paused': !mediaState.playing, 'is-muted': mediaState.muted || mediaState.volume === 0 }">
               <div class="media-player__stage">
                 <div class="media-player__audio-art">
-                  <div class="media-player__art">
-                    <span class="media-player__eq" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></span>
-                  </div>
+                  <canvas ref="waveformCanvasRef" class="media-player__waveform-canvas" role="img" aria-label="Live audio visualization"></canvas>
                   <strong>{{ previewItem.name }}</strong>
                 </div>
               </div>
@@ -4728,6 +4773,7 @@ onBeforeUnmount(() => {
                     >
                   </span>
                   <audio
+                    :key="previewItem.preview_url"
                     ref="mediaRef"
                     :src="previewItem.preview_url"
                     preload="metadata"

@@ -18,9 +18,10 @@ if (PHP_SAPI === 'cli') {
 }
 
 $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-if (str_starts_with($path, '/assets/')) {
+$staticDirectory = str_starts_with($path, '/assets/') ? 'assets' : (str_starts_with($path, '/media/') ? 'media' : null);
+if ($staticDirectory !== null) {
     $asset = realpath($root . $path);
-    if ($asset === false || !str_starts_with($asset, $root . DIRECTORY_SEPARATOR . 'assets' . DIRECTORY_SEPARATOR)) {
+    if ($asset === false || !str_starts_with($asset, $root . DIRECTORY_SEPARATOR . $staticDirectory . DIRECTORY_SEPARATOR)) {
         http_response_code(404);
         exit;
     }
@@ -31,7 +32,7 @@ if (str_starts_with($path, '/assets/')) {
     readfile($asset);
     exit;
 }
-$routes = ['/' => '/index.php', '/api/index.php' => '/api/index.php', '/admin/' => '/admin/index.php', '/share/' => '/share/index.php', '/share/folder.php' => '/share/folder.php', '/share/folder-api.php' => '/share/folder-api.php'];
+$routes = ['/' => '/index.php', '/api/index.php' => '/api/index.php', '/admin/' => '/admin/index.php', '/share/' => '/share/index.php', '/embed/' => '/embed/index.php', '/embed/stream/' => '/embed/stream/index.php', '/share/folder.php' => '/share/folder.php', '/share/folder-api.php' => '/share/folder-api.php'];
 if (!isset($routes[$path])) {
     http_response_code(404);
     exit;
