@@ -347,7 +347,7 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
                         <?php elseif ($previewMode === 'video'): ?>
                             <div class="media-player media-player--video">
                                 <div class="media-player__stage">
-                                    <video id="share-media" src="<?= wb_h($file['preview_url']) ?>" preload="metadata"></video>
+                                    <video id="share-media" src="<?= wb_h($file['preview_url']) ?>" preload="metadata" playsinline></video>
                                 </div>
                                 <div class="media-player__bar">
                                     <div class="media-player__controls">
@@ -424,6 +424,9 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
                             <?php if (!empty($file['uploader_username'])): ?><div><dt>Shared by</dt><dd class="uploader-attribution"><?= wb_h($file['uploader_username']) ?></dd></div><?php endif; ?>
                             <div><dt>Updated</dt><dd><?= wb_h($file['updated_relative']) ?></dd></div>
                             <div><dt>Shared</dt><dd><?= wb_h(wb_relative_time($share['created_at'])) ?></dd></div>
+                            <?php if ($payload['public_view_count'] !== null): ?>
+                                <div data-share-view-count><dt>Share views</dt><dd><?= wb_h((string) $payload['public_view_count']) ?></dd></div>
+                            <?php endif; ?>
                             <?php if (!empty($share['delete_after'])): ?>
                                 <div><dt>Removed after</dt><dd><?= wb_h(gmdate('Y-m-d H:i', (int) strtotime((string) $share['delete_after'])) . ' UTC') ?></dd></div>
                             <?php endif; ?>
@@ -551,9 +554,10 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
         }
 
         function syncPlay() {
-            root.classList.toggle('is-playing', !media.paused);
-            root.classList.toggle('is-paused', media.paused);
-            if (playBtn) { playBtn.setAttribute('aria-label', media.paused ? 'Play' : 'Pause'); }
+            var playing = media.wbVideoPlayback ? media.wbVideoPlayback.wanted : !media.paused;
+            root.classList.toggle('is-playing', playing);
+            root.classList.toggle('is-paused', !playing);
+            if (playBtn) { playBtn.setAttribute('aria-label', playing ? 'Pause' : 'Play'); }
         }
 
         function syncMute() {
@@ -574,7 +578,11 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
             }
         }
 
-        if (playBtn) { playBtn.addEventListener('click', function() { media.paused ? media.play() : media.pause(); }); }
+        function togglePlay() {
+            if (media.wbVideoPlayback) { media.wbVideoPlayback.toggle(); }
+            else { media.paused ? media.play() : media.pause(); }
+        }
+        if (playBtn) { playBtn.addEventListener('click', togglePlay); }
         if (muteBtn) { muteBtn.addEventListener('click', function() { media.muted = !media.muted; syncMute(); }); }
         if (fsBtn) {
             fsBtn.addEventListener('click', function() {
@@ -603,7 +611,7 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
             });
         }
 
-        media.addEventListener('click', function() { media.paused ? media.play() : media.pause(); });
+        media.addEventListener('click', togglePlay);
         media.addEventListener('timeupdate', syncTimeline);
         media.addEventListener('loadedmetadata', syncTimeline);
         media.addEventListener('durationchange', syncTimeline);
@@ -622,5 +630,6 @@ $pageFile = $payload['file'] ?? ($shareContext['file'] ?? null);
     })();
     </script>
     <script type="module" src="<?= wb_h(wb_asset_url('/media/audio-player.js')) ?>"></script>
+    <script type="module" src="<?= wb_h(wb_asset_url('/media/video-player.js')) ?>"></script>
 </body>
 </html>

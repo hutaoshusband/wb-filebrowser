@@ -118,6 +118,7 @@ final class Settings
                 'user_link_shares_allowed' => wb_parse_bool(Database::setting('user_link_shares_allowed', '1')),
                 'user_link_share_level' => self::parseLinkShareLevel(Database::setting('user_link_share_level', 'write')),
                 'share_embeds_enabled' => wb_parse_bool(Database::setting('share_embeds_enabled', '0')),
+                'public_view_counts_enabled' => self::publicViewCountsEnabled($pdo),
                 'maintenance_enabled' => wb_parse_bool(Database::setting('maintenance_enabled', '0')),
                 'maintenance_scope' => self::parseMaintenanceScope(Database::setting('maintenance_scope', MaintenanceMode::SCOPE_APP_ONLY)),
                 'maintenance_message' => self::parseText(
@@ -212,6 +213,11 @@ final class Settings
         return wb_parse_bool(Database::setting('share_embeds_enabled', '0'));
     }
 
+    public static function publicViewCountsEnabled(?PDO $pdo = null): bool
+    {
+        return wb_parse_bool(Database::setting('public_view_counts_enabled', '0'));
+    }
+
     public static function shareTermsPolicy(?PDO $pdo = null): array
     {
         $pdo ??= Database::connection();
@@ -296,6 +302,7 @@ final class Settings
             'user_link_shares_allowed' => $normalized['access']['user_link_shares_allowed'] ? '1' : '0',
             'user_link_share_level' => $normalized['access']['user_link_share_level'],
             'share_embeds_enabled' => $normalized['access']['share_embeds_enabled'] ? '1' : '0',
+            'public_view_counts_enabled' => $normalized['access']['public_view_counts_enabled'] ? '1' : '0',
             'spaces_enabled' => $normalized['spaces']['enabled'] ? '1' : '0',
             'spaces_user_sharing_allowed' => $normalized['spaces']['sharing_allowed'] ? '1' : '0',
             'spaces_max_grant_level' => $normalized['spaces']['max_grant_level'],
@@ -508,7 +515,7 @@ final class Settings
         $accessInput = self::normalizeGroupInput(
             $payload,
             'access',
-            ['public_access', 'user_link_share_level', 'user_link_shares_allowed', 'share_embeds_enabled', 'maintenance_enabled', 'maintenance_scope', 'maintenance_message', 'share_terms_enabled', 'share_terms_message'],
+            ['public_access', 'user_link_share_level', 'user_link_shares_allowed', 'share_embeds_enabled', 'public_view_counts_enabled', 'maintenance_enabled', 'maintenance_scope', 'maintenance_message', 'share_terms_enabled', 'share_terms_message'],
             $base['access']
         );
         $uploadInput = self::normalizeGroupInput(
@@ -571,6 +578,7 @@ final class Settings
                 'user_link_shares_allowed' => wb_parse_bool($accessInput['user_link_shares_allowed'] ?? $base['access']['user_link_shares_allowed']),
                 'user_link_share_level' => self::parseLinkShareLevel($accessInput['user_link_share_level'] ?? $base['access']['user_link_share_level']),
                 'share_embeds_enabled' => wb_parse_bool($accessInput['share_embeds_enabled'] ?? $base['access']['share_embeds_enabled']),
+                'public_view_counts_enabled' => wb_parse_bool($accessInput['public_view_counts_enabled'] ?? $base['access']['public_view_counts_enabled']),
                 'maintenance_enabled' => wb_parse_bool($accessInput['maintenance_enabled'] ?? $base['access']['maintenance_enabled']),
                 'maintenance_scope' => self::parseMaintenanceScope($accessInput['maintenance_scope'] ?? $base['access']['maintenance_scope']),
                 'maintenance_message' => self::parseText(
@@ -739,6 +747,7 @@ final class Settings
                 'user_link_shares_allowed' => true,
                 'user_link_share_level' => 'write',
                 'share_embeds_enabled' => false,
+                'public_view_counts_enabled' => false,
                 'maintenance_enabled' => false,
                 'maintenance_scope' => MaintenanceMode::SCOPE_APP_ONLY,
                 'maintenance_message' => MaintenanceMode::defaultMessage(),
@@ -852,6 +861,7 @@ final class Settings
             'user_link_shares_allowed' => '1',
             'user_link_share_level' => 'write',
             'share_embeds_enabled' => '0',
+            'public_view_counts_enabled' => '0',
             'spaces_enabled' => '0',
             'spaces_user_sharing_allowed' => '1',
             'spaces_max_grant_level' => 'write',

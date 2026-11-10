@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { describePermissionPrincipal, filterPermissionRows, filterUsers, getSearchConfig, jobTone } from './lib/admin.js';
 import { attachAudioVisualizer } from '../../media/audioVisualizer.js';
+import { attachVideoPlayback } from '../../media/videoPlayback.js';
 import { collectDroppedItems } from './lib/folderDrop.js';
 import { renderPdfThumbnail } from './lib/thumbnails.js';
 import { validateUploadCandidate } from './lib/uploadPolicy.js';
@@ -62,6 +63,7 @@ function createDefaultSettings() {
       public_access: false,
       user_link_shares_allowed: true,
       share_embeds_enabled: false,
+      public_view_counts_enabled: false,
       maintenance_enabled: false,
       maintenance_scope: 'app_only',
       maintenance_message: createDefaultMaintenance().message,
@@ -256,6 +258,8 @@ const mediaState = reactive({
 });
 const waveformCanvasRef = ref(null);
 let audioVisualizer = null;
+let videoPlayback = null;
+let videoPlaybackToken = 0;
 let waveformLoadToken = 0;
 const infoItem = ref(null);
 const helpOpen = ref(false);
@@ -1154,6 +1158,10 @@ function togglePlay() {
   if (!media) {
     return;
   }
+  if (videoPlayback) {
+    videoPlayback.toggle();
+    return;
+  }
   if (media.paused) {
     // Build/resume the live graph inside the click gesture so Safari/iOS
     // permit the AudioContext; failures leave native playback untouched.
@@ -1239,7 +1247,23 @@ function onMediaPlay() {
 }
 
 function onMediaPause() {
+  if (videoPlayback?.wanted) return;
   mediaState.playing = false;
+}
+
+function teardownVideoPlayback() {
+  videoPlaybackToken++;
+  videoPlayback?.dispose();
+  videoPlayback = null;
+}
+
+async function setupVideoPlayback() {
+  const token = videoPlaybackToken;
+  await nextTick();
+  if (token !== videoPlaybackToken || !mediaRef.value) return;
+  videoPlayback = attachVideoPlayback(mediaRef.value, {
+    onState: ({ wanted }) => { mediaState.playing = wanted; },
+  });
 }
 
 function toggleFullscreen() {
@@ -3329,9 +3353,12 @@ watch(() => adminState.auditCategory, async () => {
 
 watch(() => previewItem.value?.preview_url ?? null, () => {
   teardownWaveform();
+  teardownVideoPlayback();
   const item = previewItem.value;
   if (item && previewMode(item) === 'audio') {
     void setupAudioVisualizer();
+  } else if (item && previewMode(item) === 'video') {
+    void setupVideoPlayback();
   }
 });
 
@@ -3363,6 +3390,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   teardownWaveform();
+  teardownVideoPlayback();
   answerEncryption({ choice: 'cancel', password: '' });
   encryptionController?.abort();
   window.removeEventListener('hashchange', syncRouteFromHash);
@@ -4056,6 +4084,11 @@ onBeforeUnmount(() => {
                 <span class="checkbox-control__label">Allow users to embed shared media<small>Users with link-share access can mark video and audio shares as embeddable on websites and in Discord. Administrators can always embed.</small></span>
               </label>
               <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
+                <input id="public-view-counts" v-model="adminState.settings.access.public_view_counts_enabled" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
+                <span class="checkbox-control__indicator" aria-hidden="true"></span>
+                <span class="checkbox-control__label">Show view counts on public file shares<small>Show the existing share-page view count on all public file-share pages and embedded players. Turning this off hides the count; views continue to be recorded and share-link limits still apply.</small></span>
+              </label>
+              <label :class="['checkbox-control','checkbox-control--row',{ 'is-disabled': !adminState.canManageSettings }]">
                 <input v-model="adminState.settings.access.public_access" class="checkbox-control__input" type="checkbox" :disabled="!adminState.canManageSettings">
                 <span class="checkbox-control__indicator" aria-hidden="true"></span>
                 <span class="checkbox-control__label">Allow published folders to be browsed without login</span>
@@ -4700,9 +4733,11 @@ onBeforeUnmount(() => {
             <div v-else-if="previewMode(previewItem) === 'video'" class="media-player media-player--video" :class="{ 'is-playing': mediaState.playing, 'is-paused': !mediaState.playing, 'is-muted': mediaState.muted || mediaState.volume === 0 }">
               <div class="media-player__stage">
                 <video
+                  :key="previewItem.preview_url"
                   ref="mediaRef"
                   :src="previewItem.preview_url"
                   preload="metadata"
+                  playsinline
                   @click="togglePlay"
                   @timeupdate="onMediaTimeUpdate"
                   @loadedmetadata="onMediaLoadedMetadata"

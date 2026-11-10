@@ -7,6 +7,7 @@
     "build:crypto": "cargo build --manifest-path crypto/Cargo.toml --release --target wasm32-unknown-unknown --locked && wasm-bindgen crypto/target/wasm32-unknown-unknown/release/wb_file_crypto.wasm --target web --out-dir frontend/src/lib/wasm",
     "build": "npm run build:crypto && vite build",
     "test:frontend": "vitest run",
+    "test:video:browser": "node tests/browser/video.mjs",
     "test:crypto:browser": "node tests/browser/encryption.mjs",
     "test:crypto:upload": "node tests/browser/upload-encryption.mjs"
   },

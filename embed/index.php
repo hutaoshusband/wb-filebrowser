@@ -90,6 +90,9 @@ $downloadUrl = $payload['download_url'] ?? '';
                         <p class="install-kicker">Shared file</p>
                         <h1><?= wb_h($payload['name']) ?></h1>
                         <p class="share-header__meta"><?= wb_h($payload['mime_type']) ?> · <?= wb_h($payload['size_label']) ?></p>
+                        <?php if ($payload['public_view_count'] !== null): ?>
+                            <p class="share-header__meta" data-share-view-count>Share views: <?= wb_h((string) $payload['public_view_count']) ?></p>
+                        <?php endif; ?>
                     </div>
                     <div class="share-actions">
                         <a class="header-button share-download" href="<?= wb_h($downloadUrl) ?>">Download</a>
@@ -129,7 +132,7 @@ $downloadUrl = $payload['download_url'] ?? '';
                         <?php else: ?>
                             <div class="media-player media-player--video">
                                 <div class="media-player__stage">
-                                    <video id="share-media" src="<?= wb_h($payload['stream_url']) ?>" preload="metadata"></video>
+                                    <video id="share-media" src="<?= wb_h($payload['stream_url']) ?>" preload="metadata" playsinline></video>
                                 </div>
                                 <div class="media-player__bar">
                                     <div class="media-player__controls">
@@ -189,9 +192,10 @@ $downloadUrl = $payload['download_url'] ?? '';
         }
 
         function syncPlay() {
-            root.classList.toggle('is-playing', !media.paused);
-            root.classList.toggle('is-paused', media.paused);
-            if (playBtn) { playBtn.setAttribute('aria-label', media.paused ? 'Play' : 'Pause'); }
+            var playing = media.wbVideoPlayback ? media.wbVideoPlayback.wanted : !media.paused;
+            root.classList.toggle('is-playing', playing);
+            root.classList.toggle('is-paused', !playing);
+            if (playBtn) { playBtn.setAttribute('aria-label', playing ? 'Pause' : 'Play'); }
         }
 
         function syncMute() {
@@ -212,7 +216,11 @@ $downloadUrl = $payload['download_url'] ?? '';
             }
         }
 
-        if (playBtn) { playBtn.addEventListener('click', function() { media.paused ? media.play() : media.pause(); }); }
+        function togglePlay() {
+            if (media.wbVideoPlayback) { media.wbVideoPlayback.toggle(); }
+            else { media.paused ? media.play() : media.pause(); }
+        }
+        if (playBtn) { playBtn.addEventListener('click', togglePlay); }
         if (muteBtn) { muteBtn.addEventListener('click', function() { media.muted = !media.muted; syncMute(); }); }
         if (fsBtn) {
             fsBtn.addEventListener('click', function() {
@@ -241,7 +249,7 @@ $downloadUrl = $payload['download_url'] ?? '';
             });
         }
 
-        media.addEventListener('click', function() { media.paused ? media.play() : media.pause(); });
+        media.addEventListener('click', togglePlay);
         media.addEventListener('timeupdate', syncTimeline);
         media.addEventListener('loadedmetadata', syncTimeline);
         media.addEventListener('durationchange', syncTimeline);
@@ -256,5 +264,6 @@ $downloadUrl = $payload['download_url'] ?? '';
     })();
     </script>
     <script type="module" src="<?= wb_h(wb_asset_url('/media/audio-player.js')) ?>"></script>
+    <script type="module" src="<?= wb_h(wb_asset_url('/media/video-player.js')) ?>"></script>
 </body>
 </html>

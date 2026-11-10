@@ -616,8 +616,8 @@ describe('Admin app shell', () => {
   it('submits grouped settings changes', async () => {
     const { wrapper, calls } = await mountAdminApp({ hash: '#/settings' });
 
-    const accessCheckboxes = wrapper.findAll('.settings-pane input[type="checkbox"]');
-    await accessCheckboxes[3].setValue(true);
+    const maintenanceLabel = wrapper.findAll('.settings-pane label').find(label => label.text().includes('Enable maintenance mode'));
+    await maintenanceLabel.find('input').setValue(true);
     await wrapper.find('.settings-pane select').setValue('app_and_share');
     await wrapper.find('.settings-pane textarea').setValue('Updates in progress');
 
@@ -665,8 +665,8 @@ describe('Admin app shell', () => {
 
     expect(wrapper.text()).toContain('Shared file terms');
 
-    const accessCheckboxes = wrapper.findAll('.settings-pane input[type="checkbox"]');
-    await accessCheckboxes[4].setValue(true);
+    const termsLabel = wrapper.findAll('.settings-pane label').find(label => label.text().includes('Require guests to accept shared file terms'));
+    await termsLabel.find('input').setValue(true);
 
     const accessTextareas = wrapper.findAll('.settings-pane textarea');
     await accessTextareas[1].setValue('Accept the published terms before opening or downloading shared files.');
@@ -678,6 +678,16 @@ describe('Admin app shell', () => {
 
     expect(body.access.share_terms_enabled).toBe(true);
     expect(body.access.share_terms_message).toBe('Accept the published terms before opening or downloading shared files.');
+  });
+
+  it('saves the administrator-wide public view-count setting', async () => {
+    const { wrapper, calls } = await mountAdminApp({ hash: '#/settings' });
+    const checkbox = wrapper.find('#public-view-counts');
+    expect(checkbox.element.checked).toBe(false);
+    await checkbox.setValue(true);
+    await wrapper.find('.primary-button').trigger('click');
+    const saveCall = calls.filter(call => call.action === 'admin.settings.save').at(-1);
+    expect(JSON.parse(saveCall.init.body).access.public_view_counts_enabled).toBe(true);
   });
 
   it('loads audit logs, applies category filters, and paginates', async () => {

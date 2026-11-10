@@ -365,6 +365,7 @@ final class FileShares
 
             return [
                 'share' => self::serializeResolvedShare($share),
+                'public_view_count' => Settings::publicViewCountsEnabled($pdo) ? (int) $share['view_count'] : null,
                 'file' => $file,
                 'preview_mode' => $previewMode,
                 'text_preview' => $textPreview,
@@ -834,6 +835,7 @@ final class FileShares
             'mime_type' => (string) wb_embed_media_mime_type($extension),
             'extension' => $extension,
             'stream_url' => $urls['stream'],
+            'public_view_count' => Settings::publicViewCountsEnabled($pdo) ? (int) $share['view_count'] : null,
             'download_url' => $downloadUrls['download'],
             'preview_mode' => (string) $preview['preview_mode'],
         ];

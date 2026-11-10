@@ -302,6 +302,43 @@ final class Security
         return $payload;
     }
 
+    /** Optional authenticated handoff; only uploaded files can be mapped. */
+    public static function fileOffloadUri(string $path): ?string
+    {
+        $prefix = getenv('WB_X_ACCEL_PREFIX');
+        if (!is_string($prefix) || !preg_match('~^/[a-zA-Z0-9_/-]+/$~D', $prefix)) {
+            return null;
+        }
+        $root = realpath(wb_storage_path('uploads'));
+        $resolved = realpath($path);
+        if ($root === false || $resolved === false || !is_file($resolved)
+            || !str_starts_with($resolved, $root . DIRECTORY_SEPARATOR)) {
+            return null;
+        }
+        $relative = str_replace(DIRECTORY_SEPARATOR, '/', substr($resolved, strlen($root) + 1));
+        return $prefix . implode('/', array_map('rawurlencode', explode('/', $relative)));
+    }
+
+    private static function offloadFile(string $path): void
+    {
+        $uri = self::fileOffloadUri($path);
+        if ($uri === null || !in_array($_SERVER['REQUEST_METHOD'] ?? 'GET', ['GET', 'HEAD'], true)) {
+            return;
+        }
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            session_write_close();
+        }
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
+        // Nginx evaluates the client's Range/If-Range and sets length/status.
+        http_response_code(200);
+        header_remove('Content-Length');
+        header_remove('Content-Range');
+        header('X-Accel-Redirect: ' . $uri);
+        exit;
+    }
+
     public static function sendFile(string $path, string $mimeType, string $downloadName, string $disposition = 'inline'): never
     {
         if (!is_file($path)) {
@@ -360,6 +397,8 @@ final class Security
             header(sprintf('Content-Range: bytes %d-%d/%d', $start, $end, $size));
         }
 
+        self::offloadFile($path);
+        header('X-Accel-Buffering: no');
         $handle = fopen($path, 'rb');
 
         if ($handle === false) {
@@ -386,7 +425,7 @@ final class Security
 
         $remaining = $length;
 
-        while ($remaining > 0 && !feof($handle)) {
+        while ($remaining > 0 && !feof($handle) && !connection_aborted()) {
             $chunk = fread($handle, min(262144, $remaining));
 
             if ($chunk === false || $chunk === '') {
@@ -463,6 +502,8 @@ final class Security
             header(sprintf('Content-Range: bytes %d-%d/%d', $start, $end, $size));
         }
 
+        self::offloadFile($path);
+        header('X-Accel-Buffering: no');
         $handle = fopen($path, 'rb');
 
         if ($handle === false) {
@@ -492,7 +533,7 @@ final class Security
 
         $remaining = $length;
 
-        while ($remaining > 0 && !feof($handle)) {
+        while ($remaining > 0 && !feof($handle) && !connection_aborted()) {
             $chunk = fread($handle, min(262144, $remaining));
 
             if ($chunk === false || $chunk === '') {
