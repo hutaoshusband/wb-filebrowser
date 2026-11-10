@@ -8,6 +8,7 @@ A web-based file browser built with PHP and Vue.
 - Composer
 - Node.js 18+ and npm
 - A web server (Apache, Nginx, etc.)
+- PHP `zip` extension for folder downloads
 - For MySQL/PostgreSQL installs: an already-created, dedicated database the installer can connect to
 
 ## Quick Start
@@ -39,6 +40,10 @@ sudo chown -R www-data:www-data storage/
 Then open `http://your-domain/install/` to finish. SQLite defaults to `storage/app.sqlite`; MySQL/PostgreSQL targets must already exist before you submit the installer.
 
 ## Testing
+
+The top-bar **Download folder (ZIP)** action exports the current folder and its accessible subfolders, including empty folders. ZIP entries are stored without compression to reduce CPU use; encrypted files remain encrypted (`.wbencrypted`). Only contents readable by the current user or folder-share link are exported.
+
+Archives are built in a private temporary file and removed at request shutdown. Allow temporary disk space roughly equal to the exported contents plus ZIP metadata and 64 MiB headroom. One archive is prepared at a time per storage volume, with three requests per IP per five minutes and a maximum of 100,000 entries per archive. The download releases the PHP session lock so browsing can continue.
 
 Run the existing automated suites with:
 

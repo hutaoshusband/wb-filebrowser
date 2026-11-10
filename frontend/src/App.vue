@@ -2432,6 +2432,11 @@ function downloadSelected() {
   }
 }
 
+function downloadFolder() {
+  if (!folderState.folder || folderState.loading) return;
+  redirectTo(apiUrl('folders.download', { folder_id: folderState.folder.id }));
+}
+
 function selectCurrentItem() {
   selectMode.value = !selectMode.value;
   if (!selectMode.value) {
@@ -3500,7 +3505,7 @@ onBeforeUnmount(() => {
           <template v-else>
             <button v-if="isAdmin" class="header-button" type="button" @click="openAdminPanel">Admin</button>
             <button class="header-button" type="button" @click="toggleViewMode">{{ viewMode === 'list' ? 'Grid view' : 'List view' }}</button>
-            <button class="header-button" type="button" @click="downloadSelected">Download</button>
+            <button class="header-button" type="button" :disabled="folderState.loading || !folderState.folder" title="Download this folder and its subfolders as an uncompressed ZIP" @click="downloadFolder">Download folder (ZIP)</button>
             <button class="header-button" type="button" @click="localDecryption.pickLocal()">Decrypt local file</button>
             <button class="header-button" type="button" :disabled="!canUploadHere" @click="triggerUpload">Upload</button>
             <button class="header-button" type="button" @click="topActionInfo">Info</button>

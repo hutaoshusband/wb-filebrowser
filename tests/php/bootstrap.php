@@ -36,6 +36,7 @@ require_once $root . '/app/Permissions.php';
 require_once $root . '/app/SpaceService.php';
 require_once $root . '/app/StorageLock.php';
 require_once $root . '/app/FileManager.php';
+require_once $root . '/app/FolderArchive.php';
 require_once $root . '/app/MediaValidator.php';
 require_once $root . '/app/FileShares.php';
 require_once $root . '/app/FolderShares.php';

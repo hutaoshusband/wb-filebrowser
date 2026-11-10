@@ -14,6 +14,10 @@ try {
     $action = (string) ($_GET['action'] ?? '');
     $lock = new StorageLock();
     $actor = FolderShares::actor($token);
+    if ($action === 'folders.download') {
+        unset($lock);
+        \WbFileBrowser\FolderArchive::download($actor, (int) ($_GET['folder_id'] ?? $actor['folder_share_root']));
+    }
     if ($action === 'files.stream') {
         unset($lock);
         FileManager::streamFile($actor, (int) ($_GET['id'] ?? 0), ($_GET['disposition'] ?? '') === 'attachment' ? 'attachment' : 'inline');

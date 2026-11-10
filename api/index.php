@@ -201,6 +201,9 @@ try {
                 ),
             ]);
 
+        case 'folders.download':
+            \WbFileBrowser\FolderArchive::download(Auth::currentUser(), (int) ($_GET['folder_id'] ?? 0));
+
         case 'tree.folders':
             $pdo = Database::connection();
             $user = Auth::currentUser($pdo);

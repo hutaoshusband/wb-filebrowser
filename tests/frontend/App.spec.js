@@ -485,6 +485,21 @@ afterEach(() => {
 });
 
 describe('Admin app shell', () => {
+  it('downloads the loaded folder tree through the folder-share endpoint without selecting a file', async () => {
+    const redirect = vi.fn();
+    window.__WB_REDIRECT__ = redirect;
+    const { wrapper } = await mountBrowserApp({ shareToken: 'folder-token' });
+    const button = wrapper.findAll('.header-actions button').find((entry) => entry.text() === 'Download folder (ZIP)');
+    expect(button.element.disabled).toBe(false);
+    await button.trigger('click');
+    expect(redirect).toHaveBeenCalledTimes(1);
+    const url = new URL(redirect.mock.calls[0][0]);
+    expect(url.pathname).toBe('/share/folder-api.php');
+    expect(url.searchParams.get('action')).toBe('folders.download');
+    expect(url.searchParams.get('folder_id')).toBe('1');
+    expect(url.searchParams.get('token')).toBe('folder-token');
+  });
+
   it('loads a new admin section after hash changes', async () => {
     const { calls } = await mountAdminApp();
 
