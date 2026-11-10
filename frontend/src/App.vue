@@ -17,6 +17,8 @@ import { createVideoCompressor } from './lib/videoCompressor.js';
 import VideoCompressionDialog from './components/VideoCompressionDialog.vue';
 import EncryptionDialog from './components/EncryptionDialog.vue';
 import LocalDecryption from './components/LocalDecryption.vue';
+import CodePreview from './components/CodePreview.vue';
+import { sourceLanguage } from './lib/sourceLanguage.js';
 import { ENCRYPTION_FORMAT, transformFile } from './lib/fileEncryption.js';
 import { uploadChunks } from './lib/uploadChunks.js';
 
@@ -240,6 +242,9 @@ const selectMode = ref(false);
 const selectedKey = ref('');
 const previewItem = ref(null);
 const previewText = ref('');
+const previewLoading = ref(false);
+const previewError = ref('');
+let previewRequest = 0;
 const mediaRef = ref(null);
 const mediaState = reactive({
   playing: false,
@@ -1076,19 +1081,33 @@ const vThumbObserve = {
 };
 
 async function openPreview(item) {
+  const request = ++previewRequest;
   previewItem.value = item;
   previewText.value = '';
+  previewError.value = '';
+  previewLoading.value = previewMode(item) === 'text';
   resetMediaState();
 
-  if (previewMode(item) === 'text') {
-    const response = await fetch(item.preview_url, { credentials: 'same-origin', cache: 'no-store' });
-    previewText.value = await response.text();
+  if (previewLoading.value) {
+    try {
+      const response = await fetch(item.preview_url, { credentials: 'same-origin', cache: 'no-store' });
+      if (!response.ok) throw new Error('Unable to load this file. Please close and try again.');
+      const text = await response.text();
+      if (request === previewRequest) previewText.value = text;
+    } catch (error) {
+      if (request === previewRequest) previewError.value = error.message;
+    } finally {
+      if (request === previewRequest) previewLoading.value = false;
+    }
   }
 }
 
 function closePreview() {
+  ++previewRequest;
   previewItem.value = null;
   previewText.value = '';
+  previewError.value = '';
+  previewLoading.value = false;
   resetMediaState();
 }
 
@@ -4616,6 +4635,7 @@ onBeforeUnmount(() => {
                 loading="lazy"
                 @error="markThumbnailError(item)"
               >
+              <img v-else-if="item.type === 'file' && item.file_icon_url" class="grid-card__file-icon" :src="item.file_icon_url" alt="">
               <div v-else class="grid-card__icon">{{ item.type === 'folder' ? '📁' : '📄' }}</div>
             </div>
             <strong>{{ item.name }}<small class="uploader-attribution" v-if="item.type === 'file' && session.display.show_uploader && item.uploader_username"> - {{ item.uploader_username }}</small></strong>
@@ -4642,7 +4662,7 @@ onBeforeUnmount(() => {
                 @click="handleEntryClick(item)"
                 @contextmenu="handleContextMenu($event, item)"
               >
-                <td class="name-cell"><span class="row-icon">{{ item.type === 'folder' ? '📁' : '📄' }}</span><span>{{ item.name }}<small class="uploader-attribution" v-if="item.type === 'file' && session.display.show_uploader && item.uploader_username"> - {{ item.uploader_username }}</small></span><span v-if="item.type === 'file' && item.locked" class="entry-locked">Locked</span></td>
+                <td class="name-cell"><img v-if="item.type === 'file' && item.file_icon_url" class="row-file-icon" :src="item.file_icon_url" alt=""><span v-else class="row-icon">{{ item.type === 'folder' ? '📁' : '📄' }}</span><span>{{ item.name }}<small class="uploader-attribution" v-if="item.type === 'file' && session.display.show_uploader && item.uploader_username"> - {{ item.uploader_username }}</small></span><span v-if="item.type === 'file' && item.locked" class="entry-locked">Locked</span></td>
                 <td>{{ item.size_label }}</td>
                 <td>{{ item.updated_relative }}</td>
               </tr>
@@ -4657,7 +4677,7 @@ onBeforeUnmount(() => {
         <header class="preview-modal__header">
           <div>
             <h2>{{ previewItem.name }} <span v-if="previewItem.type === 'file' && previewItem.locked" class="entry-locked">Locked</span></h2>
-            <p>{{ previewItem.mime_type }}</p>
+            <p>{{ previewMode(previewItem) === 'text' ? (sourceLanguage(previewItem).id === 'plaintext' ? 'Plain text' : `${sourceLanguage(previewItem).label} source`) : previewItem.mime_type }}</p>
             <p v-if="shareState.fileId === previewItem.id && shareState.error" role="alert">{{ shareState.error }}</p>
             <p v-if="session.user && !canShareItem(previewItem)">Public file links are not permitted for this file or your account.</p>
           </div>
@@ -4787,7 +4807,7 @@ onBeforeUnmount(() => {
                 </div>
               </div>
             </div>
-            <pre v-else-if="previewMode(previewItem) === 'text'">{{ previewText }}</pre>
+            <CodePreview v-else-if="previewMode(previewItem) === 'text'" :key="previewItem.id" :item="previewItem" :text="previewText" :loading="previewLoading" :error="previewError" />
             <div v-else class="file-fallback">
               <img class="file-fallback__icon" :src="fallbackIconUrl(previewItem)" alt="">
               <span class="file-fallback__badge">{{ fallbackBadge(previewItem) }}</span>
@@ -4800,6 +4820,7 @@ onBeforeUnmount(() => {
             <dl>
               <div><dt>Name</dt><dd>{{ previewItem.name }}</dd></div>
               <div><dt>Size</dt><dd>{{ previewItem.size_label }}</dd></div>
+              <div><dt>Media type</dt><dd>{{ previewItem.mime_type }}</dd></div>
               <div v-if="session.display.show_uploader && previewItem.uploader_username"><dt>Shared by</dt><dd class="uploader-attribution">{{ previewItem.uploader_username }}</dd></div>
               <div><dt>Updated</dt><dd>{{ previewItem.updated_relative }}</dd></div>
               <div><dt>Checksum</dt><dd>{{ previewItem.checksum }}</dd></div>

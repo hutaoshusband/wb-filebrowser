@@ -1114,6 +1114,23 @@ describe('Admin app shell', () => {
     expect(clipboardWrite).toHaveBeenCalledWith('http://localhost/share/?token=feedfacefeedfacefeedfacefeedface');
   });
 
+  it('renders highlighted Rust with its icon and source label in the real preview', async () => {
+    const { wrapper } = await mountBrowserApp({
+      handlers: {
+        'tree.list': () => jsonResponse(browserTreePayload({
+          name: 'main.rs', extension: 'rs', mime_type: 'text/plain', preview_mode: 'text',
+          file_icon_url: '/media/file-fallbacks/rust.svg',
+        })),
+        'files.stream': () => ({ ok: true, text: async () => 'fn main() { println!("hello"); }' }),
+      },
+    });
+    await wrapper.find('tbody tr').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('.preview-modal__header').text()).toContain('Rust source');
+    expect(wrapper.find('.code-view .hljs-keyword').text()).toBe('fn');
+    expect(wrapper.find('.code-view img').attributes('src')).toContain('rust.svg');
+  });
+
   it('renders a branded fallback card for jar files', async () => {
     const { wrapper } = await mountBrowserApp({
       handlers: {

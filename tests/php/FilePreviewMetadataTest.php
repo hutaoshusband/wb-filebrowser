@@ -35,11 +35,21 @@ final class FilePreviewMetadataTest extends TestCase
         $generic = wb_file_preview_metadata('application/octet-stream', 'bin');
 
         $this->assertSame('archive', $archive['fallback_variant']);
-        $this->assertSame('Archive file', $archive['fallback_label']);
+        $this->assertSame('ZIP archive', $archive['fallback_label']);
         $this->assertSame('package', $package['fallback_variant']);
         $this->assertSame('Installable package', $package['fallback_label']);
         $this->assertSame('binary', $generic['fallback_variant']);
         $this->assertSame('Binary file', $generic['fallback_label']);
+    }
+
+    public function testSourceExtensionsPreviewAsTextEvenWithGenericMime(): void
+    {
+        foreach (['rs', 'py', 'cpp', 'go', 'r', 'vue', 'toml', 'tsx', 'sh'] as $extension) {
+            $metadata = wb_file_preview_metadata('application/octet-stream', $extension);
+            $this->assertSame('text', $metadata['preview_mode'], $extension);
+            $this->assertNotNull($metadata['file_icon_url']);
+        }
+        $this->assertSame('download', wb_file_preview_metadata('application/octet-stream', 'dll')['preview_mode']);
     }
 
     public function testPreviewableTypesDoNotExposeFallbackMetadata(): void

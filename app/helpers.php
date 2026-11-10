@@ -373,7 +373,7 @@ function wb_relative_time(?string $isoDate): string
  */
 function wb_text_preview_extensions(): array
 {
-    static $extensions = ['json', 'md', 'markdown', 'xml', 'yml', 'yaml', 'js', 'ts', 'php', 'css', 'html', 'sql'];
+    static $extensions = ['json', 'md', 'markdown', 'xml', 'yml', 'yaml', 'js', 'ts', 'php', 'css', 'html', 'sql', 'py', 'pyw', 'pyi', 'mjs', 'cjs', 'jsx', 'tsx', 'mts', 'cts', 'phtml', 'java', 'c', 'h', 'cpp', 'cc', 'cxx', 'hpp', 'hxx', 'cs', 'rs', 'go', 'rb', 'erb', 'sh', 'bash', 'zsh', 'fish', 'htm', 'xsl', 'xsd', 'vue', 'svelte', 'scss', 'sass', 'less', 'jsonc', 'swift', 'kt', 'kts', 'lua', 'r', 'toml', 'ini', 'conf', 'cfg', 'env', 'txt', 'log'];
 
     return $extensions;
 }
@@ -397,12 +397,84 @@ function wb_file_fallback_metadata(string $extension, string $mimeType = ''): ar
     $extension = strtolower(ltrim(trim($extension), '.'));
     $mimeType = strtolower(trim($mimeType));
 
+    if ($extension === 'firefly') {
+        return ['variant' => 'config', 'icon' => 'firefly', 'label' => 'Firefly config'];
+    }
+
+    if (in_array($extension, ['i64', 'idb'], true)) {
+        return ['variant' => 'database', 'icon' => 'ida', 'label' => 'IDA analysis database'];
+    }
+
+    if (in_array($extension, ['db', 'sqlite', 'sqlite3', 'db3'], true)
+        || in_array($mimeType, ['application/vnd.sqlite3', 'application/x-sqlite3'], true)) {
+        return ['variant' => 'database', 'icon' => 'database', 'label' => 'Database file'];
+    }
+
+    // Source and configuration icons do not change text preview behavior.
+    foreach ([
+        'python' => ['py', 'pyw', 'pyi'],
+        'javascript' => ['js', 'mjs', 'cjs', 'jsx'],
+        'typescript' => ['ts', 'tsx', 'mts', 'cts'],
+        'php' => ['php', 'phtml'],
+        'java' => ['java', 'class'],
+        'c' => ['c', 'h'],
+        'cpp' => ['cpp', 'cc', 'cxx', 'hpp', 'hxx'],
+        'csharp' => ['cs'],
+        'rust' => ['rs'],
+        'go' => ['go'],
+        'ruby' => ['rb', 'erb'],
+        'shell' => ['sh', 'bash', 'zsh', 'fish'],
+        'html' => ['html', 'htm'],
+        'css' => ['css', 'scss', 'sass', 'less'],
+        'json' => ['json', 'jsonc'],
+        'yaml' => ['yaml', 'yml'],
+        'xml' => ['xml', 'xsl', 'xsd'],
+        'sql' => ['sql'],
+        'markdown' => ['md', 'markdown'],
+        'swift' => ['swift'],
+        'kotlin' => ['kt', 'kts'],
+        'lua' => ['lua'],
+        'r' => ['r'],
+        'vue' => ['vue'],
+        'svelte' => ['svelte'],
+        'toml' => ['toml'],
+        'text' => ['txt', 'log', 'ini', 'conf', 'cfg', 'env'],
+    ] as $language => $extensions) {
+        if (in_array($extension, $extensions, true)) {
+            return ['variant' => 'source', 'icon' => $language, 'label' => strtoupper($extension) . ' source / text file'];
+        }
+    }
+
+    if (in_array($extension, ['deb', 'rpm', 'apk', 'dmg', 'iso', 'appimage', 'snap', 'flatpak', 'msix', 'wasm'], true)) {
+        return ['variant' => 'package', 'icon' => $extension, 'label' => $extension === 'wasm' ? 'WebAssembly module' : 'Installable package'];
+    }
+
     if ($extension === 'jar' || $mimeType === 'application/java-archive') {
         return [
             'variant' => 'jar',
             'icon' => 'jar',
             'label' => 'Java archive',
         ];
+    }
+
+    // Specific extensions take priority over MIME types shared by EXE and DLL files.
+    if ($extension === 'dll') {
+        return ['variant' => 'dll', 'icon' => 'dll', 'label' => 'Windows shared library'];
+    }
+
+    if (in_array($extension, ['elf', 'so', 'o', 'a', 'run'], true)
+        || in_array($mimeType, ['application/x-elf', 'application/x-executable', 'application/x-pie-executable', 'application/x-sharedlib', 'application/x-object'], true)) {
+        return ['variant' => 'linux', 'icon' => 'linux', 'label' => 'Linux binary'];
+    }
+
+    foreach ([
+        'zip' => ['zip', 'application/zip', 'application/x-zip-compressed'],
+        'rar' => ['rar', 'application/vnd.rar', 'application/x-rar-compressed'],
+        '7z' => ['7z', 'application/x-7z-compressed'],
+    ] as $format => $types) {
+        if ($extension === $format || in_array($mimeType, array_slice($types, 1), true)) {
+            return ['variant' => 'archive', 'icon' => $format, 'label' => strtoupper($format) . ' archive'];
+        }
     }
 
     if ($extension === 'exe' || in_array($mimeType, ['application/vnd.microsoft.portable-executable', 'application/x-msdownload'], true)) {
@@ -422,8 +494,8 @@ function wb_file_fallback_metadata(string $extension, string $mimeType = ''): ar
     }
 
     if (
-        in_array($extension, ['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'tgz'], true)
-        || in_array($mimeType, ['application/zip', 'application/x-7z-compressed', 'application/x-rar-compressed', 'application/gzip', 'application/x-tar'], true)
+        in_array($extension, ['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'tgz', 'tbz', 'tbz2', 'txz', 'zst', 'tzst', 'lz', 'lzma', 'lz4', 'bz', 'z', 'cab', 'ar', 'cpio'], true)
+        || in_array($mimeType, ['application/zip', 'application/x-7z-compressed', 'application/x-rar-compressed', 'application/gzip', 'application/x-tar', 'application/x-bzip2', 'application/x-xz', 'application/zstd', 'application/x-cpio', 'application/vnd.ms-cab-compressed'], true)
     ) {
         return [
             'variant' => 'archive',
@@ -433,7 +505,7 @@ function wb_file_fallback_metadata(string $extension, string $mimeType = ''): ar
     }
 
     if (
-        in_array($extension, ['apk', 'dmg', 'pkg', 'iso', 'deb', 'rpm', 'appimage'], true)
+        in_array($extension, ['apk', 'dmg', 'pkg', 'iso', 'deb', 'rpm', 'appimage', 'snap', 'flatpak', 'flatpakref', 'msix', 'appx', 'vhd', 'vhdx', 'qcow2', 'img'], true)
         || in_array($mimeType, ['application/vnd.android.package-archive', 'application/x-iso9660-image'], true)
     ) {
         return [
@@ -484,8 +556,13 @@ function wb_file_preview_metadata(string $mimeType, string $extension): array
     $mimeType = strtolower(trim($mimeType));
     $extension = strtolower(ltrim(trim($extension), '.'));
 
+    $fileIcon = wb_file_fallback_metadata($extension, $mimeType)['icon'];
+    $fileIconPath = dirname(__DIR__) . '/media/file-fallbacks/' . $fileIcon . '.svg';
+    $fileIconUrl = wb_url('/media/file-fallbacks/' . $fileIcon . '.svg?v=' . (is_file($fileIconPath) ? filemtime($fileIconPath) : '1'));
+
     if (str_starts_with($mimeType, 'image/')) {
         return [
+            'file_icon_url' => $fileIconUrl,
             'preview_mode' => 'image',
             'fallback_variant' => null,
             'fallback_icon_url' => null,
@@ -495,6 +572,7 @@ function wb_file_preview_metadata(string $mimeType, string $extension): array
 
     if ($mimeType === 'application/pdf') {
         return [
+            'file_icon_url' => $fileIconUrl,
             'preview_mode' => 'pdf',
             'fallback_variant' => null,
             'fallback_icon_url' => null,
@@ -504,6 +582,7 @@ function wb_file_preview_metadata(string $mimeType, string $extension): array
 
     if (str_starts_with($mimeType, 'video/')) {
         return [
+            'file_icon_url' => $fileIconUrl,
             'preview_mode' => 'video',
             'fallback_variant' => null,
             'fallback_icon_url' => null,
@@ -513,6 +592,7 @@ function wb_file_preview_metadata(string $mimeType, string $extension): array
 
     if (str_starts_with($mimeType, 'audio/')) {
         return [
+            'file_icon_url' => $fileIconUrl,
             'preview_mode' => 'audio',
             'fallback_variant' => null,
             'fallback_icon_url' => null,
@@ -522,6 +602,7 @@ function wb_file_preview_metadata(string $mimeType, string $extension): array
 
     if (str_starts_with($mimeType, 'text/') || in_array($extension, wb_text_preview_extensions(), true)) {
         return [
+            'file_icon_url' => $fileIconUrl,
             'preview_mode' => 'text',
             'fallback_variant' => null,
             'fallback_icon_url' => null,
@@ -535,7 +616,8 @@ function wb_file_preview_metadata(string $mimeType, string $extension): array
     $fallbackIconVersion = is_file($fallbackIconPath) ? (string) filemtime($fallbackIconPath) : '1';
 
     return [
-        'preview_mode' => 'download',
+        'file_icon_url' => $fileIconUrl,
+            'preview_mode' => 'download',
         'fallback_variant' => $fallback['variant'],
         'fallback_icon_url' => wb_url('/media/file-fallbacks/' . $fallbackIconName . '?v=' . $fallbackIconVersion),
         'fallback_label' => $fallback['label'],

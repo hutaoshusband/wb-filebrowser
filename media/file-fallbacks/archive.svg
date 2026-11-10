@@ -1,9 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
-  <title id="title">Archive file</title>
-  <desc id="desc">A clean outlined archive file icon.</desc>
-  <path d="M35 14h36l22 22v68a10 10 0 0 1-10 10H35a10 10 0 0 1-10-10V24a10 10 0 0 1 10-10Z" fill="#202023" stroke="#3a3a3e" stroke-width="3"/>
-  <path d="M71 14v18a6 6 0 0 0 6 6h16" fill="none" stroke="#3a3a3e" stroke-width="3" stroke-linejoin="round"/>
-  <path d="M61 31h8v10h-8zm0 14h8v10h-8zm0 14h8v10h-8zm0 14h8v10h-8z" fill="#30d158"/>
-  <path d="M65 83v8" stroke="#30d158" stroke-width="4" stroke-linecap="round"/>
-  <rect x="55" y="90" width="20" height="12" rx="4" fill="#18181a" stroke="#30d158" stroke-width="3"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title"><title id="title">Archive file</title><path d="M32 12h46l20 20v82H32Z" fill="#202023" stroke="#515156" stroke-width="2"/><path d="M78 12v20h20" fill="#2c2c30" stroke="#515156" stroke-width="2"/><g fill="none" stroke="#a8a8ae" stroke-width="2" stroke-linejoin="miter"><path d="M60 32h8m-8 10h8m-8 10h8m-8 10h8"/><rect x="56" y="73" width="16" height="11"/></g><text x="64" y="104" text-anchor="middle" fill="#a8a8ae" font-family="monospace" font-size="12" font-weight="700" letter-spacing="1">ARC</text></svg>
