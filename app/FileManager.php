@@ -295,6 +295,10 @@ final class FileManager
             throw new RuntimeException('The parent folder was not found.');
         }
 
+        if (!Permissions::canOpenFolder($parentId, $user, $pdo)) {
+            throw new RuntimeException('You do not have access to this folder.');
+        }
+
         $currentFolderId = $parentId;
 
         foreach ($pathSegments as $segment) {
@@ -302,6 +306,9 @@ final class FileManager
             $existing = self::childFolderByName($currentFolderId, $name, $pdo);
 
             if ($existing !== null) {
+                if (!Permissions::canOpenFolder((int) $existing['id'], $user, $pdo)) {
+                    throw new RuntimeException('You do not have access to this folder.');
+                }
                 $currentFolderId = (int) $existing['id'];
                 continue;
             }
@@ -388,6 +395,13 @@ final class FileManager
             SpaceService::assertWithinSpaceQuota($targetParentId, SpaceService::transferBytes($folderId, $pdo), $pdo);
         }
 
+        $placeholders = implode(',', array_fill(0, count($descendants), '?'));
+        $files = $pdo->prepare('SELECT * FROM files WHERE folder_id IN (' . $placeholders . ')');
+        $files->execute($descendants);
+        foreach ($files->fetchAll() as $file) {
+            self::assertFileNotLockedFor($file, $user, $pdo);
+        }
+
         $pdo->beginTransaction();
         try {
             $statement = $pdo->prepare('UPDATE folders SET parent_id = :parent_id, updated_at = :updated_at WHERE id = :id');
@@ -447,6 +461,11 @@ final class FileManager
         );
         $fileStatement->execute($descendants);
         $fileRows = $fileStatement->fetchAll();
+
+        // Check the entire subtree before detaching even its first file.
+        foreach ($fileRows as $file) {
+            self::assertFileNotLockedFor($file, $user, $pdo);
+        }
 
         // Rows first (cascades included), blob unlinks after the commit.
         $pdo->beginTransaction();
@@ -2130,11 +2149,15 @@ final class FileManager
 
     private static function assertWithinStorageQuota(array $user, int $incomingBytes, ?string $excludeToken = null, ?PDO $pdo = null): void
     {
-        if (($user['role'] ?? null) !== 'user') {
+        $pdo ??= Database::connection();
+        // Link guests upload on behalf of their owner. Use the persisted
+        // account role so delegated uploads and role changes share its budget.
+        $principal = $pdo->prepare('SELECT role FROM users WHERE id = :id');
+        $principal->execute([':id' => (int) $user['id']]);
+        if ($principal->fetchColumn() !== 'user') {
             return;
         }
 
-        $pdo ??= Database::connection();
         $quota = self::storageQuotaBytesForUser((int) $user['id'], $pdo);
 
         if ($quota === null) {

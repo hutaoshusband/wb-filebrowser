@@ -55,6 +55,8 @@ npm run test:video:browser
 
 The video browser test requires a Playwright Chromium install (or `WB_TEST_BROWSER_CHANNEL=msedge` / `chrome`). It generates a small video locally, throttles its delivery, and checks native playback in the app, public share and embed views.
 
+`node tests/browser/security-http.mjs` checks mutation methods/CSRF and development-router isolation. Run it only in a disposable checkout with `WB_DISPOSABLE_TEST_CHECKOUT=1`: it writes storage and public-path fixtures there. PHP and its child processes need the normal application extensions enabled in their configuration.
+
 Optional MySQL/PostgreSQL smoke tests are skipped by default. To enable them, set DSN credentials such as `WB_TEST_MYSQL_DSN` / `WB_TEST_PGSQL_DSN` before running PHPUnit.
 
 ## Client-Side Video Optimization

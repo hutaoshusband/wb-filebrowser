@@ -38,10 +38,12 @@ try {
         MaintenanceMode::assertActionAllowed($action, $currentUser);
     }
 
-    $requireCsrf = static function () use ($action, $csrfToken): void {
-        if (wb_request_method() !== 'GET' && !in_array($action, ['auth.logout'], true)) {
-            Security::assertCsrfToken(is_string($csrfToken) ? $csrfToken : null);
+    $requireCsrf = static function () use ($csrfToken): void {
+        if (wb_request_method() !== 'POST') {
+            header('Allow: POST');
+            wb_error_response('Use POST for changes.', 405);
         }
+        Security::assertCsrfToken(is_string($csrfToken) ? $csrfToken : null);
     };
 
     switch ($action) {
@@ -158,6 +160,7 @@ try {
             ]);
 
         case 'auth.logout':
+            $requireCsrf();
             if ($installed) {
                 Auth::logout();
             }
@@ -381,7 +384,7 @@ try {
             ], 201);
 
         case 'upload.chunk':
-            Security::assertCsrfToken(is_string($csrfToken) ? $csrfToken : null);
+            $requireCsrf();
             $user = Auth::requireUser();
             session_write_close();
             wb_json_response([
