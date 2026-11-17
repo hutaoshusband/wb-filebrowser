@@ -1152,7 +1152,7 @@ describe('Admin app shell', () => {
     await wrapper.find('tbody tr').trigger('click');
     await flushPromises();
     expect(wrapper.find('.preview-modal__header').text()).toContain('Rust source');
-    expect(wrapper.find('.code-view .hljs-keyword').text()).toBe('fn');
+    await vi.waitFor(() => expect(wrapper.get('.code-view .hljs-keyword').text()).toBe('fn'));
     expect(wrapper.find('.code-view img').attributes('src')).toContain('rust.svg');
   });
 

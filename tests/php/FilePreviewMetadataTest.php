@@ -44,7 +44,7 @@ final class FilePreviewMetadataTest extends TestCase
 
     public function testSourceExtensionsPreviewAsTextEvenWithGenericMime(): void
     {
-        foreach (['rs', 'py', 'cpp', 'go', 'r', 'vue', 'toml', 'tsx', 'sh'] as $extension) {
+        foreach (['rs', 'py', 'cpp', 'go', 'r', 'vue', 'toml', 'tsx', 'sh', 'asm', 'lua', 'zig', 'zon', 'wat'] as $extension) {
             $metadata = wb_file_preview_metadata('application/octet-stream', $extension);
             $this->assertSame('text', $metadata['preview_mode'], $extension);
             $this->assertNotNull($metadata['file_icon_url']);

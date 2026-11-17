@@ -505,12 +505,14 @@ input.media-player__volume::-moz-range-thumb{width:10px;height:10px;border-radiu
 .code-view__identity strong{display:block;color:var(--c-text);font-size:.9rem;overflow-wrap:anywhere}
 .code-view__identity small{display:block;color:var(--c-text-dim);font-size:.75rem;margin-top:3px}
 .code-view__toolbar .header-button{white-space:nowrap;padding:7px 12px;font-size:.8rem}
-.code-view__scroll{display:flex;flex:1;min-height:0;overflow:auto;align-items:stretch;tab-size:4}
-.code-view__scroll:focus-visible{outline:2px solid var(--c-accent);outline-offset:-2px}
-.preview-frame .code-view pre{font:13px/1.8 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre;overflow:visible;overflow-wrap:normal;height:auto;max-height:none;margin:0;padding:20px 18px}
-.preview-frame .code-view__numbers{width:auto;flex-shrink:0;position:sticky;left:0;user-select:none;text-align:right;color:var(--c-text-dim);background:var(--c-surface);border-right:1px solid var(--c-line);z-index:1}
-.preview-frame .code-view__source{width:auto;flex:1;min-width:max-content;color:var(--c-text)}
-.code-view code{font:inherit;white-space:inherit}
+.code-view__scroll{flex:1;min-height:0;min-width:0}
+.code-view__scroll .cm-editor{height:100%;color:var(--c-text)}
+.code-view__scroll .cm-editor.cm-focused{outline:2px solid var(--c-accent);outline-offset:-2px}
+.code-view__scroll .cm-editor .cm-scroller{font:13px/1.8 ui-monospace,SFMono-Regular,Consolas,monospace;overflow:auto;overscroll-behavior:contain}
+.code-view__scroll .cm-editor .cm-content{padding:20px 0}
+.code-view__scroll .cm-editor .cm-line{padding:0 18px}
+.code-view__scroll .cm-editor .cm-gutters{color:var(--c-text-dim);background:var(--c-surface);border-right:1px solid var(--c-line)}
+.code-view__scroll .cm-editor .cm-lineNumbers .cm-gutterElement{padding:0 12px}
 .code-view__message{padding:20px;color:var(--c-text-dim)}
 .code-view .hljs-keyword,.code-view .hljs-selector-tag,.code-view .hljs-literal{color:#c5a5e8}
 .code-view .hljs-string,.code-view .hljs-regexp,.code-view .hljs-addition{color:#a6c99a}

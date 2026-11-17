@@ -28,15 +28,19 @@ export default defineConfig({
       input: resolve(__dirname, 'frontend/src/main.js'),
       output: {
         entryFileNames: 'app.js',
-        chunkFileNames: 'app.js',
+        chunkFileNames: '[name]-[hash].js',
+        // PHP adds a cache-busting query to app.js. Lazy chunks must share the
+        // preload helper without importing a second URL for the entry module.
+        manualChunks(id) {
+          if (id === '\0vite/preload-helper.js') return 'preload';
+        },
         assetFileNames: (assetInfo) => {
           if (assetInfo.name?.endsWith('.css')) {
             return 'app.css';
           }
 
           return '[name][extname]';
-        },
-        inlineDynamicImports: true
+        }
       }
     }
   }

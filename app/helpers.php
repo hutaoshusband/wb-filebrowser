@@ -373,7 +373,17 @@ function wb_relative_time(?string $isoDate): string
  */
 function wb_text_preview_extensions(): array
 {
-    static $extensions = ['json', 'md', 'markdown', 'xml', 'yml', 'yaml', 'js', 'ts', 'php', 'css', 'html', 'sql', 'py', 'pyw', 'pyi', 'mjs', 'cjs', 'jsx', 'tsx', 'mts', 'cts', 'phtml', 'java', 'c', 'h', 'cpp', 'cc', 'cxx', 'hpp', 'hxx', 'cs', 'rs', 'go', 'rb', 'erb', 'sh', 'bash', 'zsh', 'fish', 'htm', 'xsl', 'xsd', 'vue', 'svelte', 'scss', 'sass', 'less', 'jsonc', 'swift', 'kt', 'kts', 'lua', 'r', 'toml', 'ini', 'conf', 'cfg', 'env', 'txt', 'log'];
+    static $extensions = [
+        'json', 'md', 'markdown', 'xml', 'yml', 'yaml', 'js', 'ts', 'php', 'css', 'html', 'sql',
+        'py', 'pyw', 'pyi', 'mjs', 'cjs', 'jsx', 'tsx', 'mts', 'cts', 'phtml', 'java', 'c', 'h',
+        'cpp', 'cc', 'cxx', 'hpp', 'hxx', 'cs', 'rs', 'go', 'rb', 'erb', 'sh', 'bash', 'zsh',
+        'fish', 'htm', 'xsl', 'xsd', 'vue', 'svelte', 'scss', 'sass', 'less', 'jsonc', 'swift',
+        'kt', 'kts', 'lua', 'r', 'toml', 'ini', 'conf', 'cfg', 'env', 'txt', 'log',
+        'asm', 's', 'inc', 'z80', 'zig', 'zon', 'clj', 'cljs', 'cljc', 'edn', 'cmake', 'diff',
+        'patch', 'erl', 'hrl', 'f', 'f77', 'f90', 'f95', 'f03', 'f08', 'for', 'hs', 'jl',
+        'pas', 'pp', 'pl', 'pm', 'ps1', 'psm1', 'psd1', 'proto', 'scm', 'ss', 'v', 'vh',
+        'sv', 'svh', 'vhd', 'vhdl', 'wat', 'wast', 'd',
+    ];
 
     return $extensions;
 }

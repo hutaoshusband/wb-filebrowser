@@ -247,6 +247,7 @@ const previewText = ref('');
 const previewLoading = ref(false);
 const previewError = ref('');
 let previewRequest = 0;
+let previewController;
 const mediaRef = ref(null);
 const mediaState = reactive({
   playing: false,
@@ -1086,6 +1087,8 @@ const vThumbObserve = {
 
 async function openPreview(item) {
   const request = ++previewRequest;
+  previewController?.abort();
+  previewController = null;
   previewItem.value = item;
   previewText.value = '';
   previewError.value = '';
@@ -1093,21 +1096,28 @@ async function openPreview(item) {
   resetMediaState();
 
   if (previewLoading.value) {
+    const controller = new AbortController();
+    previewController = controller;
     try {
-      const response = await fetch(item.preview_url, { credentials: 'same-origin', cache: 'no-store' });
+      const response = await fetch(item.preview_url, { credentials: 'same-origin', cache: 'no-store', signal: controller.signal });
       if (!response.ok) throw new Error('Unable to load this file. Please close and try again.');
       const text = await response.text();
       if (request === previewRequest) previewText.value = text;
     } catch (error) {
       if (request === previewRequest) previewError.value = error.message;
     } finally {
-      if (request === previewRequest) previewLoading.value = false;
+      if (request === previewRequest) {
+        previewController = null;
+        previewLoading.value = false;
+      }
     }
   }
 }
 
 function closePreview() {
   ++previewRequest;
+  previewController?.abort();
+  previewController = null;
   previewItem.value = null;
   previewText.value = '';
   previewError.value = '';
@@ -3389,6 +3399,8 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  ++previewRequest;
+  previewController?.abort();
   teardownWaveform();
   teardownVideoPlayback();
   answerEncryption({ choice: 'cancel', password: '' });
